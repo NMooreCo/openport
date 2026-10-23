@@ -21,6 +21,13 @@ uv sync
 cp .env.example .env   # then add NEBIUS_API_KEY (and TAVILY_API_KEY)
 ```
 
+Find every OpenAI and Anthropic call in a repo, local or on GitHub, and what each one needs to run on Token Factory. No API keys needed; the code is parsed, never run.
+
+```bash
+uv run openport scan examples/supportdesk
+uv run openport scan jsliapark/preflight
+```
+
 Check what Token Factory offers and how each Nemotron model handles JSON, tools and reasoning:
 
 ```bash

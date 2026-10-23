@@ -140,5 +140,57 @@ def baseline(
     console.print(f"Saved {path}")
 
 
+@app.command()
+def scan(
+    target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
+    include_tests: bool = typer.Option(False, help="Also list calls found in test files"),
+) -> None:
+    """Find every OpenAI and Anthropic SDK call in a repo, and what each one needs to run on Token Factory."""
+    from .scan import scan_repo
+    from .workspace import fetch_repo, is_remote
+
+    if is_remote(target):
+        root, fresh = fetch_repo(target)
+        console.print(f"{'Cloned' if fresh else 'Using the earlier clone of'} {target} in {root} (the code is parsed, never run)")
+    else:
+        root = Path(target)
+        if not root.is_dir():
+            _fail(f"No such folder: {target}")
+
+    report = scan_repo(root)
+    sites = report.portable(include_tests)
+    colors = {"auto": "green", "translate": "yellow", "review": "red"}
+
+    table = Table(title=f"LLM calls in {root.resolve().name}")
+    for column in ("Call site", "Where", "SDK / API", "Model", "Output", "Port"):
+        table.add_column(column)
+    for f in sites:
+        color = colors[f.portability]
+        table.add_row(
+            f.id, f"{f.file}:{f.line}", f"{f.sdk} {f.api}", f.model or f.model_expr or "?", f.output,
+            f"[{color}]{f.portability}[/{color}]",
+        )
+    console.print(table)
+    for f in sites:
+        if f.notes:
+            console.print(f"[bold]{f.id}[/bold]: " + "; ".join(f.notes))
+
+    summary = report.summary(include_tests)
+    ports = summary["by_portability"]
+    console.print(
+        f"\n{summary['call_sites']} LLM calls in {report.files_scanned} files: "
+        f"{ports.get('auto', 0)} swap as-is, {ports.get('translate', 0)} need translating, "
+        f"{ports.get('review', 0)} need review."
+        + (f" ({summary['in_tests']} more in test files; --include-tests to list them.)" if summary["in_tests"] and not include_tests else "")
+    )
+    if report.skipped:
+        console.print(f"[yellow]Couldn't parse {len(report.skipped)} files: {', '.join(report.skipped[:5])}[/yellow]")
+
+    config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.RUNS_DIR / f"scan-{root.resolve().name}.json"
+    path.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    console.print(f"Saved {path}")
+
+
 if __name__ == "__main__":
     app()

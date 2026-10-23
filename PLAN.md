@@ -156,6 +156,14 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - SupportDesk with 5 call sites and 54 hand-labelled eval cases.
 - 17 offline tests passing.
 
+**Day 2 scanner (done early, Fri 23):** `openport scan <folder | owner/repo>`.
+- Python via `ast`, TypeScript/JavaScript via tree-sitter. Code is parsed, never run.
+- For each call it finds: SDK and API, model (resolved from constants), how the client is reached, and output type. The output type comes from following the data into `json.loads`/`JSON.parse`, stopping at other LLM calls.
+- Porting flags: structured output, JSON mode, tools, thinking, streaming, vision, prefill, ends-on-assistant, `cache_control`, dynamic arguments, base URL already configurable.
+- Each call is marked auto / translate / review.
+- Verified on SupportDesk (5/5), preflight (4/4) and probly (4/4); the last two match the helper agent's manual review.
+- 21 offline tests.
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.
