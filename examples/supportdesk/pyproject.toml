@@ -1,0 +1,12 @@
+[project]
+name = "supportdesk"
+version = "0.1.0"
+description = "Fernhill Supply Co.'s support desk: triage, PII scrubbing, reply drafts, a refund agent and supervisor briefs."
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=3.0",
+    "anthropic>=2.0",
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+]

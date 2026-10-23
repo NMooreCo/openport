@@ -1,0 +1,96 @@
+# OpenPort eval spec for SupportDesk.
+#
+# OpenPort generates this file in its "capture" and "grade design" stages. For the demo app it's
+# written by hand, and the datasets are hand-labelled ground truth rather than recorded outputs.
+target: supportdesk
+source_root: ..
+
+call_sites:
+  - id: triage
+    title: Ticket triage
+    file: supportdesk/triage.py
+    module: supportdesk.triage
+    function: triage_ticket
+    client_attr: client
+    sdk: openai
+    original_model: gpt-5-mini
+    output: json_object
+    dataset: triage.jsonl
+    grader:
+      type: fields
+      fields: [category, priority]
+
+  - id: pii
+    title: PII extraction and redaction
+    file: supportdesk/pii.py
+    module: supportdesk.pii
+    function: extract_pii
+    client_attr: client
+    sdk: openai
+    original_model: gpt-5-mini
+    output: json_schema
+    dataset: pii.jsonl
+    grader:
+      type: pii
+
+  - id: replies
+    title: Reply drafting
+    file: supportdesk/replies.py
+    module: supportdesk.replies
+    function: draft_reply
+    client_attr: client
+    sdk: anthropic
+    original_model: claude-sonnet-5-5
+    output: text
+    dataset: replies.jsonl
+    grader:
+      type: text_rules
+      ends_with: "— The Fernhill Support Team"
+      max_words: 150
+      max_exclamations: 1
+      no_markdown: true
+      forbidden:
+        - '(?i)\b(?:we|i)\s*(?:[’'']ll|\s+will)\s+(?:refund|replace|reimburse)\b'
+        - '(?i)\b(?:we|i)\s*(?:[’'']ve|\s+have)\s+(?:issued|processed|approved|refunded)\b'
+        - '(?i)\byour refund (?:has been|is being|will be) (?:issued|processed|approved)\b'
+        - '(?i)\b(?:we|i)\s*(?:[’'']ll|\s+will)\s+send\s+(?:you\s+)?(?:a\s+)?(?:new|replacement)\b'
+        - '(?i)\bguarantee(?:d|s)?\b'
+      judge:
+        min_score: 4
+        rubric: >
+          You are reviewing a draft customer-support reply for Fernhill Supply Co., an outdoor gear store.
+          Score it from 1 to 5.
+          5: an agent could send it as-is. It's warm and direct, deals with the customer's actual issue,
+          gives a sensible next step, and invents no facts, policies or promises.
+          4: good, needs at most one small edit.
+          3: usable only with real edits.
+          2: misses the point or gives a wrong next step.
+          1: harmful or rude, or it promises a refund, replacement or exception.
+
+  - id: refunds
+    title: Refund agent (tool calling)
+    file: supportdesk/refunds.py
+    module: supportdesk.refunds
+    function: handle_refund_request
+    client_attr: client
+    sdk: openai
+    original_model: gpt-5
+    output: tools
+    dataset: refunds.jsonl
+    grader:
+      type: fields
+      fields: [action, amount]
+
+  - id: policy
+    title: Supervisor briefs (multi-step reasoning)
+    file: supportdesk/policy.py
+    module: supportdesk.policy
+    function: review_case
+    client_attr: client
+    sdk: anthropic
+    original_model: claude-opus-5-5
+    output: text
+    dataset: policy.jsonl
+    grader:
+      type: fields
+      fields: [decision, refund_amount]

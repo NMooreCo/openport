@@ -1,0 +1,15 @@
+{"id": "triage-01", "input": {"ticket": "My Ridgeline 2 tent pole snapped on night two of a backcountry trip and the rain fly tore. Storm rolling in tonight and I'm still out here with one bar of signal. What do I do?"}, "expected": {"category": "returns", "priority": "urgent"}}
+{"id": "triage-02", "input": {"ticket": "hi, was charged twice for order FH-100245, can u fix"}, "expected": {"category": "billing", "priority": "normal"}}
+{"id": "triage-03", "input": {"ticket": "Where is my package? Tracking hasn't updated in 9 days. Order FH-100233."}, "expected": {"category": "shipping", "priority": "normal"}}
+{"id": "triage-04", "input": {"ticket": "Does the Ridgeline 2 tent fit on a 40 x 84 inch tent platform?"}, "expected": {"category": "product_question", "priority": "low"}}
+{"id": "triage-05", "input": {"ticket": "The camp stove I bought from you leaked gas and set my picnic table on fire. You'll be hearing from my lawyer."}, "expected": {"category": "returns", "priority": "urgent"}}
+{"id": "triage-06", "input": {"ticket": "Can't log in, the password reset email never arrives. Also my Summit membership shows as expired even though I renewed last week."}, "expected": {"category": "account", "priority": "normal"}}
+{"id": "triage-07", "input": {"ticket": "Checkout throws 'Error 502' every time I click Pay. Tried Chrome, Firefox and Safari."}, "expected": {"category": "technical", "priority": "normal"}}
+{"id": "triage-08", "input": {"ticket": "Just wanted to say the Alpine down jacket kept me warm at -20C on Mt. Hood. Great product!"}, "expected": {"category": "other", "priority": "low"}}
+{"id": "triage-09", "input": {"ticket": "Oh great, the 'waterproof' Summit GTX boots let water in at the very first puddle. Love that for me. I want my money back."}, "expected": {"category": "returns", "priority": "normal"}}
+{"id": "triage-10", "input": {"ticket": "I need to change the shipping address on order FH-100251 before it ships, I'm moving on Friday. Also, does the Trailblazer pack come with a rain cover?"}, "expected": {"category": "shipping", "priority": "normal"}}
+{"id": "triage-11", "input": {"ticket": "Hola, compré una mochila (pedido FH-100240) y la cremallera se rompió al primer uso. ¿Puedo devolverla?"}, "expected": {"category": "returns", "priority": "normal"}}
+{"id": "triage-12", "input": {"ticket": "Your SUMMIT20 code didn't apply at checkout and I paid full price. Can you adjust it?"}, "expected": {"category": "billing", "priority": "normal"}}
+{"id": "triage-13", "input": {"ticket": "CHEAP FOLLOWERS!!! 10k Instagram followers for $5, visit our site now"}, "expected": {"category": "other", "priority": "low"}}
+{"id": "triage-14", "input": {"ticket": "Ordered a replacement water filter with expedited shipping for a trip that leaves tomorrow morning. Tracking says 'delivery exception'. Without it our group has no way to treat water."}, "expected": {"category": "shipping", "priority": "urgent"}}
+{"id": "triage-15", "input": {"ticket": "How should I wash my down sleeping bag without ruining the loft?"}, "expected": {"category": "product_question", "priority": "low"}}
