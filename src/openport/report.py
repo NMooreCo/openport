@@ -73,7 +73,8 @@ def build_rows(sites: list[dict], tune_report: dict | None, price_of: Callable[[
             row.plain = _rate(tuning["attempts"][0])
             chosen = tuning.get("chosen")
             if chosen:
-                row.after, row.held_out, row.cases, row.tier = _rate(chosen), chosen["holdout_pass"], chosen["total"], chosen["tier"]
+                row.after, row.held_out, row.tier = _rate(chosen), chosen["holdout_pass"], chosen["tier"]
+                row.cases = chosen.get("cases") or chosen["total"]  # distinct cases, however many samples each
                 variant = Variant.from_dict(chosen["variant"])
                 row.change, row.addendum, row.sources = variant.describe(), variant.system_addendum, variant.sources
                 if chosen["total"]:

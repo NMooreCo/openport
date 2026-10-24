@@ -6,7 +6,7 @@ from openport import report
 from openport.evals.runner import CaseResult
 from openport.tune import export_plan, tune_site
 from openport.tune.engineer import make_engineer
-from openport.tune.research import Guidance, make_researcher, model_family, topic_for
+from openport.tune.research import Guidance, about_model, make_researcher, model_family, topic_for
 from openport.tune.variant import Variant
 
 from .fakes import FakeTokenFactory, completion
@@ -25,6 +25,18 @@ def test_model_family_uses_nvidias_names():
     assert model_family("nvidia/nemotron-3-super-120b-a12b") == "NVIDIA Nemotron 3 Super"
     assert model_family("nvidia/Nemotron-3_5-Lightning") == "NVIDIA Nemotron 3.5 Lightning"
     assert model_family("some/other-model") == "other-model"
+
+
+def test_sources_must_be_about_the_exact_model():
+    # Titles that came back in a live run, for the models they were (or weren't) about.
+    nano, super_ = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "nvidia/nemotron-3-super-120b-a12b"
+    assert about_model(nano, "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 · Hugging Face")
+    assert about_model(nano, "Nemotron Nano v3 (trained with this data) | 86.9")
+    assert not about_model(nano, "nemotron-3-nano-omni-30b-a3b-reasoning Model by NVIDIA | NVIDIA NIM")
+    assert about_model(super_, "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 · Hugging Face")
+    assert not about_model(super_, "Get Started with NVIDIA-Nemotron-3.5-Super-VL-120B-A12B — NVIDIA NIM")
+    assert not about_model(super_, "Nemotron-3-Ultra | NVIDIA Dynamo Documentation")
+    assert about_model("some/other-model", "anything")  # nothing to check against
 
 
 def test_topic_follows_the_call_and_reasoning_leaks():

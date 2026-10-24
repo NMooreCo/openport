@@ -29,6 +29,11 @@ Two kinds of notes are tracked separately and honestly:
 - In `openport tune`, 4 of 5 calls ended up changing Nemotron's reasoning setting. Turning it **off** fixed format-following for classification, extraction and reply drafting (and cut output tokens). Turning it **on** let Nano handle a multi-step policy call that previously ran on Claude Opus — at 100% pass rate, $25.07 → $0.31 per 1,000 calls.
 - Suggestion: a short guide on when to switch reasoning off (format-strict outputs) versus on (multi-step decisions) would help anyone porting from closed models.
 
+**[live] One recommended setting for every task can hurt strict calls.** (Oct 24)
+- With Tavily research on, OpenPort's tuner read the Nemotron 3 model cards and adopted their recommended sampling settings in several fixes, citing the cards. That helped a multi-step policy call on Nano (reasoning on: 21/21 cases). But a tool-calling refund agent on Nano fell from 94% of its tuning cases to 4/24 after a cited fix switched reasoning off at temperature 0.6, and the strict-format reply drafter on Super slipped from 13/20 to 11–12/20 at the recommended temperature of 1.0.
+- Suggestion: model cards could give settings per kind of task (strict structured or format-bound output, tool calling, open-ended chat) rather than one default for everything.
+- Smaller: searches for one model's guidance regularly return pages for its siblings (Nano vs Nano Omni, Super 3 vs Super 3.5 VL), whose settings differ. Clearer per-variant titles would help tools and people find the right page.
+
 ## Nemotron models and tiers
 
 **[build] Model IDs must be discovered, not assumed.** (Oct 23)

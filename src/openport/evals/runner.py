@@ -135,6 +135,7 @@ def run_site(
     setattr(module, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
     try:
         cases = cases if cases is not None else site.cases(limit)
+        cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             results = list(pool.map(lambda case: _run_case(site, function, case, judge), cases))
     finally:

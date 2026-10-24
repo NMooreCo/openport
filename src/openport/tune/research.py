@@ -40,12 +40,30 @@ class Guidance:
 Researcher = Callable[[CallSite, str, list[tuple[dict, CaseResult]]], Guidance | None]
 
 
+_FAMILY = re.compile(r"nemotron[-_ ]?(\d+(?:[._]\d+)?)[-_ ](nano|super|ultra|lightning)", re.IGNORECASE)
+
+
 def model_family(model: str) -> str:
     """"nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B" -> "NVIDIA Nemotron 3 Nano", the way NVIDIA's docs name it."""
-    match = re.search(r"nemotron[-_ ]?(\d+(?:[._]\d+)?)[-_ ](nano|super|ultra|lightning)", model, re.IGNORECASE)
+    match = _FAMILY.search(model)
     if not match:
         return model.split("/")[-1]
     return f"NVIDIA Nemotron {match.group(1).replace('_', '.')} {match.group(2).capitalize()}"
+
+
+def about_model(model: str, text: str) -> bool:
+    """Does a page talk about this exact model? Settings differ between Nano and Nano Omni, Super 3 and Super 3.5 VL."""
+    match = _FAMILY.search(model)
+    if not match:
+        return True  # not a Nemotron name that can be checked
+    version = re.escape(match.group(1).replace("_", ".")).replace(r"\.", r"[._]")
+    size = match.group(2)
+    sep, variant = r"[\s_-]*", r"(?![\s_-]*(?:omni|vl\b|vision))"
+    patterns = (
+        rf"nemotron{sep}{version}(?![._]?\d){sep}(?:\d+b{sep}(?:a\d+b{sep})?)?{size}{variant}",  # Nemotron-3-Nano(-30B-A3B)
+        rf"nemotron{sep}{size}{sep}v?{version}(?![._]?\d){variant}",  # Nemotron Nano v3
+    )
+    return any(re.search(p, text, re.IGNORECASE) for p in patterns)
 
 
 def topic_for(output: str, failures: list[tuple[dict, CaseResult]]) -> str:
@@ -76,6 +94,7 @@ def make_researcher(search: Search | None = None) -> Researcher:
                 {"title": r.get("title") or r["url"], "url": r["url"], "excerpt": " ".join((r.get("content") or "").split())[:EXCERPT_CHARS]}
                 for r in results
                 if r.get("url") and (r.get("content") or "").strip()
+                and about_model(model, f"{r.get('title') or ''} {r['url']} {r.get('content') or ''}")
             ][:MAX_SOURCES]
             found[(model, topic)] = Guidance(model, topic, query, sources)
         guidance = found[(model, topic)]

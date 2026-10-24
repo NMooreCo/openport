@@ -22,6 +22,9 @@ class CallSite:
     output: str
     dataset: Path
     grader: dict = field(default_factory=dict)
+    # Runs per case. Free text scored by a judge is noisy, so one run per case can fail a call on a single
+    # unlucky draw; more samples give a steadier pass rate (every sample counts), not an easier bar.
+    samples: int = 1
 
     def cases(self, limit: int | None = None) -> list[dict]:
         lines = self.dataset.read_text(encoding="utf-8").splitlines()
@@ -61,6 +64,7 @@ def load_spec(target: Path) -> Spec:
             output=site.get("output", "text"),
             dataset=base / site["dataset"],
             grader=site.get("grader", {}),
+            samples=max(1, int(site.get("samples", 1))),
         )
         for site in raw["call_sites"]
     ]

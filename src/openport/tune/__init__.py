@@ -48,6 +48,7 @@ class Attempt:
     failed_cases: list[str] = field(default_factory=list)
     prompt_tokens: int = 0  # totals across all cases, as measured on Nemotron
     completion_tokens: int = 0
+    cases: int = 0  # distinct cases; `passed` and `total` count every sample
 
     def meets(self, target: float) -> bool:
         return self.tune_pass >= target and (self.holdout_pass is None or self.holdout_pass >= target)
@@ -142,9 +143,10 @@ def tune_site(
                 passed=result.passed,
                 total=len(result.cases),
                 cost_usd=result.cost_usd,
-                failed_cases=[r.case_id for r in result.cases if not r.passed],
+                failed_cases=list(dict.fromkeys(r.case_id for r in result.cases if not r.passed)),
                 prompt_tokens=result.prompt_tokens,
                 completion_tokens=result.completion_tokens,
+                cases=len({r.case_id for r in result.cases}),
             )
             attempts.append(attempt)
             if on_attempt:

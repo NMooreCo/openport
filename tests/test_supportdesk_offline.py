@@ -31,6 +31,7 @@ def site(site_id):
 
 def test_spec_and_datasets_are_well_formed():
     assert [s.id for s in SPEC.call_sites] == ["triage", "pii", "replies", "refunds", "policy"]
+    assert {s.id: s.samples for s in SPEC.call_sites} == {"triage": 1, "pii": 1, "replies": 2, "refunds": 1, "policy": 1}
     for call_site in SPEC.call_sites:
         cases = call_site.cases()
         assert cases, call_site.id

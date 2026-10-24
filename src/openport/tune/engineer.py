@@ -27,9 +27,10 @@ You can change only these knobs:
 
 Rules:
 - Fix the kind of failure, never a specific case. Do not quote or hint at any expected answer, name, number or label from the failures. Your change is checked on cases you will never see.
+- State the general rule rather than listing the examples you saw. If the failures show one kind of input being mishandled, cover the whole kind (for example "every currency", not the two currencies that failed), because the unseen cases will include ones that aren't in the failures.
 - Keep system_addendum under 120 words, plain and specific. Don't restate the whole prompt.
 - Change as little as you need to. Keep what already works.
-- If excerpts from NVIDIA's documentation are included, follow them where they explain the failures (for example, the settings NVIDIA recommends for this model), and list the URLs of the ones you relied on in sources. Don't list pages you didn't use.
+- If excerpts from NVIDIA's documentation are included, use them where they explain the failures, and list the URLs of the ones you relied on in sources. Treat general recommendations, like default sampling settings, as background rather than rules: change temperature or reasoning only when the failures point to it. Don't list pages you didn't use.
 
 Respond with JSON only:
 {"reasoning": true | false | null, "system_addendum": "...", "max_tokens": integer or null, "temperature": number or null, "rationale": "one sentence on what you're fixing", "sources": ["url", ...]}"""

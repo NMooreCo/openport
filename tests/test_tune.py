@@ -102,6 +102,15 @@ def test_no_tier_passes():
     assert plan["model"] == "keep" and "no Nemotron tier reached 90%" in plan["reason"]
 
 
+def test_every_sample_is_counted_but_cases_are_counted_once():
+    import dataclasses
+
+    sampled = dataclasses.replace(TRIAGE, samples=2)
+    result = tune_site(SPEC, sampled, MODELS, client=triage_fake(lambda request: True), engineer=RecordingEngineer(Variant()))
+    n = len(TRIAGE.cases())
+    assert (result.chosen.total, result.chosen.cases, result.chosen.pass_rate) == (2 * n, n, 1.0)
+
+
 def test_parse_variant_tolerates_chatter():
     text = 'Here you go:\n```json\n{"reasoning": false, "system_addendum": "JSON only.", "max_tokens": 0, "temperature": null, "rationale": "x"}\n```'
     variant = parse_variant(text, fallback=Variant())

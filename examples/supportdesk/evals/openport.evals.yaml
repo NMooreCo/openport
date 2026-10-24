@@ -43,6 +43,8 @@ call_sites:
     original_model: claude-sonnet-5-5
     output: text
     dataset: replies.jsonl
+    # Generated text scored by a judge varies run to run: two samples per case steady the pass rate.
+    samples: 2
     grader:
       type: text_rules
       ends_with: "— The Fernhill Support Team"
