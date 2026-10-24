@@ -1,6 +1,6 @@
 import { STAGES, type RunState, type StageState } from "../run";
 
-const LABELS = { fetch: "Fetch", scan: "Find calls", tune: "Test & tune", port: "Rewrite", pr: "Pull request" };
+const LABELS = { fetch: "Fetch", scan: "Find calls", capture: "Capture evals", tune: "Test & tune", port: "Rewrite", pr: "Pull request" };
 
 const DOT: Record<StageState, string> = {
   pending: "border-line bg-transparent",

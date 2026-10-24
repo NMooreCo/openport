@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export const STAGES = ["fetch", "scan", "tune", "port", "pr"] as const;
+export const STAGES = ["fetch", "scan", "capture", "tune", "port", "pr"] as const;
 export type Stage = (typeof STAGES)[number];
 export type StageState = "pending" | "active" | "done" | "skipped";
 
@@ -65,6 +65,11 @@ export interface PrRow {
   cost_now: number | null;
 }
 
+export interface Captured {
+  sites: { site: string; cases: number; grader: string }[];
+  note: string;
+}
+
 export interface RunState {
   id: string;
   status: "queued" | "running" | "done" | "failed";
@@ -72,6 +77,7 @@ export interface RunState {
   files?: number;
   sites: Finding[];
   models?: Record<string, string>;
+  captured?: Captured;
   attempts: Attempt[];
   tuned: Tuned[];
   cost?: { evals_usd: number; helper_usd: number };
@@ -83,13 +89,13 @@ export interface RunState {
 
 type RunEvent = { type: string; [key: string]: any };
 
-export const EVENT_TYPES = ["stage", "note", "scan", "models", "attempt", "tuned", "cost", "ported", "pr", "done", "failed"];
+export const EVENT_TYPES = ["stage", "note", "scan", "models", "captured", "attempt", "tuned", "cost", "ported", "pr", "done", "failed"];
 
 export function initialState(id: string): RunState {
   return {
     id,
     status: "queued",
-    stages: { fetch: "pending", scan: "pending", tune: "pending", port: "pending", pr: "pending" },
+    stages: { fetch: "pending", scan: "pending", capture: "pending", tune: "pending", port: "pending", pr: "pending" },
     sites: [],
     attempts: [],
     tuned: [],
@@ -114,6 +120,11 @@ export function reduce(state: RunState, event: RunEvent): RunState {
       return { ...state, sites: event.sites, files: event.files };
     case "models":
       return { ...state, models: event.models };
+    case "captured": {
+      const total = event.sites.reduce((sum: number, s: { cases: number }) => sum + s.cases, 0);
+      const summary = `Captured a starter eval set: ${total} generated case${total === 1 ? "" : "s"} across ${event.sites.length} call${event.sites.length === 1 ? "" : "s"}.`;
+      return { ...state, captured: { sites: event.sites, note: event.note }, notes: [...state.notes, summary, event.note] };
+    }
     case "attempt":
       return { ...state, attempts: [...state.attempts, event as unknown as Attempt] };
     case "tuned":
