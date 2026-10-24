@@ -164,10 +164,10 @@ def tune_site(
                 research.append(guidance)
                 if on_research:
                     on_research(site, guidance)
-            if guidance is None:
-                variant = engineer(site, model, variant, wrapped.sample, failures)
-            else:
-                variant = engineer(site, model, variant, wrapped.sample, failures, guidance=guidance)
+            extra = {} if guidance is None else {"guidance": guidance}
+            if len(system_prompts) > 1:
+                extra["systems"] = list(system_prompts)  # the addendum goes into each prompt the call sends
+            variant = engineer(site, model, variant, wrapped.sample, failures, **extra)
     return finish(None)
 
 

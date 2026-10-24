@@ -46,6 +46,55 @@ class RecordingEngineer:
         return self.proposal
 
 
+TWO_PROMPTS_APP = '''import json
+
+from openai import OpenAI
+
+client = OpenAI(api_key="test")
+PROMPTS = {"security": "Review the diff for security holes.", "correctness": "Review the diff for logic bugs."}
+
+
+def review(mode, diff):
+    messages = [{"role": "system", "content": PROMPTS[mode]}, {"role": "user", "content": diff}]
+    return json.loads(client.chat.completions.create(model="gpt-5", messages=messages).choices[0].message.content)
+'''
+
+
+def test_engineer_sees_every_prompt_a_call_sends(tmp_path, monkeypatch):
+    """One call, a prompt per pass (like preflight's review helper): the addendum lands in both, so the engineer sees both."""
+    (tmp_path / "twoprompts.py").write_text(TWO_PROMPTS_APP)
+    (tmp_path / "review.jsonl").write_text("".join(
+        json.dumps({"id": f"c{i}", "input": {"mode": ("security", "correctness")[i % 2], "diff": f"+x = {i}"}, "expected": {"verdict": "ok"}}) + "\n"
+        for i in range(8)
+    ))
+    (tmp_path / "openport.evals.yaml").write_text(
+        "target: twoprompts\nsource_root: .\ncall_sites:\n"
+        "  - {id: review, title: Diff review, file: twoprompts.py, module: twoprompts, function: review, client_attr: client,\n"
+        "     sdk: openai, original_model: gpt-5, dataset: review.jsonl, grader: {type: fields, fields: [verdict]}}\n"
+    )
+    monkeypatch.setattr("sys.path", list(__import__("sys").path))
+    spec = load_spec(tmp_path)
+    calls = []
+
+    def engineer(site, model, variant, sample, failures, **extra):
+        calls.append(extra)
+        return Variant(system_addendum="Answer with the JSON object only.")
+
+    fake = FakeTokenFactory(lambda request: completion(content=json.dumps({"verdict": "flagged"})))
+    tune_site(spec, spec.call_sites[0], MODELS, client=fake, engineer=engineer, tiers=("nano",), rounds=2)
+    assert calls == [{"systems": ["Review the diff for security holes.", "Review the diff for logic bugs."]}]
+    __import__("sys").modules.pop("twoprompts", None)
+
+
+def test_engineer_prompt_shows_each_system_prompt():
+    from openport.tune.engineer import describe_prompts
+
+    assert describe_prompts(["Classify."]) == "The app's system prompt:\n<<<\nClassify.\n>>>"
+    both = describe_prompts(["Review for security.", "Review for logic bugs."])
+    assert "2 different system prompts" in both and "appended to every one of them" in both
+    assert "System prompt 1:\n<<<\nReview for security.\n>>>" in both and "System prompt 2:\n<<<\nReview for logic bugs.\n>>>" in both
+
+
 def test_apply_variant():
     request = {"messages": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}], "max_tokens": 600}
     tuned = apply_variant(Variant(reasoning=False, system_addendum="JSON only.", max_tokens=2000, temperature=0.2), request)

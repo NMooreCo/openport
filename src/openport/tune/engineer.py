@@ -14,7 +14,7 @@ from ..runtime.openport_llm import UsageMeter
 from .research import Guidance
 from .variant import Variant
 
-# engineer(site, model, variant, sample_request, failures, guidance=None) -> next variant
+# engineer(site, model, variant, sample_request, failures, guidance=None, systems=None) -> next variant
 Engineer = Callable[..., Variant]
 
 SYSTEM = """You tune LLM calls so an app keeps working after it moves from OpenAI or Anthropic models to NVIDIA Nemotron on Nebius Token Factory.
@@ -47,6 +47,17 @@ def _system_prompt(sample: dict | None) -> str:
             content = message.get("content")
             return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
     return "(no system prompt)"
+
+
+def describe_prompts(prompts: list[str]) -> str:
+    if len(prompts) == 1:
+        return f"The app's system prompt:\n<<<\n{_clip(prompts[0], 4000)}\n>>>"
+    # One call can send several prompts, like a review helper that loads a different prompt file per pass.
+    shown = "\n".join(f"System prompt {i}:\n<<<\n{_clip(prompt, 3000)}\n>>>" for i, prompt in enumerate(prompts, 1))
+    return (
+        f"This call runs with {len(prompts)} different system prompts, and system_addendum is appended to every one of them. "
+        f"Write it so it's right for each: rules that hold for all of them, never one prompt's task added to another.\n{shown}"
+    )
 
 
 def describe_failures(failures: list[tuple[dict, CaseResult]], limit: int = 8) -> str:
@@ -94,13 +105,14 @@ def make_engineer(client: OpenAI | None = None, model: str | None = None, meter:
     client = client or tokenfactory.client()
     model = model or tokenfactory.tiers()["ultra"]
 
-    def engineer(site: CallSite, target_model: str, variant: Variant, sample: dict | None, failures, guidance: Guidance | None = None) -> Variant:
+    def engineer(site: CallSite, target_model: str, variant: Variant, sample: dict | None, failures,
+                 guidance: Guidance | None = None, systems: list[str] | None = None) -> Variant:
         settings = {k: v for k, v in variant.to_dict().items() if k != "sources"}
         prompt = (
             f"Call site: {site.title} ({site.sdk} SDK, {site.output} output), moving off {site.original_model}.\n"
             f"Running on: {target_model}\n"
             f"Current settings: {json.dumps(settings)}\n\n"
-            f"The app's system prompt:\n<<<\n{_clip(_system_prompt(sample), 4000)}\n>>>\n\n"
+            f"{describe_prompts(systems or [_system_prompt(sample)])}\n\n"
             f"Failing cases:\n{describe_failures(failures)}"
         )
         if guidance is not None and guidance.sources:
