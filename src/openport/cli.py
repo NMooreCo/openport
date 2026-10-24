@@ -334,10 +334,11 @@ def tune(
 
 
 def _tune_on_jobs(target: Path, sites: str | None, tune_flags: list[str], image, platform, preset, secret_specs: list[str], registry_secret) -> None:
-    from .jobs import JobSettings, tune_on_jobs
+    from .jobs import JobSettings, nebius_cli, tune_on_jobs
 
-    if shutil.which("nebius") is None:
-        _fail("--jobs needs the nebius CLI, signed in to your Nebius AI Cloud project: https://docs.nebius.com/cli/install")
+    if shutil.which(nebius_cli()[0]) is None:
+        _fail("--jobs needs the nebius CLI, signed in to your Nebius AI Cloud project: https://docs.nebius.com/cli/install "
+              "(on Windows, install it in WSL and set OPENPORT_NEBIUS_CLI='wsl -e /home/<you>/.nebius/bin/nebius')")
     secrets: dict[str, str] = {}
     for item in secret_specs:
         env, sep, selector = item.partition("=")

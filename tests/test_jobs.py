@@ -11,6 +11,13 @@ from openport import config
 from openport.jobs import JobSettings, create_command, emit, job_state, main, parse_result, tune_on_jobs
 
 SUPPORTDESK = Path(__file__).parents[1] / "examples" / "supportdesk"
+
+
+@pytest.fixture(autouse=True)
+def plain_cli(monkeypatch):
+    monkeypatch.delenv("OPENPORT_NEBIUS_CLI", raising=False)
+
+
 SETTINGS = JobSettings(image="cr.eu-north1.nebius.cloud/reg/openport:dev", platform="cpu-d3", preset="4vcpu-16gb",
                        secrets={"NEBIUS_API_KEY": "openport-keys", "TAVILY_API_KEY": "openport-keys"})
 
@@ -56,6 +63,12 @@ def test_create_command_runs_on_cpu_with_secrets():
     assert shlex.split(command[command.index("--args") + 1]) == ["tune-site", "examples/supportdesk", "triage", "--target", "0.9"]
     assert "NEBIUS_API_KEY=openport-keys" in command and "--env" not in command  # keys only ever as secret references
     assert "--async" in command and "jsonpath={.resource_id}" in command
+
+
+def test_cli_prefix_reaches_the_cli_in_wsl(monkeypatch):
+    monkeypatch.setenv("OPENPORT_NEBIUS_CLI", "wsl -e /home/nick/.nebius/bin/nebius")
+    command = create_command("n", SETTINGS, "examples/supportdesk", "triage", [])
+    assert command[:6] == ["wsl", "-e", "/home/nick/.nebius/bin/nebius", "ai", "job", "create"]
 
 
 def test_settings_refuse_gpu_platforms_and_missing_keys():

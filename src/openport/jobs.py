@@ -9,6 +9,7 @@ writes. Keys reach the jobs as MysteryBox secrets (`--env-secret`), never as pla
 
 import base64
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -32,6 +33,12 @@ Run = Callable[[list[str]], str]
 
 def _run(command: list[str]) -> str:
     return subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8").stdout
+
+
+def nebius_cli() -> list[str]:
+    """The nebius CLI command. The CLI runs on Linux and macOS; on Windows, point OPENPORT_NEBIUS_CLI at it in WSL,
+    e.g. `wsl -e /home/you/.nebius/bin/nebius` (`-e` passes arguments through without a shell re-splitting them)."""
+    return shlex.split(os.getenv("OPENPORT_NEBIUS_CLI", "nebius"))
 
 
 # --- inside a job ---------------------------------------------------------------------------------
@@ -131,7 +138,7 @@ def job_name(target: str, site_id: str, stamp: str) -> str:
 
 def create_command(name: str, settings: JobSettings, spec: str, site_id: str, tune_flags: list[str]) -> list[str]:
     command = [
-        "nebius", "ai", "job", "create", "--name", name, "--image", settings.image,
+        *nebius_cli(), "ai", "job", "create", "--name", name, "--image", settings.image,
         "--container-command", "openport-job",
         "--args", " ".join(shlex.quote(arg) for arg in ["tune-site", spec, site_id, *tune_flags]),
         "--platform", settings.platform, "--preset", settings.preset, "--timeout", settings.timeout,
@@ -183,7 +190,7 @@ def tune_on_jobs(
         for job in jobs:
             if job.state in TERMINAL:
                 continue
-            state, detail = job_state(run(["nebius", "ai", "job", "get", job.job_id, "--format", "json"]))
+            state, detail = job_state(run([*nebius_cli(), "ai", "job", "get", job.job_id, "--format", "json"]))
             if state != job.state:
                 job.state, job.detail = state, detail
                 if on_event:
@@ -201,7 +208,7 @@ def tune_on_jobs(
     for job in jobs:
         if job.state != "COMPLETED":
             continue
-        out = parse_result(run(["nebius", "ai", "job", "logs", job.job_id]))
+        out = parse_result(run([*nebius_cli(), "ai", "job", "logs", job.job_id]))
         report = out["report"]
         header = header or {key: report.get(key) for key in ("target_pass_rate", "models")}
         results += report["results"]
