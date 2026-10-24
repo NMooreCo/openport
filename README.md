@@ -108,7 +108,7 @@ The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vu
 
 1. `openport upgrade` reads the repo's lockfiles and asks [OSV.dev](https://osv.dev) which installed versions are vulnerable.
 2. For each package it picks the release that fixes the most advisories while being **at least a week old**, so a brand-new malicious release can't be auto-selected. Advisories with no fix yet are reported, not ignored.
-3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container (pip and pytest, uv, or `npm test`, whichever the project uses). Pins in `requirements.txt` are edited; `uv.lock` and `package-lock.json` are updated by uv and npm in the container, resolving nothing newer than the same age cutoff, so the guard covers every package the bump pulls in.
+3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container (pip and pytest, uv, Poetry, `npm test` or `pnpm test`, whichever the project uses). Pins in `requirements.txt` are edited; `uv.lock`, `poetry.lock`, `package-lock.json` and `pnpm-lock.yaml` are updated by their own package manager in the container, resolving nothing newer than the same age cutoff, so the guard covers every package the bump pulls in. Before a new lockfile is kept, every version it adds is checked against the registry's release date as well.
 4. If the upgrade breaks them, Tavily reads the package's own changelog and the advisory, and Nemotron Super fixes the application code (never the tests) until they pass.
 5. It writes the diff and a PR description with the advisories, the version chosen and why, the code changes with their sources, and the test results.
 

@@ -1,10 +1,15 @@
 """Tests for `openport upgrade --apply`: bumping pins, exact edits, tests in a container, Super's fixes, the PR."""
 
 import json
+import re
+import shlex
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
+import yaml
 
 from openport.upgrade import Upgrade
 from openport.upgrade.apply import Edit, apply_bumps, apply_edits, bump_requirements, copy_repo, diff
@@ -105,6 +110,9 @@ def test_a_proven_upgrade_opens_from_the_original_git_plus_the_changed_files(tmp
     assert plan.commands[-1][:7] == ["gh", "pr", "create", "--repo", "me/authkit", "--head", "openport/security-upgrades"]
     assert github._safe(["git", "add", "-A"])[1:5] == ["-c", f"core.hooksPath={github._no_hooks()}", "-c", "core.fsmonitor=false"]
     assert github._safe(["gh", "pr", "create"]) == ["gh", "pr", "create"]
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=pr, check=True)
+    with pytest.raises(ValueError, match="no origin remote"):  # said plainly, not as a failed git command
+        github.plan_pr(pr, "Upgrade vulnerable dependencies", tmp_path / "body.md", "me", branch=github.UPGRADE_BRANCH)
 
 
 def test_the_tests_never_run_in_the_upgrade_itself(tmp_path):
@@ -155,8 +163,79 @@ def test_lockfiles_are_bumped_by_their_package_manager_with_the_age_cutoff(tmp_p
     assert npm.image.startswith("node:") and npm.packages == ["jsonwebtoken", "semver"]
     lock_only = "npm install --package-lock-only --ignore-scripts --no-audit --no-fund --before=2026-10-17T00:00:00Z"
     assert npm.command == f"{lock_only} jsonwebtoken@9.0.0 && {lock_only}"  # direct: installed; transitive: an override
-    package = (tmp_path / "package.json").read_bytes()
-    assert b'\r\n    "overrides": {\r\n        "semver": "5.7.2"\r\n    }\r\n}\r\n' in package  # its indentation and line endings
+    assert b"overrides" not in (tmp_path / "package.json").read_bytes()  # made in the scratch copy, not here
+    assert '\r\n    "overrides": {\r\n        "semver": "5.7.2"\r\n    }\r\n}\r\n' in npm.writes["package.json"]  # its indentation and line endings
+
+
+def test_poetry_pins_each_package_and_keeps_pyproject_where_it_already_allows_the_new_version(tmp_path):
+    from openport.upgrade.bump import bump_steps, poetry_groups
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.poetry.dependencies]\npython = "^3.12"\nPyJWT = "^1.7.1"\n\n[tool.poetry.group.dev.dependencies]\npytest = "^8.0"\n')
+    step, = bump_steps(tmp_path, {"poetry.lock": {"PyJWT": "2.14.0", "pytest": "8.3.5", "urllib3": "2.5.0"}}, CUTOFF)
+    assert step.image.startswith("python:") and step.files == ("pyproject.toml",) and step.writes == {}
+    assert "poetry==2.5.1" in step.command and "export POETRY_SOLVER_MIN_RELEASE_AGE=" in step.command
+    bumps, groups = shlex.split(step.command)[-2:]
+    assert json.loads(bumps) == {"PyJWT": "2.14.0", "pytest": "8.3.5", "urllib3": "2.5.0"}
+    assert json.loads(groups) == {"pyjwt": "main", "pytest": "dev"}  # urllib3 isn't declared: pinned in main for the moment
+    pep621 = {"project": {"dependencies": ["requests[socks] (>=2.31,<3)", "PyJWT>=1.7"]}}
+    assert poetry_groups(pep621) == {"requests": "main", "pyjwt": "main"}
+
+
+def test_pnpm_runs_the_repos_own_pnpm_with_the_age_guard(tmp_path):
+    from openport.upgrade.bump import bump_steps
+    from openport.upgrade.testrun import PNPM_VERSION, pnpm_version
+
+    package = {"packageManager": "pnpm@10.18.0+sha512.abc", "dependencies": {"jsonwebtoken": "^8.5.1"}, "devDependencies": {"mocha": "^9.0.0"}}
+    (tmp_path / "package.json").write_text(json.dumps(package, indent=2))
+    (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+    step, = bump_steps(tmp_path, {"pnpm-lock.yaml": {"jsonwebtoken": "9.0.0", "mocha": "10.1.0", "semver": "7.5.4"}}, CUTOFF)
+    install, direct, dev = step.command.split(" && ")
+    assert install.endswith("pnpm@10.18.0")  # the version package.json names
+    flags = r"pnpm add --lockfile-only --ignore-scripts --config\.minimum-release-age=\d+"
+    assert re.fullmatch(rf"{flags} jsonwebtoken@9\.0\.0", direct) and re.fullmatch(rf"{flags} --save-dev mocha@10\.1\.0", dev)
+    assert json.loads(step.writes["package.json"])["pnpm"]["overrides"] == {"semver": "7.5.4"}  # transitive: an override
+    assert step.files == ("package.json", "pnpm-workspace.yaml")
+    del package["packageManager"]
+    (tmp_path / "package.json").write_text(json.dumps(package))
+    assert pnpm_version(tmp_path) == PNPM_VERSION  # else one that writes the lockfile's format
+    (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: 5.4\n")
+    unknown, = bump_steps(tmp_path, {"pnpm-lock.yaml": {"semver": "7.5.4"}}, CUTOFF)
+    assert unknown.command.startswith("echo ") and unknown.command.endswith("&& exit 1") and "which pnpm" in unknown.command
+
+
+def test_pnpm_11_keeps_overrides_in_its_workspace_file(tmp_path):
+    from openport.upgrade.bump import bump_steps
+
+    (tmp_path / "package.json").write_text('{"packageManager": "pnpm@11.2.0", "dependencies": {"jsonwebtoken": "^9.0.0"}}')
+    (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+    refused, = bump_steps(tmp_path, {"pnpm-lock.yaml": {"semver": "7.5.4"}}, CUTOFF)  # no pnpm-workspace.yaml to put it in
+    assert "pnpm-workspace.yaml by hand" in refused.command and refused.command.endswith("exit 1")
+    (tmp_path / "pnpm-workspace.yaml").write_bytes(b"packages:\n  - .\noverrides:\n    left-pad: 1.3.0\n")
+    step, = bump_steps(tmp_path, {"pnpm-lock.yaml": {"semver": "7.5.4", "jsonwebtoken": "9.0.2"}}, CUTOFF)
+    assert step.writes == {"pnpm-workspace.yaml": 'packages:\n  - .\noverrides:\n    "semver": "7.5.4"\n    left-pad: 1.3.0\n'}
+    assert yaml.safe_load(step.writes["pnpm-workspace.yaml"])["overrides"] == {"semver": "7.5.4", "left-pad": "1.3.0"}
+    assert step.command.endswith(" -w jsonwebtoken@9.0.2")  # adding at a workspace's root says so
+
+
+def test_every_version_a_bump_adds_must_be_older_than_the_cutoff():
+    from openport.upgrade.bump import added_versions, too_new
+
+    before = "lockfileVersion: '9.0'\npackages:\n  jsonwebtoken@8.5.1:\n    resolution: {}\n  ms@2.1.3:\n    resolution: {}\n"
+    after = before.replace("jsonwebtoken@8.5.1", "jsonwebtoken@9.0.0") + "  semver@7.8.5:\n    resolution: {}\n  left-pad@1.3.0:\n    resolution: {}\n"
+    added = added_versions("pnpm-lock.yaml", before, after)
+    assert [(dep.name, dep.version) for dep in added] == [("jsonwebtoken", "9.0.0"), ("semver", "7.8.5"), ("left-pad", "1.3.0")]
+    dates = {"jsonwebtoken": {"9.0.0": datetime(2022, 12, 21, tzinfo=timezone.utc)}, "semver": {"7.8.5": datetime(2026, 10, 22, tzinfo=timezone.utc)}}
+    calls = []
+
+    def releases(dep):
+        calls.append(dep.name)
+        if dep.name == "left-pad":
+            raise OSError("registry unreachable")
+        return dates[dep.name]
+
+    assert too_new(added, CUTOFF, releases) == ["semver 7.8.5 (released 2026-10-22)", "left-pad 1.3.0 (no release date)"]
+    assert sorted(calls) == ["jsonwebtoken", "left-pad", "semver"]  # one registry call per package
 
 
 def test_tests_run_the_projects_own_way(tmp_path):
@@ -172,6 +251,17 @@ def test_tests_run_the_projects_own_way(tmp_path):
     assert summarize("ℹ tests 5\nℹ pass 4\nℹ fail 1\nℹ duration_ms 52") == "1 failed, 4 passed"  # node --test
     assert summarize("# pass 5\n# fail 0") == "5 passed"
     assert summarize("....\n4 failed, 1 passed in 0.21s\n") == "4 failed, 1 passed in 0.21s"
+
+
+def test_poetry_and_pnpm_projects_test_their_own_way(tmp_path):
+    from openport.upgrade.testrun import PNPM_VERSION, POETRY_TESTS, test_setups
+
+    (tmp_path / "poetry.lock").write_text("")
+    assert test_setups(tmp_path, {"PyPI"})[0][2] == POETRY_TESTS and "poetry install" in POETRY_TESTS  # it refuses a stale lock
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "node --test"}}')
+    (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+    name, _, command = test_setups(tmp_path, {"npm"})[0]
+    assert name == "pnpm test" and command.endswith(f"pnpm@{PNPM_VERSION} && pnpm install --frozen-lockfile && pnpm test")
 
 
 def test_every_suite_must_pass(tmp_path):
@@ -214,6 +304,36 @@ def test_a_lockfile_bump_that_fails_leaves_those_packages_out(tmp_path):
     assert failing_npm.upgraded == [] and failing_npm.after_bump is None
     assert [why for _, why in failing_npm.skipped] == ["package-lock.json couldn't be updated: ERESOLVE could not resolve"] * 2
     assert (tmp_path / "out2" / "package.json").read_bytes() == (root / "package.json").read_bytes()  # the override is undone
+
+
+def test_a_bump_that_pulls_in_a_brand_new_release_is_turned_away(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[tool.poetry.dependencies]\npython = "^3.12"\nrequests = "2.31.0"\n')
+    (root / "poetry.lock").write_text('[[package]]\nname = "requests"\nversion = "2.31.0"\n')
+    requests = upgrade("requests", "2.31.0", "2.33.0", source="poetry.lock")
+
+    def container(folder, image, command):  # what Poetry writes: the bump, and a dependency it pulled in
+        (folder / "pyproject.toml").write_text('[tool.poetry.dependencies]\npython = "^3.12"\nrequests = "2.33.0"\n')
+        (folder / "poetry.lock").write_text('[[package]]\nname = "requests"\nversion = "2.33.0"\n\n'
+                                           '[[package]]\nname = "charset-normalizer"\nversion = "9.9.9"\n')
+        return TestRun(True, 0, "", "", 1.0)
+
+    dates = {"requests": {"2.33.0": datetime(2026, 3, 25, tzinfo=timezone.utc)}, "charset-normalizer": {"9.9.9": datetime.now(timezone.utc)}}
+    run = upgrade_repo(root, tmp_path / "out", plans=[requests], run_tests=lambda folder: passing(), run_container=container,
+                       release_dates=lambda dep: dates[dep.name])
+    assert run.upgraded == [] and run.after_bump is None
+    assert run.skipped[0][1].startswith("poetry.lock couldn't be updated: it would add releases under 7 days old: charset-normalizer 9.9.9")
+    assert (tmp_path / "out" / "poetry.lock").read_bytes() == (root / "poetry.lock").read_bytes()  # nothing came back
+
+    dates["charset-normalizer"]["9.9.9"] = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    run = upgrade_repo(root, tmp_path / "out2", plans=[requests], run_tests=lambda folder: passing(), run_container=container,
+                       release_dates=lambda dep: dates[dep.name])
+    assert run.proven and run.changed == ["poetry.lock", "pyproject.toml"]
+    assert 'requests = "2.33.0"' in (tmp_path / "out2" / "pyproject.toml").read_text()
+    body = render(run)  # the PR says which dependency files moved, and how
+    assert "- `poetry.lock`: rewritten by Poetry\n- `pyproject.toml`: a version constraint raised where the old one ruled out the fix" in body
+    assert "held back releases under 7 days old, and every version they add was checked" in body
 
 
 def test_the_diff_shows_only_the_repos_own_files(tmp_path):

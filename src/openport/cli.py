@@ -587,7 +587,7 @@ def upgrade(
     apply: bool = typer.Option(False, "--apply", help="Upgrade a copy, run the repo's tests before and after in Docker, and have Super fix what breaks"),
     rounds: int = typer.Option(3, help="With --apply: fix attempts before giving up"),
     test_image: str | None = typer.Option(None, help="With --apply: container image for the tests (default: Python or Node, from the project)"),
-    test_command: str | None = typer.Option(None, help="With --apply: shell command that installs and runs the tests (default: pip, uv or npm)"),
+    test_command: str | None = typer.Option(None, help="With --apply: shell command that installs and runs the tests (default: pip, uv, Poetry, npm or pnpm)"),
     out: Path | None = typer.Option(None, help="With --apply: where to write the upgraded copy (default: runs/upgrades/<name>)"),
     open_pr: bool = typer.Option(False, "--open", help="With --apply: if the tests prove the upgrade, push it to your fork and open the PR there"),
     upstream: bool = typer.Option(False, help="With --open: propose the PR to the original repo instead of your fork"),

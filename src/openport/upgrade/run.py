@@ -19,12 +19,14 @@ from pathlib import Path
 from typing import Callable
 
 from . import Upgrade, plan_upgrades, read_lockfiles
-from .apply import Edit, apply_bumps, apply_edits, copy_repo, diff, remove_tree
-from .bump import LOCKFILES, bump_steps
+from .apply import Edit, _read, _write, apply_bumps, apply_edits, copy_repo, diff, remove_tree
+from .bump import LOCKFILES, added_versions, bump_steps, too_new
 from .fix import source_files
+from .lockfiles import Dependency
+from .registry import fetch_releases
 from .testrun import TestRun, run_in_container
 
-# Pinned requirements are edited in place; uv.lock and package-lock.json are rewritten by uv and npm (bump.py).
+# Pinned requirements are edited in place; the lockfiles are rewritten by their own package managers (bump.py).
 BUMPABLE_SOURCES = ("requirements.txt", *LOCKFILES)
 
 
@@ -72,7 +74,8 @@ def upgrade_repo(
     researcher: Callable[[Upgrade], list[dict]] | None = None,
     fixer=None,
     on_event: Callable[[str, object], None] | None = None,
-    run_container: Callable[[Path, str, str], TestRun] = run_in_container,  # runs uv or npm to bump a lockfile
+    run_container: Callable[[Path, str, str], TestRun] = run_in_container,  # runs a package manager to bump a lockfile
+    release_dates: Callable[[Dependency], dict[str, datetime]] = fetch_releases,  # checks what a bump adds
 ) -> UpgradeRun:
     emit = on_event or (lambda kind, data: None)
     plans = plans if plans is not None else plan_upgrades(read_lockfiles(root), min_age_days=min_age_days)
@@ -103,7 +106,7 @@ def upgrade_repo(
         return run_tests(scratch_copy())  # never `out` itself: the tests run the repo's code
 
     try:
-        return _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container)
+        return _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container, release_dates)
     finally:
         for folder in set(scratches):
             try:
@@ -112,7 +115,7 @@ def upgrade_repo(
                 pass
 
 
-def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container) -> UpgradeRun:
+def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container, release_dates) -> UpgradeRun:
     run.before = tested()
     emit("before", run.before)
     run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in run.upgraded if p.dep.source == "requirements.txt"})
@@ -121,23 +124,27 @@ def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researc
         if p.dep.source in LOCKFILES:
             locked.setdefault(p.dep.source, {})[p.dep.name] = p.target.version
     cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
-    package_json = Path(out) / "package.json"
-    original_package = package_json.read_bytes() if package_json.is_file() else None  # npm's step may add overrides
     for step in bump_steps(out, locked, cutoff):
         work = scratch_copy()
+        for name, text in step.writes.items():  # e.g. overrides; a failed bump leaves no half-made change behind
+            _write(work / name, text)
         result = run_container(work, step.image, step.command)
-        touched = [step.lockfile] + (["package.json"] if step.lockfile == "package-lock.json" else [])
-        if result.ok:
+        problem = None if result.ok else result.summary.removeprefix("error: ") or "the package manager failed"
+        if problem is None:
+            before, after = (_read(f / step.lockfile) if (f / step.lockfile).is_file() else "" for f in (Path(out), work))
+            young = too_new(added_versions(step.lockfile, before, after), cutoff, release_dates)
+            if young:
+                more = f" and {len(young) - 3} more" if len(young) > 3 else ""
+                problem = f"it would add releases under {min_age_days} days old: {', '.join(young[:3])}{more}"
+        if problem is None:
+            touched = [name for name in (step.lockfile, *step.files) if (work / name).is_file()]
             for name in touched:  # only the files the package manager is there to change come back
-                if (work / name).is_file():
-                    shutil.copy2(work / name, Path(out) / name)
+                shutil.copy2(work / name, Path(out) / name)
             run.changed += touched
             continue
-        if step.lockfile == "package-lock.json" and original_package is not None:
-            package_json.write_bytes(original_package)  # a failed bump leaves no half-made change behind
         failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
         run.upgraded = [p for p in run.upgraded if p not in failed]
-        run.skipped += [(p, f"{step.lockfile} couldn't be updated: {result.summary or 'the package manager failed'}") for p in failed]
+        run.skipped += [(p, f"{step.lockfile} couldn't be updated: {problem}") for p in failed]
     emit("bumped", run.upgraded)
     if not run.upgraded:
         return run

@@ -1,9 +1,9 @@
 """Run a repo's own test suite in a throwaway container, before and after an upgrade.
 
 Fetched code is only ever run inside a container with just a scratch copy of the upgrade mounted,
-never on the host. The command suits the project: pip and pytest for a requirements file, uv for a
-uv project, npm for a Node project with a test script; a repo upgraded in both ecosystems runs both
-suites, and every one must pass. Pass another image and command for other stacks.
+never on the host. The command suits the project: pip and pytest for a requirements file, uv or Poetry
+for their projects, npm or pnpm for a Node project with a test script; a repo upgraded in both
+ecosystems runs both suites, and every one must pass. Pass another image and command for other stacks.
 """
 
 import json
@@ -23,8 +23,18 @@ PYTHON_TESTS = (
 )
 # --locked fails if uv.lock is stale for pyproject.toml, as `uv sync --locked` in the repo's own CI would.
 UV_TESTS = f"{UV_INSTALL} && uv sync --locked -q && uv run --locked --with pytest pytest -q -p no:cacheprovider"
+POETRY_INSTALL = "pip install -q --disable-pip-version-check --root-user-action=ignore poetry==2.5.1"  # 2.4 added solver.min-release-age
+# `poetry install` refuses a poetry.lock that's stale for pyproject.toml, as the repo's own CI would.
+POETRY_TESTS = (
+    f"{POETRY_INSTALL} && poetry install --no-interaction -q"
+    " && poetry run python -m pip install -q --disable-pip-version-check pytest"
+    " && poetry run python -m pytest -q -p no:cacheprovider"
+)
 NODE_TESTS = "npm ci --no-audit --no-fund && npm test"
 NO_NODE_TESTS = "echo 'package.json has no test script, so the npm upgrades can't be proven' && exit 1"
+NO_PNPM = "echo \"error: can't tell which pnpm wrote pnpm-lock.yaml\" && exit 1"
+PNPM_VERSION = "10.34.7"  # for a repo that doesn't name its pnpm; 10.16 added minimumReleaseAge
+PNPM_FOR_LOCKFILE = {"9": PNPM_VERSION, "6": "8.15.9"}  # lockfileVersion's major -> a pnpm that writes that format
 _SUMMARY = re.compile(r"\d+ (?:passed|failed|errors?)\b|no tests ran|error", re.IGNORECASE)
 _NODE_COUNT = re.compile(r"^(?:#|ℹ)\s*(pass|fail)\s+(\d+)\s*$")  # node --test: "# pass 5" (TAP) or "ℹ pass 5" (spec)
 
@@ -52,17 +62,48 @@ def docker_command(folder: Path, image: str, command: str) -> list[str]:
     ]
 
 
+def pnpm_version(folder: Path) -> str | None:
+    """The pnpm a repo uses: the one its package.json names, else one that writes its lockfile's format."""
+    package = Path(folder) / "package.json"
+    manager = json.loads(package.read_text(encoding="utf-8")).get("packageManager") if package.is_file() else None
+    named = re.fullmatch(r"pnpm@(\d+\.\d+\.\d+)(?:\+\S*)?", str(manager or ""))
+    if named:
+        return named[1]
+    lock = Path(folder) / "pnpm-lock.yaml"
+    found = re.search(r"^lockfileVersion:\s*['\"]?(\d+)", lock.read_text(encoding="utf-8", errors="replace"), re.M) if lock.is_file() else None
+    return PNPM_FOR_LOCKFILE.get(found[1]) if found else None
+
+
+def pnpm_install(version: str) -> str:
+    return f"npm install -g --no-audit --no-fund --loglevel=error pnpm@{version}"
+
+
 def test_setups(folder: Path, ecosystems: set[str]) -> list[tuple[str, str, str]]:
-    """(name, image, command) for each test suite the upgraded ecosystems need: npm's for npm packages,
-    Python's for PyPI ones. An npm project without a test script can't prove its upgrade."""
+    """(name, image, command) for each test suite the upgraded ecosystems need: npm's or pnpm's for npm
+    packages, Python's for PyPI ones. A Node project without a test script can't prove its upgrade."""
+    folder = Path(folder)
     setups = []
     if "npm" in ecosystems:
-        package = Path(folder) / "package.json"
+        package = folder / "package.json"
         scripts = (json.loads(package.read_text(encoding="utf-8")).get("scripts") or {}) if package.is_file() else {}
-        setups.append(("npm test", NODE_IMAGE, NODE_TESTS if scripts.get("test") else NO_NODE_TESTS))
+        pnpm = (folder / "pnpm-lock.yaml").is_file() and not (folder / "package-lock.json").is_file()
+        version = pnpm_version(folder) if pnpm else None
+        if not scripts.get("test"):
+            command = NO_NODE_TESTS
+        elif pnpm:  # --frozen-lockfile fails if pnpm-lock.yaml is stale for package.json, as in CI
+            command = f"{pnpm_install(version)} && pnpm install --frozen-lockfile && pnpm test" if version else NO_PNPM
+        else:
+            command = NODE_TESTS
+        setups.append(("pnpm test" if pnpm else "npm test", NODE_IMAGE, command))
     if "PyPI" in ecosystems or not setups:
-        uv_only = (Path(folder) / "uv.lock").is_file() and not any(Path(folder).glob("requirements*.txt"))
-        setups.append(("pytest", PYTHON_IMAGE, UV_TESTS if uv_only else PYTHON_TESTS))
+        pinned = any(folder.glob("requirements*.txt"))
+        if not pinned and (folder / "poetry.lock").is_file():
+            command = POETRY_TESTS
+        elif not pinned and (folder / "uv.lock").is_file():
+            command = UV_TESTS
+        else:
+            command = PYTHON_TESTS
+        setups.append(("pytest", PYTHON_IMAGE, command))
     return setups
 
 

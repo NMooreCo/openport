@@ -40,7 +40,10 @@ def _run(command: list[str], cwd: Path | None = None) -> str:
 
 
 def origin_repo(ported: Path) -> str:
-    url = _run(["git", "remote", "get-url", "origin"], cwd=ported)
+    try:
+        url = _run(["git", "remote", "get-url", "origin"], cwd=ported)
+    except subprocess.CalledProcessError:
+        raise ValueError("it has no origin remote; push the repo to GitHub first, then run OpenPort on the clone") from None
     match = re.search(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?$", url)
     if match is None:
         raise ValueError(f"origin isn't a GitHub repo: {url}")

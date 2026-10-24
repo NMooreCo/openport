@@ -1,8 +1,24 @@
 """The upgrade PR description: what was vulnerable, which version and why, what changed, and the test proof."""
 
+import re
+
+from .bump import LOCKFILES
 from .run import UpgradeRun
 
 TITLE = "Upgrade vulnerable dependencies"
+CHANGED_BY = {  # each dependency file an upgrade can change, and how
+    "uv.lock": "rewritten by uv",
+    "poetry.lock": "rewritten by Poetry",
+    "package-lock.json": "rewritten by npm",
+    "pnpm-lock.yaml": "rewritten by pnpm",
+    "pyproject.toml": "a version constraint raised where the old one ruled out the fix",
+    "package.json": "the new version ranges, or an override for a package that another one pulls in",
+    "pnpm-workspace.yaml": "an override for a package that another one pulls in",
+}
+
+
+def _changed_by(path: str) -> str | None:
+    return "the pins, edited in place" if re.fullmatch(r"requirements[^/]*\.txt", path) else CHANGED_BY.get(path)
 
 
 def _advisory_link(key: str) -> str:
@@ -31,6 +47,13 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
         fixed = ", ".join(_advisory_link(k) for k in t.fixed[:6]) + (f" and {len(t.fixed) - 6} more" if len(t.fixed) > 6 else "")
         open_ = ", ".join(_advisory_link(k) for k in t.still_open) or "-"
         lines.append(f"| `{up.dep.name}` | {up.dep.version} | **{t.version}** | {t.age_days} days ago | {fixed} | {open_} |")
+
+    files = [(path, why) for path in re.findall(r"^\+\+\+ b/(.+)$", run.diff, re.M) if (why := _changed_by(path))]
+    if files:
+        lines += ["", "### Dependency files", ""] + [f"- `{path}`: {why}" for path, why in files]
+        if any(path in LOCKFILES for path, _ in files):
+            lines += ["", f"Lockfiles were resolved in a throwaway container that held back releases under {min_age_days} days old, "
+                          "and every version they add was checked against its registry's release date."]
 
     lines += ["", "### Tests", "", "| | Result |", "|---|---|",
               f"| Before the upgrade | {_tests(run.before)} |", f"| After the version bump | {_tests(run.after_bump)} |"]
