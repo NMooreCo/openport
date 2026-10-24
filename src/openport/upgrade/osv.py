@@ -1,16 +1,22 @@
 """Ask OSV.dev which installed dependencies are vulnerable, and what versions fix them.
 
 OSV.dev is free and needs no key. Each dependency is queried with its exact version, so every
-advisory returned applies to what's installed. Response parsing is pure (and tested); the HTTP
-call is a thin, injectable wrapper so the rest can be exercised offline.
+advisory returned applies to what's installed. The batch endpoint names the vulnerabilities for up to
+1,000 dependencies per request (a Node app's lockfile often lists thousands), and each distinct record
+is then fetched once. Response parsing is pure (and tested); the HTTP calls are thin, injectable wrappers
+so the rest can be exercised offline.
 """
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .lockfiles import Dependency
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
+OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{id}"
+BATCH = 1000  # OSV's limit per batch request
 
 
 @dataclass
@@ -82,21 +88,57 @@ def dedupe(advisories: list[Advisory]) -> list[Advisory]:
     return list(chosen.values())
 
 
-def _http_fetch(body: dict) -> list[dict]:
+def _http_batch(bodies: list[dict]) -> list[list[str]]:
+    """The vulnerability IDs for each query, in order."""
     import httpx
 
-    response = httpx.post(OSV_QUERY_URL, json=body, timeout=30)
+    found: list[list[str]] = []
+    for start in range(0, len(bodies), BATCH):
+        chunk = bodies[start : start + BATCH]
+        response = httpx.post(OSV_BATCH_URL, json={"queries": chunk}, timeout=60)
+        response.raise_for_status()
+        for body, result in zip(chunk, response.json().get("results", [])):
+            if result.get("next_page_token"):  # more than a page for one version: ask for that one in full
+                found.append([vuln["id"] for vuln in _http_query(body)])
+            else:
+                found.append([vuln["id"] for vuln in result.get("vulns") or []])
+    return found
+
+
+def _http_query(body: dict) -> list[dict]:
+    import httpx
+
+    vulns, token = [], None
+    while True:
+        response = httpx.post(OSV_QUERY_URL, json={**body, **({"page_token": token} if token else {})}, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        vulns += data.get("vulns", []) or []
+        token = data.get("next_page_token")
+        if not token:
+            return vulns
+
+
+def _http_record(vuln_id: str) -> dict:
+    import httpx
+
+    response = httpx.get(OSV_VULN_URL.format(id=vuln_id), timeout=30)
     response.raise_for_status()
-    return response.json().get("vulns", []) or []
+    return response.json()
 
 
-def find_advisories(deps: list[Dependency], fetch=None) -> list[tuple[Dependency, list[Advisory]]]:
-    """For each vulnerable dependency, the advisories against the installed version. `fetch` is injectable."""
-    fetch = fetch or _http_fetch
+def find_advisories(deps: list[Dependency], batch=None, record=None) -> list[tuple[Dependency, list[Advisory]]]:
+    """For each vulnerable dependency, the advisories against the installed version. `batch` (query bodies ->
+    the vulnerability IDs for each) and `record` (ID -> OSV record) are injectable."""
+    batch, record = batch or _http_batch, record or _http_record
+    found = batch([query_body(dep) for dep in deps])
+    unique = sorted({vuln_id for ids in found for vuln_id in ids})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        records = dict(zip(unique, pool.map(record, unique)))
     results: list[tuple[Dependency, list[Advisory]]] = []
-    for dep in deps:
+    for dep, ids in zip(deps, found):
         name = osv_name(dep)
-        advisories = dedupe([a for a in (parse_vuln(vuln, dep.ecosystem, name) for vuln in fetch(query_body(dep))) if a.id])
+        advisories = dedupe([a for a in (parse_vuln(records[i], dep.ecosystem, name) for i in ids) if a.id])
         if advisories:
             results.append((dep, advisories))
     return results

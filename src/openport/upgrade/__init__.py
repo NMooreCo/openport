@@ -5,7 +5,8 @@ query OSV.dev -> pick a safe target version (this module) -> with --apply, bump 
 in a container and have Nemotron Super fix what broke (run.py) -> the PR description (report.py).
 """
 
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime
 
 from .lockfiles import Dependency, read_lockfiles
@@ -19,7 +20,7 @@ class Upgrade:
     dep: Dependency
     advisories: list[Advisory]
     target: Target | None
-    status: str  # "upgrade" | "partial" (some advisories stay open) | "held: fix too new" | "no fix available"
+    status: str  # "upgrade" | "partial" (some advisories stay open) | "held: fix too new" | "held: no release dates" | "no fix available"
 
     @property
     def advisory_ids(self) -> list[str]:
@@ -37,14 +38,27 @@ def plan_upgrades(
     """For each vulnerable dependency, the safe target version (or why none was chosen). Injectable for tests."""
     find = find or find_advisories
     releases_for = releases_for or fetch_releases
+    found = find(deps)
+    fixable = [dep for dep, advisories in found if any(has_fix(a) for a in advisories)]
+
+    def dates(dep: Dependency) -> dict[str, datetime] | None:
+        try:
+            return releases_for(dep)
+        except Exception:  # e.g. a private registry: without dates, no version can be shown to be old enough
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        releases = dict(zip(fixable, pool.map(dates, fixable)))
     plans: list[Upgrade] = []
-    for dep, advisories in find(deps):
-        if not any(has_fix(a) for a in advisories):
+    for dep, advisories in found:
+        if dep not in releases:
             plans.append(Upgrade(dep, advisories, None, "no fix available"))
-            continue
-        target = choose_target(dep.version, advisories, releases_for(dep), min_age_days=min_age_days, now=now)
-        status = "held: fix too new" if target is None else "partial" if target.still_open else "upgrade"
-        plans.append(Upgrade(dep, advisories, target, status))
+        elif releases[dep] is None:
+            plans.append(Upgrade(dep, advisories, None, "held: no release dates"))
+        else:
+            target = choose_target(dep.version, advisories, releases[dep], min_age_days=min_age_days, now=now)
+            status = "held: fix too new" if target is None else "partial" if target.still_open else "upgrade"
+            plans.append(Upgrade(dep, advisories, target, status))
     return plans
 
 

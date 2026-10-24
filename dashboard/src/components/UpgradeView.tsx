@@ -15,6 +15,7 @@ const STATUS: Record<string, { label: string; className: string }> = {
   upgrade: { label: "upgrade", className: "bg-emerald-500/10 text-emerald-300" },
   partial: { label: "partial fix", className: "bg-sky-500/10 text-sky-300" },
   "held: fix too new": { label: "held: fix too new", className: "bg-amber-500/10 text-amber-300" },
+  "held: no release dates": { label: "held: no release dates", className: "bg-amber-500/10 text-amber-300" },
   "no fix available": { label: "no fix yet", className: "bg-red-500/10 text-red-300" },
 };
 const SHOWN_ADVISORIES = 5;

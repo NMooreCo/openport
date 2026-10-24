@@ -610,7 +610,7 @@ def upgrade(
         console.print(f"[green]No known vulnerabilities in {len(deps)} dependencies.[/green]")
         return
 
-    colors = {"upgrade": "green", "partial": "green", "held: fix too new": "yellow", "no fix available": "red"}
+    colors = {"upgrade": "green", "partial": "green", "held: fix too new": "yellow", "held: no release dates": "yellow", "no fix available": "red"}
     table = Table(title=f"Vulnerable dependencies in {root.resolve().name}")
     for column in ("Package", "Installed", "Fix", "Advisories", "Status"):
         table.add_column(column)

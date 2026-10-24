@@ -11,7 +11,7 @@ export interface Package {
   version: string;
   ecosystem: string;
   source: string;
-  status: string; // "upgrade" | "partial" | "held: fix too new" | "no fix available"
+  status: string; // "upgrade" | "partial" | "held: fix too new" | "held: no release dates" | "no fix available"
   target: string | null;
   age_days: number | null;
   fixed: string[];

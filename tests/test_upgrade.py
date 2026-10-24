@@ -147,15 +147,22 @@ def test_find_advisories_returns_only_vulnerable_deps():
     deps = [
         Dependency("requests", "2.20.0", "PyPI", "r"),
         Dependency("safe-pkg", "1.0.0", "PyPI", "r"),
+        Dependency("Requests", "2.19.0", "PyPI", "other"),  # the same flaw again: its record is fetched once
     ]
+    batches, records = [], []
 
-    def fake_fetch(body):
-        return [VULN] if body["package"]["name"] == "requests" else []
+    def fake_batch(bodies):
+        batches.append(len(bodies))
+        return [[VULN["id"]] if body["package"]["name"] == "requests" else [] for body in bodies]
 
-    results = find_advisories(deps, fetch=fake_fetch)
-    assert len(results) == 1
-    dep, advisories = results[0]
-    assert dep.name == "requests" and advisories[0].fixed_versions == ["2.31.0"]
+    def fake_record(vuln_id):
+        records.append(vuln_id)
+        return VULN
+
+    results = find_advisories(deps, batch=fake_batch, record=fake_record)
+    assert batches == [3] and records == [VULN["id"]]  # one request for all of them, then each record once
+    assert [dep.version for dep, _ in results] == ["2.20.0", "2.19.0"]
+    assert results[0][1][0].fixed_versions == ["2.31.0"]
 
 
 # --- safe-version selection --------------------------------------------------
@@ -283,3 +290,16 @@ def test_plan_upgrades_reports_a_status_per_vulnerable_dep():
     status = {p.dep.name: p.status for p in plans}
     assert status == {"requests": "upgrade", "leftpad": "held: fix too new", "nofix": "no fix available"}
     assert next(p for p in plans if p.dep.name == "requests").target.version == "2.31.0"
+
+
+def test_a_registry_that_cant_be_read_holds_only_that_package():
+    requests = Dependency("requests", "2.20.0", "PyPI", "r")
+    private = Dependency("@acme/internal", "1.0.0", "npm", "r")
+
+    def releases_for(dep):
+        if dep is private:
+            raise OSError("404 from the registry")  # e.g. a package from a private registry
+        return {"2.31.0": days_ago(60)}
+
+    plans = plan_upgrades([requests, private], find=lambda deps: [(dep, [adv("2.31.0")]) for dep in deps], releases_for=releases_for, now=NOW)
+    assert [(p.dep.name, p.status) for p in plans] == [("requests", "upgrade"), ("@acme/internal", "held: no release dates")]
