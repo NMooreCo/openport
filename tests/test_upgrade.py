@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from openport.upgrade import lockfiles, osv, plan_upgrades
 from openport.upgrade.lockfiles import Dependency, read_lockfiles
 from openport.upgrade.osv import Advisory, find_advisories, osv_name, parse_vuln, query_body
-from openport.upgrade.registry import parse_npm_releases, parse_pypi_releases
+from openport.upgrade.registry import parse_npm_homes, parse_npm_releases, parse_pypi_homes, parse_pypi_releases
 from openport.upgrade.select import choose_target, fix_floor
 from packaging.version import Version
 
@@ -252,6 +252,15 @@ def test_parse_npm_releases():
     data = {"time": {"created": "2020-01-01T00:00:00Z", "modified": "2024-01-01T00:00:00Z", "1.6.0": "2023-10-01T00:00:00.000Z"}}
     out = parse_npm_releases(data)
     assert set(out) == {"1.6.0"} and out["1.6.0"].year == 2023
+
+
+def test_parse_project_homes():
+    pypi = {"info": {"project_urls": {"Documentation": "https://requests.readthedocs.io", "Source": "https://github.com/psf/requests"},
+                     "home_page": None, "package_url": "https://pypi.org/project/requests/"}}
+    assert parse_pypi_homes(pypi) == ["https://requests.readthedocs.io", "https://github.com/psf/requests", "https://pypi.org/project/requests/"]
+    npm = {"homepage": "https://expressjs.com/", "repository": {"type": "git", "url": "git+https://github.com/expressjs/express.git"}}
+    assert parse_npm_homes(npm) == ["https://expressjs.com/", "https://github.com/expressjs/express.git"]
+    assert parse_pypi_homes({}) == [] and parse_npm_homes({"repository": "github:user/repo"}) == ["github:user/repo"]
 
 
 # --- plan_upgrades orchestration ---------------------------------------------

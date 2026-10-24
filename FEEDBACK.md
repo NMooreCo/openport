@@ -41,6 +41,11 @@ Two kinds of notes are tracked separately and honestly:
 - Found: OpenPort resolves the Nano/Super/Ultra tier IDs from `/v1/models` at runtime instead of hard-coding, which is more robust but means a startup round-trip and some guessing about which listed model is which tier.
 - Suggestion: a documented tier label (or a `family`/`tier` field in the models list) so tooling can map "the small Nemotron" to an ID without heuristics.
 
+**[live] Super's code edits are right, but its copied snippets can be mis-indented.** (Oct 24)
+- `openport upgrade --apply` has Nemotron Super repair code a dependency upgrade broke, as exact search-and-replace edits. Its diagnosis was right every time (PyJWT 2 returns `str` from `encode`; `decode` needs `algorithms=`), and it cited the PyJWT changelog Tavily found. But in one run it copied the line to replace with 8 spaces of indentation where the file has 4, and repeated the same snippet three rounds in a row, so no edit could apply and the upgrade wasn't proven.
+- OpenPort now matches snippets regardless of indentation (only when exactly one place matches) and re-indents the replacement. The same run then proved the upgrade in two rounds.
+- Suggestion: tools built on Nemotron's code edits should expect this. A short note in the docs on reliable edit formats (search/replace with indentation-tolerant matching, or unified diffs) would save others the debugging.
+
 **[live] A plain base-URL swap does leave a real, measurable gap.** (Oct 24)
 - First `openport baseline` on SupportDesk (54 cases): a plain swap to Nemotron scores **74%** on Nano, **83%** on Super, **85%** on Ultra — none at parity with the original closed models.
 - The free-text reply call (strict tone/format rules) collapses on a plain swap: **0% / 25% / 38%** across the tiers, because Nemotron doesn't follow the app's sign-off and no-promises rules without tuning. The JSON/tool calls fare much better (refunds 100%, policy 89–100%).

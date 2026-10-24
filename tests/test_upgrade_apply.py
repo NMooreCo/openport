@@ -11,7 +11,7 @@ from openport.upgrade.fix import make_fixer, parse_fix, source_files
 from openport.upgrade.lockfiles import Dependency
 from openport.upgrade.osv import Advisory
 from openport.upgrade.report import render
-from openport.upgrade.research import research_upgrade
+from openport.upgrade.research import official, research_upgrade
 from openport.upgrade.run import upgrade_repo
 from openport.upgrade.select import Target
 from openport.upgrade.testrun import TestRun, docker_command, run_tests
@@ -57,6 +57,33 @@ def test_edits_must_be_exact_single_and_outside_tests(tmp_path):
     assert "PyJWT==1.7.1" in (AUTHKIT / "requirements.txt").read_text()  # the original is untouched
 
 
+def test_an_edit_copied_with_the_wrong_indentation_lands_at_the_files(tmp_path):
+    copy = copy_repo(AUTHKIT, tmp_path / "copy")
+    # Super copied the line with 8 spaces where the file has 4 (seen live); its replacement keeps its relative indentation.
+    edit = Edit("authkit/tokens.py", '        return token.decode("utf-8")',
+                '        if isinstance(token, bytes):\n            token = token.decode("utf-8")\n        return token')
+    assert apply_edits(copy, [edit]) == ([edit], [])
+    assert ('    token = jwt.encode(payload, SECRET, algorithm="HS256")\n    if isinstance(token, bytes):\n'
+            '        token = token.decode("utf-8")\n    return token\n\n') in (copy / "authkit" / "tokens.py").read_text()
+
+    # A snippet that matches in more than one place once indentation is set aside is still rejected.
+    (copy / "authkit" / "twice.py").write_text("def a():\n    x = 1\n    return x\n\n\nclass B:\n    def b(self):\n        x = 1\n        return x\n")
+    ambiguous = Edit("authkit/twice.py", "  x = 1\n  return x", "  return 1")
+    assert apply_edits(copy, [ambiguous]) == ([], [(ambiguous, "the text to replace appears 0 times, not once")])
+
+
+def test_edits_and_bumps_keep_each_files_line_endings(tmp_path):
+    (tmp_path / "crlf.py").write_bytes(b'def f():\r\n    return "a"\r\n')
+    (tmp_path / "lf.py").write_bytes(b"x = 1\ny = 2\n")
+    (tmp_path / "requirements.txt").write_bytes(b"PyJWT==1.7.1\r\nrequests==2.31.0\r\n")
+    edits = [Edit("crlf.py", 'def f():\n    return "a"', 'def f():\n    return "b"'), Edit("lf.py", "y = 2", "y = 3")]
+    assert apply_edits(tmp_path, edits) == (edits, [])
+    assert (tmp_path / "crlf.py").read_bytes() == b'def f():\r\n    return "b"\r\n'
+    assert (tmp_path / "lf.py").read_bytes() == b"x = 1\ny = 3\n"  # not turned into \r\n on Windows
+    assert apply_bumps(tmp_path, {"PyJWT": "2.14.0"}) == ["requirements.txt"]
+    assert (tmp_path / "requirements.txt").read_bytes() == b"PyJWT==2.14.0\r\nrequests==2.31.0\r\n"
+
+
 def test_tests_run_in_a_container_with_only_the_copy_mounted(tmp_path):
     calls = []
 
@@ -76,11 +103,25 @@ def test_research_keeps_relevant_pages_once():
         {"title": "PyJWT 2.0.0 changelog", "url": "https://pyjwt.readthedocs.io/en/stable/changelog.html", "content": "jwt.encode now returns str. decode requires algorithms."},
         {"title": "Unrelated", "url": "https://github.com/x/y", "content": "nothing to see"},
         {"title": "PyJWT 2.0.0 changelog", "url": "https://pyjwt.readthedocs.io/en/stable/changelog.html", "content": "duplicate"},
+        {"title": "Releases · jpadilla/pyjwt", "url": "https://github.com/jpadilla/pyjwt/releases", "content": "PyJWT 2.14.0"},
+        # Seen live: other projects' bump PRs mention the package but say nothing about what changed.
+        {"title": "Bump pyjwt from 1.7.1 to 2.14.0", "url": "https://github.com/acme/app/pull/42", "content": "Bumps pyjwt"},
+        {"title": "Lookalike", "url": "https://github.com/jpadilla/pyjwt-extras", "content": "pyjwt helpers"},
     ]
     queries = []
-    sources = research_upgrade(upgrade(), search=lambda q, d: queries.append(q) or pages)
-    assert [s["url"] for s in sources] == ["https://pyjwt.readthedocs.io/en/stable/changelog.html"]
+    sources = research_upgrade(upgrade(), search=lambda q, d: queries.append(q) or pages, homes_for=lambda dep: ["https://github.com/jpadilla/pyjwt"])
+    assert [s["url"] for s in sources] == ["https://pyjwt.readthedocs.io/en/stable/changelog.html", "https://github.com/jpadilla/pyjwt/releases"]
     assert "2.14.0" in queries[0] and "CVE-2022-29217" in queries[1]
+
+
+def test_official_pages_are_the_packages_own_or_advisory_databases():
+    homes = ["https://github.com/psf/requests.git", "https://requests.readthedocs.io/", "https://github.com"]
+    assert official("https://GitHub.com/psf/requests/blob/main/HISTORY.md", "requests", homes)
+    assert official("https://requests.readthedocs.io/en/latest/community/updates/", "requests", homes)
+    assert official("https://pypi.org/project/requests/2.33.0/", "requests", [])
+    assert official("https://osv.dev/vulnerability/GHSA-9wx4-h78v-vm56", "requests", [])
+    assert not official("https://github.com/someone/else/pull/1", "requests", homes)  # a bare host is never a home
+    assert official("https://pyjwt.readthedocs.io/en/stable/", "PyJWT", [])  # Read the Docs names projects after the package
 
 
 def test_fixer_sees_failures_and_sources_and_cites_only_real_ones(tmp_path):

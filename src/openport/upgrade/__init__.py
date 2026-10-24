@@ -1,8 +1,8 @@
 """`openport upgrade` (Phase 2): patch vulnerable dependencies and fix what the upgrade breaks, with proof.
 
-Same "prove it, then ship it" engine as the port, aimed at a second kind of PR. Implemented so far:
-read lockfiles -> query OSV.dev -> pick a safe target version -> report (dry run). The code fixes,
-test runs and PR come next and need a live environment.
+Same "prove it, then ship it" engine as the port, aimed at a second kind of PR: read lockfiles ->
+query OSV.dev -> pick a safe target version (this module) -> with --apply, bump a copy, run its tests
+in a container and have Nemotron Super fix what broke (run.py) -> the PR description (report.py).
 """
 
 from dataclasses import dataclass, field

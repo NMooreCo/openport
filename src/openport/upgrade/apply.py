@@ -1,10 +1,12 @@
 """Apply an upgrade to a copy of a repo: bump pinned versions, apply code edits, and diff the result.
 
 The original repo is never modified. Edits are exact search-and-replace: each must match once, stay
-inside the repo, and never touch tests, since the tests are what defines working.
+inside the repo, and never touch tests, since the tests are what defines working. Files keep their
+line endings.
 """
 
 import difflib
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -30,6 +32,50 @@ def copy_repo(root: Path, out: Path) -> Path:
     return out
 
 
+def _read(path: Path) -> str:
+    return path.read_bytes().decode("utf-8")  # keeps \r\n, which read_text would turn into \n
+
+
+def _write(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="")  # as is: no \n -> \r\n on Windows
+
+
+def _margin(lines: list[str]) -> str:
+    """The indentation every non-blank line shares."""
+    return os.path.commonprefix([line[: len(line) - len(line.lstrip())] for line in lines if line.strip()])
+
+
+def _dedent(lines: list[str], margin: str) -> list[str]:
+    return [line[len(margin):] if line.startswith(margin) else line.lstrip() for line in lines]
+
+
+def _replace_reindented(text: str, search: str, replace: str) -> str | None:
+    """Replace `search` where it matches exactly one run of whole lines once indentation is set aside.
+
+    Models often copy a snippet with the wrong indentation; the replacement is re-indented to the file's,
+    keeping its indentation relative to the snippet. None when there's no single such match.
+    """
+    want = search.strip("\r\n").splitlines()
+    if not want:
+        return None
+    key = [line.rstrip() for line in _dedent(want, _margin(want))]
+    lines = text.splitlines(keepends=True)
+    found = []
+    for i in range(len(lines) - len(want) + 1):
+        window = [line.rstrip("\r\n") for line in lines[i:i + len(want)]]
+        margin = _margin(window)
+        if [line.rstrip() for line in _dedent(window, margin)] == key:
+            found.append((i, margin))
+    if len(found) != 1:
+        return None
+    i, margin = found[0]
+    block = lines[i:i + len(want)]
+    newline = "\r\n" if block[0].endswith("\r\n") else "\n"
+    new = [margin + line if line.strip() else "" for line in _dedent(replace.strip("\r\n").splitlines(), _margin(want))]
+    ending = newline if new and block[-1].endswith("\n") else ""
+    return "".join(lines[:i]) + newline.join(new) + ending + "".join(lines[i + len(want):])
+
+
 def _normalized(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
@@ -51,11 +97,11 @@ def apply_bumps(folder: Path, bumps: dict[str, str]) -> list[str]:
     """Bump each package to its version in the folder's requirements files. Returns the files changed."""
     changed = []
     for path in sorted(folder.glob("requirements*.txt")):
-        text = new = path.read_text(encoding="utf-8")
+        text = new = _read(path)
         for name, version in bumps.items():
             new, _ = bump_requirements(new, name, version)
         if new != text:
-            path.write_text(new, encoding="utf-8")
+            _write(path, new)
             changed.append(path.name)
     return changed
 
@@ -73,12 +119,15 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
         elif not path.is_file():
             rejected.append((edit, "no such file"))
         else:
-            text = path.read_text(encoding="utf-8")
-            count = text.count(edit.search) if edit.search else 0
-            if count != 1:
+            text = _read(path)
+            newline = "\r\n" if "\r\n" in text else "\n"
+            search, replace = (s.replace("\r\n", "\n").replace("\n", newline) for s in (edit.search, edit.replace))
+            count = text.count(search) if search else 0
+            new = text.replace(search, replace, 1) if count == 1 else _replace_reindented(text, search, replace) if count == 0 else None
+            if new is None:
                 rejected.append((edit, f"the text to replace appears {count} times, not once"))
                 continue
-            path.write_text(text.replace(edit.search, edit.replace, 1), encoding="utf-8")
+            _write(path, new)
             applied.append(edit)
     return applied, rejected
 

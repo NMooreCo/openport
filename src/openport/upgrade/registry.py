@@ -42,13 +42,34 @@ def parse_npm_releases(data: dict) -> dict[str, datetime]:
     return releases
 
 
-def fetch_releases(dep: Dependency) -> dict[str, datetime]:
+def parse_pypi_homes(data: dict) -> list[str]:
+    """The project's own URLs (repo, docs, homepage) as published on PyPI."""
+    info = data.get("info") or {}
+    urls = [*(info.get("project_urls") or {}).values(), info.get("home_page"), info.get("package_url")]
+    return [url for url in urls if isinstance(url, str) and url.strip()]
+
+
+def parse_npm_homes(data: dict) -> list[str]:
+    repository = data.get("repository")
+    repo = repository.get("url") if isinstance(repository, dict) else repository
+    urls = [data.get("homepage"), repo.removeprefix("git+") if isinstance(repo, str) else None]
+    return [url for url in urls if isinstance(url, str) and url.strip()]
+
+
+def _registry(dep: Dependency) -> dict:
     import httpx
 
-    if dep.ecosystem == "PyPI":
-        response = httpx.get(PYPI_URL.format(name=osv_name(dep)), timeout=30)
-        response.raise_for_status()
-        return parse_pypi_releases(response.json())
-    response = httpx.get(NPM_URL.format(name=dep.name), timeout=30)
+    url = PYPI_URL.format(name=osv_name(dep)) if dep.ecosystem == "PyPI" else NPM_URL.format(name=dep.name)
+    response = httpx.get(url, timeout=30)
     response.raise_for_status()
-    return parse_npm_releases(response.json())
+    return response.json()
+
+
+def fetch_releases(dep: Dependency) -> dict[str, datetime]:
+    data = _registry(dep)
+    return parse_pypi_releases(data) if dep.ecosystem == "PyPI" else parse_npm_releases(data)
+
+
+def fetch_homes(dep: Dependency) -> list[str]:
+    data = _registry(dep)
+    return parse_pypi_homes(data) if dep.ecosystem == "PyPI" else parse_npm_homes(data)
