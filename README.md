@@ -101,7 +101,23 @@ For hosting, the dashboard only accepts its demo presets and public GitHub repos
 
 ## How OpenPort uses NVIDIA Nemotron and Nebius
 
-_To be completed as the build progresses._
+**Token Factory is the inference backend.** OpenPort talks to it with the OpenAI SDK pointed at `https://api.tokenfactory.nebius.com/v1/` and a `NEBIUS_API_KEY`. It resolves the three Nemotron tiers — **Nano**, **Super** and **Ultra** — from the live `/v1/models` catalog at runtime (or from `OPENPORT_MODEL_<TIER>` if you pin them), and reads per-token prices from that same catalog so the cost numbers in every report are the real ones, not estimates.
+
+**The runtime shim makes the swap honest.** OpenAI SDK calls move to Token Factory with just a base URL and model change. Anthropic SDK calls can't — there is no Anthropic-compatible API — so [`openport_llm.py`](src/openport/runtime/openport_llm.py) translates Anthropic Messages calls (system parameter, content blocks, tools, `tool_use`/`tool_result`) into Nemotron chat completions at the call boundary, leaving the app's own code untouched.
+
+**OpenPort's own agent uses all three tiers, each for the job it fits** — the same "Ultra for reasoning, Nano/Super for the fast calls" split it recommends to its users:
+
+| Job inside OpenPort | Tier | Where |
+|---|---|---|
+| Reading closed-model prices off providers' pricing pages | Nano | [`pricing.py`](src/openport/pricing.py) |
+| Generating realistic eval inputs when a repo has no logs; default tier for untuned calls | Super | [`capture/generate.py`](src/openport/capture/generate.py) |
+| Rewriting prompts to fix failures (the tuning engineer) | Ultra | [`tune/engineer.py`](src/openport/tune/engineer.py) |
+| Grading free-text outputs (the LLM judge) | Ultra | [`evals/runner.py`](src/openport/evals/runner.py) |
+| Labelling generated eval cases | Ultra | [`capture/generate.py`](src/openport/capture/generate.py) |
+
+**Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
+
+> Still to come: spreading eval runs across **Nebius Serverless Jobs** for parallelism, hosting the dashboard on a **Nebius Serverless Endpoint**, and **Token Factory fine-tuning** (Ultra teaching Nano on high-volume calls). These are in [PLAN.md](PLAN.md) and need live API keys to exercise.
 
 ## License
 
