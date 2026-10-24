@@ -11,6 +11,10 @@ import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from openai import LengthFinishReasonError
+
+from ..evals.runner import CURRENT_CASE
+
 
 @dataclass
 class Variant:
@@ -89,13 +93,15 @@ class VariantClient:
 
     It also records what the app sent before the variant was applied: the first request (`sample`)
     and every distinct system prompt (`systems`). One call site can send several prompts, like a
-    review helper that loads a different prompt file per pass.
+    review helper that loads a different prompt file per pass. And it notes which cases got a reply
+    cut off at the token limit (`cutoffs`), which the app's own output rarely shows.
     """
 
     client: Any
     variant: Variant
     sample: dict | None = field(default=None)
     systems: list[str] = field(default_factory=list)
+    cutoffs: dict[str, str] = field(default_factory=dict)  # case ID -> what was cut off
 
     def __post_init__(self):
         self.chat = _Chat(self)
@@ -108,7 +114,26 @@ class VariantClient:
                 self.sample = request
             if system and system not in self.systems:
                 self.systems.append(system)
-        return getattr(self.client.chat.completions, method_name)(**apply_variant(self.variant, request))
+        sent = apply_variant(self.variant, request)
+        try:
+            response = getattr(self.client.chat.completions, method_name)(**sent)
+        except LengthFinishReasonError:  # parse() refuses a cut-off reply before the app sees it
+            self._note_cutoff(sent)
+            raise
+        choices = getattr(response, "choices", None) or []
+        if choices and getattr(choices[0], "finish_reason", None) == "length":
+            self._note_cutoff(sent)
+        return response
+
+    def _note_cutoff(self, request: dict) -> None:
+        case = CURRENT_CASE.get()
+        if case is None:
+            return
+        limit = request.get("max_completion_tokens") or request.get("max_tokens")
+        thinking = ((request.get("extra_body") or {}).get("chat_template_kwargs") or {}).get("enable_thinking", True)  # on by default
+        budget = f"{limit} tokens" if limit else "the default token limit"
+        with self._lock:
+            self.cutoffs[case] = f"the model's reply was cut off at the token limit ({budget}{', reasoning on' if thinking else ''})"
 
 
 class _Completions:

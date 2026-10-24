@@ -22,7 +22,7 @@ SYSTEM = """You tune LLM calls so an app keeps working after it moves from OpenA
 You can change only these knobs:
 - reasoning: true or false turns Nemotron's built-in reasoning on or off (null keeps the model default, which is on). Reasoning helps multi-step decisions but costs tokens and latency; for short classification or extraction it is often unnecessary.
 - system_addendum: short instructions appended to the app's system prompt. Use it to fix systematic problems: output format, missing fields, ignored rules, extra chatter around JSON.
-- max_tokens: a minimum output budget. Raise it if answers are cut off, especially with reasoning on.
+- max_tokens: a minimum output budget. Raise it if answers are cut off, especially with reasoning on: reasoning tokens count against the budget, so a reply cut off with reasoning on needs a bigger budget, which keeps the reasoning that may be helping.
 - temperature: sampling temperature, or null for the default.
 
 Rules:
@@ -63,7 +63,7 @@ def describe_prompts(prompts: list[str]) -> str:
 def describe_failures(failures: list[tuple[dict, CaseResult]], limit: int = 8) -> str:
     lines = []
     for case, result in failures[:limit]:
-        problems = result.error or "; ".join(result.failures) or "scored below the bar"
+        problems = "; ".join(filter(None, [result.error, *result.failures])) or "scored below the bar"
         lines.append(
             f"- input: {_clip(case['input'])}\n  expected: {_clip(case['expected'], 300)}\n"
             f"  got: {_clip(result.output, 400)}\n  problems: {_clip(problems, 300)}"

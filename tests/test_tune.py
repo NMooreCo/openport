@@ -86,6 +86,25 @@ def test_engineer_sees_every_prompt_a_call_sends(tmp_path, monkeypatch):
     __import__("sys").modules.pop("twoprompts", None)
 
 
+def test_engineer_learns_which_replies_hit_the_token_limit():
+    """A cut-off reply reaches the app as broken JSON; the engineer is told it was the budget, not the format."""
+    def script(request):
+        answer = json.dumps(ANSWERS[request["messages"][-1]["content"]])
+        if (request.get("max_tokens") or 0) >= 4096:
+            return completion(content=answer)
+        return completion(content=answer[:12], finish_reason="length")  # stopped mid-JSON, like reasoning that ate the budget
+
+    problems = []
+
+    def engineer(site, model, variant, sample, failures, **extra):
+        problems.extend(p for _, result in failures for p in result.failures)
+        return Variant(max_tokens=4096)
+
+    result = tune_site(SPEC, TRIAGE, MODELS, client=FakeTokenFactory(script), engineer=engineer, tiers=("nano",))
+    assert result.chosen.variant.max_tokens == 4096
+    assert problems and all(p.startswith("the model's reply was cut off at the token limit (") and p.endswith(", reasoning on)") for p in problems)
+
+
 def test_retuning_some_calls_keeps_the_others():
     from openport.tune import carry_forward
 

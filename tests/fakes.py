@@ -7,7 +7,8 @@ from typing import Callable
 from openai.types.chat import ChatCompletion
 
 
-def completion(content: str | None = None, tool_calls: list[tuple[str, str, dict]] | None = None, reasoning: str | None = None) -> ChatCompletion:
+def completion(content: str | None = None, tool_calls: list[tuple[str, str, dict]] | None = None, reasoning: str | None = None,
+               finish_reason: str | None = None) -> ChatCompletion:
     message: dict = {"role": "assistant", "content": content}
     if tool_calls:
         message["tool_calls"] = [
@@ -21,7 +22,7 @@ def completion(content: str | None = None, tool_calls: list[tuple[str, str, dict
         "object": "chat.completion",
         "created": 0,
         "model": "fake",
-        "choices": [{"index": 0, "finish_reason": "tool_calls" if tool_calls else "stop", "message": message}],
+        "choices": [{"index": 0, "finish_reason": finish_reason or ("tool_calls" if tool_calls else "stop"), "message": message}],
         "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
     })
 

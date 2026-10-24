@@ -8,6 +8,7 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -18,6 +19,9 @@ from .. import tokenfactory
 from ..runtime.openport_llm import AnthropicOnNemotron, SwappedOpenAI, UsageMeter
 from .graders import Judge, grade
 from .spec import CallSite, Spec
+
+# The case whose app call is running on this thread, so a client wrapper can tie a reply to its case.
+CURRENT_CASE: ContextVar[str | None] = ContextVar("openport_current_case", default=None)
 
 
 @dataclass
@@ -92,11 +96,14 @@ def _cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | Non
 
 def _run_case(site: CallSite, function: Callable, case: dict, judge: Judge | None) -> CaseResult:
     start = time.perf_counter()
+    token = CURRENT_CASE.set(case["id"])
     try:
         output = _plain(function(**case["input"]))
     except Exception as error:  # a crash is a failed case, not a failed run
         seconds = round(time.perf_counter() - start, 2)
         return CaseResult(case["id"], False, 0.0, [], None, f"{type(error).__name__}: {error}"[:300], seconds)
+    finally:
+        CURRENT_CASE.reset(token)
     seconds = round(time.perf_counter() - start, 2)
     try:
         result = grade(site.grader, output, case["expected"], case["input"], judge)

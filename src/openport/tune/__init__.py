@@ -15,7 +15,7 @@ research.py), and the variant records the pages it relied on.
 import hashlib
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -95,6 +95,13 @@ def _rate(results: list[CaseResult]) -> float:
     return sum(r.passed for r in results) / len(results) if results else 0.0
 
 
+def _with_cutoffs(failures: list[tuple[dict, CaseResult]], cutoffs: dict[str, str]) -> list[tuple[dict, CaseResult]]:
+    """Add "cut off at the token limit" to the failures it explains. An app usually reports a cut-off reply as
+    bad JSON, which reads like a formatting problem when the fix is a bigger budget."""
+    return [(case, replace(result, failures=[*result.failures, cutoffs[case["id"]]]) if case["id"] in cutoffs else result)
+            for case, result in failures]
+
+
 def tune_site(
     spec: Spec,
     site: CallSite,
@@ -167,7 +174,7 @@ def tune_site(
             extra = {} if guidance is None else {"guidance": guidance}
             if len(system_prompts) > 1:
                 extra["systems"] = list(system_prompts)  # the addendum goes into each prompt the call sends
-            variant = engineer(site, model, variant, wrapped.sample, failures, **extra)
+            variant = engineer(site, model, variant, wrapped.sample, _with_cutoffs(failures, wrapped.cutoffs), **extra)
     return finish(None)
 
 
