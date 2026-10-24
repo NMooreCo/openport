@@ -88,6 +88,12 @@ Two kinds of notes are tracked separately and honestly:
 **[live] A fine-tuning job reports "running" with no progress and no queue position.** (Oct 24)
 - My first LoRA job (Llama 3.1 8B, 209 training examples, 3 epochs) processed both datasets within a minute, then sat at `status: running` with `trained_steps: 0`, `total_steps: null` and no new events for over an hour.
 - Suggestion: a `queued` status, a queue position or an ETA. A job that says "running" while waiting for capacity makes it hard to tell a queue from a stuck job.
+- Update: it was a queue. A "Training started" event arrived 2 h 21 min after submission; the status said `running` the whole time.
+
+**[live] The fine-tuning events list returned 500s mid-training.** (Oct 24)
+- A few minutes into training, `GET /v1/fine_tuning/jobs/{id}/events` returned `500 {"detail": {"message": "Internal Server Error"}}` through the OpenAI SDK's two retries, and OpenPort's follower stopped. The job carried on, and the same call worked again minutes later.
+- What OpenPort does now: it treats 5xx, connection errors and 429s on the job endpoints as transient and retries at the next poll.
+- Suggestion: if the events list can fail while a job runs, say so in the docs, or serve the last known events instead of a 500.
 
 ---
 

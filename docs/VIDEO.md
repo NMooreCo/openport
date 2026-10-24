@@ -14,6 +14,8 @@ already true and checked.
 - **One cold run per preset**, recorded in full, then time-lapsed in editing: SupportDesk tunes for 10–15
   minutes. A second run within 30 minutes reuses the first, which is fine for retakes of the result screens.
 - Browser at 1440×900, dark theme, zoom 110%. Terminal at 18 pt.
+- **Slides**: [OpenPort demo deck](https://claude.ai/artifact/7sCexTSrzz65KbvYVCs4os) (private; 10 slides, one per
+  beat below, with the voiceover in each slide's speaker notes). Download it as PDF or PPTX for editing.
 
 ## Script
 
@@ -80,9 +82,15 @@ charge the original model for its prompt and reply only, not Nemotron's reasonin
 | ⟨ported⟩, ⟨before⟩, ⟨after⟩ | `runs/pr-supportdesk.md` from that run |
 | ⟨preflight before⟩, ⟨preflight after⟩ | `runs/pr-jsliapark__preflight.md` after re-tuning preflight |
 
+The slides carry the same values as bracketed placeholders: the plain swap and after-tuning percentages on
+"The problem", the cost lines on the two results slides, and the repo and dashboard URLs on the close. Their
+pass-rate tables match the Oct 24 runs (SupportDesk 15:12, preflight 14:58); refresh them with the costs.
+
 ## Still to settle before recording
 
 - **"Ultra teaches a smaller model"** needs the fine-tuned student served (a Dedicated Endpoint or AI Cloud) and
   evaluated on the reply drafter. Until then the 2:30 line mentions it without a result.
 - **Serverless Jobs** needs a live `openport tune --jobs` run to show; until then the line stays general.
 - The CI shot needs the GitHub Action run on a fork with a `NEBIUS_API_KEY` secret, or the local `openport check`.
+- **Re-record the AuthKit upgrade** (≈ $0.05). `examples/recorded/upgrade-authkit.json` predates quote checking,
+  so its fixes cite PyJWT's pages without quotes, and the 2:00 line says "quoted from the page".

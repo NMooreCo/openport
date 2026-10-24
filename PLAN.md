@@ -255,10 +255,10 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - With the bigger sets, the small-set results didn't all hold: triage no longer needed Ultra, and the reply drafter's "100%" turned out to be lucky draws (its two failing cases both passed on rerun).
 - Free text scored by a judge is now sampled twice per case (`samples: 2`); every sample counts against the same 90% bar.
 - Tavily research step in tuning: on, with sources limited to the exact model. Measured honestly: following the model cards' generic sampling advice helped one call and hurt two (see FEEDBACK.md), so the engineer now treats it as background.
-- **Final SupportDesk result (research on): 4 of 5 calls ported, each 95–100% with 100% held-out, at $42.82 → $1.63 per 1,000 runs of each call (96% less).** triage → Super, pii → Super as written, refunds (gpt-5) → Nano as written, policy (Claude Opus) → Nano. The reply drafter stays on Claude Sonnet: best tier 85%, under the bar. That's the job for the fine-tune ("Ultra teaches a smaller model").
+- **Final SupportDesk result (research on): 4 of 5 calls ported, each 95–100% with 100% held-out, at $42.82 → $1.63 per 1,000 runs of each call (96% less).** triage → Super, pii → Super as written, refunds (gpt-5) → Nano as written, policy (Claude Opus) → Nano. The reply drafter stays on Claude Sonnet: best tier 85%, under the bar. That's the job for the fine-tune ("Ultra teaches a smaller model"). (Superseded by the 15:12 re-tune below.)
 
 **Sat 24 (afternoon): preflight end to end, the upgrade dashboard, and a sturdier tuner.**
-- **preflight** ([jsliapark/preflight](https://github.com/jsliapark/preflight), 4 Claude Opus calls, no evals of its own): OpenPort's eval pack has 119 hand-labelled cases, checked the way preflight's own `test_evals.py` checks them, and is pinned to the reviewed commit `7a00fa2`. **All 4 calls ported: review → Super (97% / 92% held-out, every case sampled twice), diff_analyzer → Super (100% / 100%), standards → Nano as written (94% / 100%), pr_description → Nano as written (94% / 100%). $69.93 → $1.38 per 1,000 runs of each call (98% less).** Tuning cost about $0.10 per review run.
+- **preflight** ([jsliapark/preflight](https://github.com/jsliapark/preflight), 4 Claude Opus calls, no evals of its own): OpenPort's eval pack has 119 hand-labelled cases, checked the way preflight's own `test_evals.py` checks them, and is pinned to the reviewed commit `7a00fa2`. **All 4 calls ported (all cases / held-out, as the PR shows them): review → Super (95% / 92%, every case sampled twice), diff_analyzer → Super (100% / 100%), standards → Nano as written (96% / 100%), pr_description → Nano as written (96% / 100%). $69.93 → $1.38 per 1,000 runs of each call (98% less).** Tuning cost about $0.10 per review run.
   - The first run's prompts reached Nemotron garbled (a bare `open()` on Windows uses cp1252); the CLI now runs in Python's UTF-8 mode.
   - The review call ate most of its `max_tokens=1024` on reasoning and its JSON came back cut off; the engineer read that as a format problem and switched reasoning off, which cost accuracy. It now hears when a reply hit the token limit, sees what it already tried with each score, and sees every system prompt a call sends (preflight's review loads one per pass). With those, it kept reasoning on and raised the budget to 4,096.
   - Runs of the same settings varied by up to 15 points held-out on 13 cases, so the review call now samples every case twice (both count).
@@ -281,6 +281,12 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - `openport capture` drafts TypeScript calls too, when they're in an exported function and the project's dependencies are installed (a fresh probly clone isn't, so it's still skipped with that reason).
 - Still to run live: `openport tune examples/supportdesk-ts` (needs credits).
 - 162 offline tests.
+
+**Sat 24 (night): the demo deck, and the fine-tune starts training.**
+- Slides: the [OpenPort demo deck](https://claude.ai/artifact/7sCexTSrzz65KbvYVCs4os) (private), 10 slides, one per beat of `docs/VIDEO.md`, with the voiceover in each slide's speaker notes. Pass rates match the PRs (all cases and held-out); the costs, the plain-swap headline and the URLs stay bracketed placeholders until the re-measure.
+- The fine-tune left the queue after 2 h 21 min and started training. The follower then stopped on a 500 from the events list while the job carried on; it now retries server errors at the next poll (up to 20 in a row), and the CLI says how to pick the job up again.
+- Found while checking the deck: the AuthKit upgrade recording predates quote checking, so re-record it once credit is back (`docs/VIDEO.md`).
+- 178 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
