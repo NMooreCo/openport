@@ -95,3 +95,49 @@ def test_client_swaps_model_and_round_trips():
     message = client.messages.create(model="claude-sonnet-5-5", max_tokens=100, system="Be kind.", messages=[{"role": "user", "content": "hi"}])
     assert message.content[0].text == "<reply>Hello</reply>"
     assert fake.requests[0]["model"] == "nvidia/nemotron-nano"
+
+
+def test_ported_code_keeps_its_own_model_and_extra_body():
+    fake = FakeTokenFactory(lambda request: completion(content="ok"))
+    client = AnthropicOnNemotron(client=fake, extra_body={"top_k": 20})
+    client.messages.create(
+        model="nvidia/nemotron-super",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "hi"}],
+        thinking={"type": "enabled", "budget_tokens": 50},
+        metadata={"user_id": "u1"},  # no Token Factory equivalent: dropped
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},  # the call's own setting wins
+    )
+    request = fake.requests[0]
+    assert request["model"] == "nvidia/nemotron-super"
+    assert request["extra_body"] == {"top_k": 20, "chat_template_kwargs": {"enable_thinking": False}}
+    assert "metadata" not in request
+
+
+def test_async_client():
+    import asyncio
+    from types import SimpleNamespace
+
+    from openport.runtime.openport_llm import AsyncAnthropicOnNemotron
+
+    class AsyncFake:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def create(self, **request):
+            return completion(content=f"served by {request['model']}")
+
+    client = AsyncAnthropicOnNemotron(client=AsyncFake())
+    message = asyncio.run(client.messages.create(model="nvidia/nemotron-nano", max_tokens=10, messages=[{"role": "user", "content": "hi"}]))
+    assert message.content[0].text == "served by nvidia/nemotron-nano"
+
+
+def test_helpers_drop_provider_only_options(monkeypatch):
+    from openport.runtime import openport_llm
+
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-key")
+    client = openport_llm.token_factory_client(api_key="sk-openai", organization="org-1", timeout=12, max_retries=1)
+    assert str(client.base_url) == openport_llm.TOKEN_FACTORY_BASE_URL
+    assert client.api_key == "test-key"
+    assert (client.timeout, client.max_retries) == (12, 1)
+    assert isinstance(openport_llm.anthropic_client(api_key="sk-ant", timeout=5), AnthropicOnNemotron)

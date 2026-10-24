@@ -28,6 +28,13 @@ uv run openport scan examples/supportdesk
 uv run openport scan jsliapark/preflight
 ```
 
+Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Calls that can't move safely (images, for example) stay where they are, with the reason. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`.
+
+```bash
+uv run openport port jsliapark/preflight
+uv run openport port examples/supportdesk --assign triage.triage_ticket=nano --assign policy.review_case=ultra
+```
+
 Check what Token Factory offers and how each Nemotron model handles JSON, tools and reasoning:
 
 ```bash

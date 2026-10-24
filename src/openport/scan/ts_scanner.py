@@ -122,7 +122,9 @@ class _FileScanner:
         elif not (sdk in self.imported_sdks or evidence):
             return None
 
-        resolved = [self.declarations[_text(v)] for v in properties.values() if v.type == "identifier" and _text(v) in self.declarations]
+        # Look through variables the call uses too (`const content = [{ type: "image_url", ... }]` before the call).
+        used = {_text(n) for n in _walk(first) if n.type in ("identifier", "shorthand_property_identifier")} if first is not None else set()
+        resolved = [self.declarations[name] for name in used if name in self.declarations]
         searchable = " ".join([_text(first)] + [_text(n) for n in resolved])
 
         features = features_for_api(sdk, api)

@@ -147,16 +147,8 @@ def scan(
 ) -> None:
     """Find every OpenAI and Anthropic SDK call in a repo, and what each one needs to run on Token Factory."""
     from .scan import scan_repo
-    from .workspace import fetch_repo, is_remote
 
-    if is_remote(target):
-        root, fresh = fetch_repo(target)
-        console.print(f"{'Cloned' if fresh else 'Using the earlier clone of'} {target} in {root} (the code is parsed, never run)")
-    else:
-        root = Path(target)
-        if not root.is_dir():
-            _fail(f"No such folder: {target}")
-
+    root = _target_root(target)
     report = scan_repo(root)
     sites = report.portable(include_tests)
     colors = {"auto": "green", "translate": "yellow", "review": "red"}
@@ -190,6 +182,92 @@ def scan(
     path = config.RUNS_DIR / f"scan-{root.resolve().name}.json"
     path.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
     console.print(f"Saved {path}")
+
+
+def _target_root(target: str) -> Path:
+    from .workspace import fetch_repo, is_remote
+
+    if is_remote(target):
+        root, fresh = fetch_repo(target)
+        console.print(f"{'Cloned' if fresh else 'Using the earlier clone of'} {target} in {root} (the code is parsed, never run)")
+        return root
+    root = Path(target)
+    if not root.is_dir():
+        _fail(f"No such folder: {target}")
+    return root
+
+
+def _tier_models(models: str | None) -> dict[str, str]:
+    if models:
+        pairs = dict(item.split("=", 1) for item in models.split(",") if "=" in item)
+        missing = set(config.TIERS) - pairs.keys()
+        if missing:
+            _fail(f"--models needs all tiers; missing {', '.join(sorted(missing))}")
+        return pairs
+    try:
+        return tokenfactory.tiers()
+    except config.MissingKeyError:
+        _fail("Model IDs come from Token Factory's model list, which needs NEBIUS_API_KEY. "
+              "Or pass them: --models nano=ID,super=ID,ultra=ID")
+
+
+@app.command()
+def port(
+    target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
+    tier: str = typer.Option("super", help="Nemotron tier for calls the plan doesn't assign"),
+    assign: list[str] | None = typer.Option(None, "--assign", help="Per call site: ID=TIER, ID=MODEL_ID or ID=keep (repeatable)"),
+    plan_file: Path | None = typer.Option(None, "--plan", help="JSON plan, e.g. from a tuning run"),
+    models: str | None = typer.Option(None, help="Model ID per tier: nano=ID,super=ID,ultra=ID (default: from Token Factory)"),
+    out: Path | None = typer.Option(None, help="Where to write the ported copy (default: runs/ports/<name>)"),
+) -> None:
+    """Rewrite a copy of a repo onto Token Factory: swap SDK clients for the OpenPort runtime and set each call's model."""
+    from .port import build_plan, load_assignments, port_repo
+    from .scan import scan_repo
+
+    if tier not in config.TIERS:
+        _fail(f"Unknown tier {tier!r}; use one of {', '.join(config.TIERS)}")
+    root = _target_root(target)
+    report = scan_repo(root)
+    tier_models = _tier_models(models)
+
+    assignments = load_assignments(plan_file) if plan_file else {}
+    for item in assign or []:
+        site_id, _, choice = item.partition("=")
+        assignments[site_id] = choice
+    unknown = set(assignments) - {f.id for f in report.findings}
+    if unknown:
+        _fail(f"No call site called {', '.join(sorted(unknown))}. Run `openport scan` to list them.")
+
+    plan = build_plan(report.findings, tier_models, tier, assignments)
+    output = out or config.RUNS_DIR / "ports" / root.resolve().name
+    try:
+        result = port_repo(root, report, plan, output)
+    except FileExistsError as error:
+        _fail(str(error))
+
+    table = Table(title=f"Port of {root.resolve().name}")
+    for column in ("Call site", "Was", "Now", "Notes"):
+        table.add_column(column)
+    for site in result.sites:
+        if site.status == "ported":
+            now = f"[green]{site.now}[/green]"
+            notes = "; ".join(site.notes)
+        else:
+            now = "[yellow]kept[/yellow]"
+            notes = "; ".join([site.reason, *site.notes])
+        table.add_row(site.id, site.was or "?", now, notes)
+    console.print(table)
+
+    ported = sum(s.status == "ported" for s in result.sites)
+    console.print(
+        f"{ported} of {len(result.sites)} calls ported. Changed {len(result.changed)} files"
+        + (f", added {', '.join(result.added)}" if result.added else "")
+        + f". Ported copy: {result.output}"
+    )
+    config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    diff_path = config.RUNS_DIR / f"port-{root.resolve().name}.diff"
+    diff_path.write_text(result.diff, encoding="utf-8")
+    console.print(f"Diff: {diff_path}")
 
 
 if __name__ == "__main__":

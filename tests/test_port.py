@@ -1,0 +1,206 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from openport.port import build_plan, port_repo
+from openport.scan import scan_repo
+
+SUPPORTDESK = Path(__file__).parents[1] / "examples" / "supportdesk"
+MODELS = {"nano": "nvidia/nano-test", "super": "nvidia/super-test", "ultra": "nvidia/ultra-test"}
+
+
+def port(root: Path, out: Path, **assignments):
+    report = scan_repo(root)
+    plan = build_plan(report.findings, MODELS, "super", {k.replace("__", "."): v for k, v in assignments.items()})
+    result = port_repo(root, report, plan, out)
+    return result, {s.id: s for s in result.sites}
+
+
+def write(root: Path, files: dict[str, str]) -> Path:
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    return root
+
+
+def test_supportdesk_port(tmp_path):
+    result, sites = port(SUPPORTDESK, tmp_path / "out", triage__triage_ticket="nano", policy__review_case="ultra")
+    out = result.output
+
+    assert all(s.status == "ported" for s in sites.values())
+    assert sites["triage.triage_ticket"].now == "nvidia/nano-test"
+    assert sites["policy.review_case"].now == "nvidia/ultra-test"
+    assert sorted(result.added) == ["openport.yaml", "supportdesk/openport_llm.py"]
+
+    triage = (out / "supportdesk/triage.py").read_text()
+    assert "from .openport_llm import token_factory_client" in triage
+    assert "client = token_factory_client()" in triage
+    assert 'model="nvidia/nano-test",  # was "gpt-5-mini"' in triage
+    assert "from openai import OpenAI" not in triage
+
+    pii = (out / "supportdesk/pii.py").read_text()
+    assert "from openai import OpenAI" not in pii and "from pydantic import BaseModel" in pii
+
+    replies = (out / "supportdesk/replies.py").read_text()
+    assert "client = anthropic_client()" in replies and "from anthropic import Anthropic" not in replies
+
+    # The original is untouched.
+    assert "client = OpenAI()" in (SUPPORTDESK / "supportdesk/triage.py").read_text()
+
+    # The ported package imports, and its clients point at Token Factory.
+    check = (
+        "import supportdesk.triage as t, supportdesk.replies as r, supportdesk.refunds as f;"
+        "print(type(t.client).__name__, t.client.base_url, type(r.client).__name__, type(f.client).__name__)"
+    )
+    env = {**os.environ, "NEBIUS_API_KEY": "test-key", "PYTHONPATH": ""}
+    ran = subprocess.run([sys.executable, "-c", check], cwd=out, env=env, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.split() == ["OpenAI", "https://api.tokenfactory.nebius.com/v1/", "AnthropicOnNemotron", "OpenAI"]
+
+
+PREFLIGHT_LIKE = {
+    "core/__init__.py": "",
+    "core/anthropic_client.py": '''import threading
+from anthropic import Anthropic
+
+_client: Anthropic | None = None
+_lock = threading.Lock()
+
+
+def get_client() -> Anthropic:
+    global _client
+    with _lock:
+        if _client is None:
+            _client = Anthropic(api_key="sk-ant-old", timeout=20)
+    return _client
+''',
+    "agents/__init__.py": "",
+    "agents/review.py": '''import json
+
+import anthropic
+
+from core.anthropic_client import get_client
+
+
+def review(diff):
+    try:
+        response = get_client().messages.create(
+            model="claude-opus-4-5",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": diff}],
+        )
+    except anthropic.APIError:
+        return None
+    return json.loads(response.content[0].text)
+''',
+}
+
+
+def test_factory_client_in_another_module(tmp_path):
+    root = write(tmp_path / "repo", PREFLIGHT_LIKE)
+    result, sites = port(root, tmp_path / "out")
+    out = result.output
+
+    client_module = (out / "core/anthropic_client.py").read_text()
+    assert "_client = anthropic_client(timeout=20)" in client_module  # the old key is dropped, timeout kept
+    assert "from .openport_llm import anthropic_client" in client_module
+    assert "from anthropic import Anthropic" in client_module  # still used by the type hints
+    assert (out / "core/openport_llm.py").exists()
+
+    agent = (out / "agents/review.py").read_text()
+    assert 'model="nvidia/super-test",  # was "claude-opus-4-5"' in agent
+    assert "import anthropic" in agent
+    assert any("anthropic.APIError" in note for note in sites["review"].notes)
+
+
+SHARED_CLIENT = {
+    "app.py": '''from openai import OpenAI
+from vendor_sdk import build
+
+client = OpenAI(timeout=30)
+MODEL = "gpt-4o"
+
+
+def summarize(text):
+    return client.chat.completions.create(model=MODEL, messages=[{"role": "user", "content": text}])
+
+
+def describe(url):
+    content = [{"type": "image_url", "image_url": {"url": url}}]
+    return client.chat.completions.create(model=MODEL, messages=[{"role": "user", "content": content}])
+
+
+def mystery(text):
+    return build().chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+''',
+}
+
+
+def test_shared_client_is_split_not_swapped(tmp_path):
+    root = write(tmp_path / "repo", SHARED_CLIENT)
+    result, sites = port(root, tmp_path / "out")
+    app = (result.output / "app.py").read_text()
+
+    assert sites["app.summarize"].status == "ported"
+    assert sites["app.describe"].status == "kept" and "vision" in sites["app.describe"].reason
+    assert sites["app.mystery"].status == "kept" and "couldn't find where its client" in sites["app.mystery"].reason
+    assert sites["app.summarize"].notes == []
+
+    assert "client = OpenAI(timeout=30)\nclient_nemotron = token_factory_client(timeout=30)\n" in app
+    assert 'return client_nemotron.chat.completions.create(model="nvidia/super-test"' in app
+    # The image call keeps the original client and model constant.
+    assert 'MODEL = "gpt-4o"\n' in app
+    assert "return client.chat.completions.create(model=MODEL, messages=[{\"role\": \"user\", \"content\": content}])" in app
+    assert "from openai import OpenAI" in app and "from openport_llm import token_factory_client" in app
+
+
+PROBLY_LIKE = {
+    "src/pages/api/llm.ts": '''import { OpenAI } from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || "",
+});
+const MODEL = "gpt-4o";
+
+export async function handle(messages: any[]) {
+  const completion = await openai.chat.completions.create({ messages, model: MODEL });
+  const tools = await openai.chat.completions.create({ messages, model: MODEL, tools: [] });
+  return [completion, tools];
+}
+''',
+    "src/utils/analysisUtils.ts": '''import { OpenAI } from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || "",
+});
+
+export async function structure(text: string) {
+  return openai.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });
+}
+
+export async function vision(image: string, model: string = "gpt-4o") {
+  return openai.chat.completions.create({ model: model, messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: image } }] }] });
+}
+''',
+}
+
+
+def test_typescript_port(tmp_path):
+    root = write(tmp_path / "repo", PROBLY_LIKE)
+    result, sites = port(root, tmp_path / "out")
+    out = result.output
+
+    llm = (out / "src/pages/api/llm.ts").read_text()
+    assert 'baseURL: "https://api.tokenfactory.nebius.com/v1/",' in llm
+    assert 'apiKey: process.env.NEBIUS_API_KEY ?? "",' in llm
+    assert "OPENAI_API_KEY" not in llm
+    assert 'const MODEL = "nvidia/super-test";  // was "gpt-4o"' in llm  # shared constant, same target: edited once
+
+    utils = (out / "src/utils/analysisUtils.ts").read_text()
+    assert "const openaiNemotron = new OpenAI({" in utils
+    assert 'return openaiNemotron.chat.completions.create({ model: "nvidia/super-test"' in utils
+    assert "return openai.chat.completions.create({ model: model," in utils  # the image call is untouched
+    assert sites["analysisUtils.vision"].status == "kept"
+    assert sites["analysisUtils.vision"].was == "set by `model`"
+    assert not any(path.endswith("openport_llm.py") for path in result.added)

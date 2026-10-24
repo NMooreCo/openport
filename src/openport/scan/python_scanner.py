@@ -168,7 +168,16 @@ class _FileScanner(ast.NodeVisitor):
             return None
 
         features = features_for_api(sdk, api)
-        resolved = [self.constants[v.id] for v in kwargs.values() if isinstance(v, ast.Name) and v.id in self.constants]
+        # Look through variables the call uses too (`content = [{"type": "image_url", ...}]` before the call).
+        function = self._current_function()
+        names = {n.id for arg in [*call.args, *kwargs.values()] for n in ast.walk(arg) if isinstance(n, ast.Name)}
+        resolved = [self.constants[name] for name in names if name in self.constants]
+        if function is not None:
+            resolved += [
+                node.value
+                for node in ast.walk(function)
+                if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)
+            ]
         searchable = [call, *resolved]
 
         if "tools" in kwargs or "functions" in kwargs:
@@ -210,7 +219,6 @@ class _FileScanner(ast.NodeVisitor):
                 if isinstance(value, ast.Constant) and isinstance(value.value, str):
                     model = value.value
 
-        function = self._current_function()
         parses_json = function is not None and _parses_json(function, call)
 
         return CallSiteFinding(

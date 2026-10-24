@@ -164,6 +164,18 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - Verified on SupportDesk (5/5), preflight (4/4) and probly (4/4); the last two match the helper agent's manual review.
 - 21 offline tests.
 
+**Mon 26 codemod, mechanical part (done early, Fri 23):** `openport port <folder | owner/repo>`.
+- **Clients:** finds where each call's client is built (module global, a factory in another module like preflight's `get_client()`, `self.client`, or a local) and swaps the constructor for the runtime helper. Provider-only options are dropped; `timeout` and similar are kept.
+- **Models:** sets each call's model, editing a shared constant once when all its users move to the same model, and adds `# was "..."` comments.
+- **Imports:** adds the runtime import; removes SDK imports only when nothing uses them.
+- **Shared clients:** split when they also serve a call that stays put.
+- **Warnings:** Anthropic exception handlers are flagged.
+- **TypeScript:** OpenAI calls only, by setting the base URL and key inline (no runtime needed).
+- **Output:** the original is never modified; the copy gets `openport.yaml`.
+- Verified on SupportDesk (5/5, and the ported package imports cleanly), preflight (4/4) and probly (3/4, image call kept).
+- 28 offline tests.
+- Not yet: rewriting Anthropic code natively as chat completions (Super's job), and Anthropic in TypeScript.
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.

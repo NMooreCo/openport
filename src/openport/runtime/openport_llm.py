@@ -2,11 +2,15 @@
 
 OpenPort copies this file into ported apps, so it depends only on the `openai` package and the standard library.
 
-- `SwappedOpenAI` looks like an `openai.OpenAI` client but sends chat completions to Token Factory
-  with a Nemotron model in place of the original one.
-- `AnthropicOnNemotron` looks like an `anthropic.Anthropic` client. Token Factory has no
-  Anthropic-compatible API, so `messages.create` calls are translated to chat completions and the
-  responses are translated back into Anthropic-shaped objects.
+- `token_factory_client()` / `token_factory_async_client()` return ordinary `openai` clients pointed
+  at Token Factory, for code written against the OpenAI SDK.
+- `anthropic_client()` / `async_anthropic_client()` return clients that look like `anthropic.Anthropic`.
+  Token Factory has no Anthropic-compatible API, so `messages.create` calls are translated to chat
+  completions and the responses are translated back into Anthropic-shaped objects.
+- `SwappedOpenAI` looks like an `openai.OpenAI` client but replaces the model in every call. OpenPort
+  uses it to evaluate unmodified code on Nemotron.
+
+The API key comes from the NEBIUS_API_KEY environment variable.
 """
 
 from __future__ import annotations
@@ -18,18 +22,51 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 TOKEN_FACTORY_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 
 ModelChoice = str | Callable[[str], str]
 
+# Constructor options that only make sense for the original provider (keys, endpoints, Azure,
+# Bedrock and Vertex settings). Everything else, like timeout and max_retries, is kept.
+_PROVIDER_ONLY_OPTIONS = {
+    "api_key", "base_url", "organization", "project", "webhook_secret", "websocket_base_url",
+    "azure_endpoint", "azure_deployment", "api_version", "azure_ad_token", "azure_ad_token_provider",
+    "auth_token", "aws_region", "aws_access_key", "aws_secret_key", "aws_session_token", "aws_profile",
+    "region", "project_id", "access_token", "credentials",
+}
 
-def token_factory_client(api_key: str | None = None, base_url: str | None = None) -> OpenAI:
-    return OpenAI(
-        base_url=base_url or os.getenv("NEBIUS_BASE_URL", TOKEN_FACTORY_BASE_URL),
-        api_key=api_key or os.environ["NEBIUS_API_KEY"],
-    )
+
+def _client_options(options: dict) -> dict:
+    return {key: value for key, value in options.items() if key not in _PROVIDER_ONLY_OPTIONS}
+
+
+def _connection() -> dict:
+    return {
+        "base_url": os.getenv("NEBIUS_BASE_URL", TOKEN_FACTORY_BASE_URL),
+        "api_key": os.environ["NEBIUS_API_KEY"],
+    }
+
+
+def token_factory_client(**options: Any) -> OpenAI:
+    """An `openai.OpenAI` client for Token Factory."""
+    return OpenAI(**_connection(), **_client_options(options))
+
+
+def token_factory_async_client(**options: Any) -> AsyncOpenAI:
+    """An `openai.AsyncOpenAI` client for Token Factory."""
+    return AsyncOpenAI(**_connection(), **_client_options(options))
+
+
+def anthropic_client(**options: Any) -> "AnthropicOnNemotron":
+    """Stands in for `anthropic.Anthropic(...)`: same `messages.create` interface, served by Token Factory."""
+    return AnthropicOnNemotron(client=token_factory_client(**options))
+
+
+def async_anthropic_client(**options: Any) -> "AsyncAnthropicOnNemotron":
+    """Stands in for `anthropic.AsyncAnthropic(...)`."""
+    return AsyncAnthropicOnNemotron(client=token_factory_async_client(**options))
 
 
 class UnsupportedFeature(Exception):
@@ -354,12 +391,22 @@ def openai_to_anthropic(response: Any, *, model: str, include_thinking: bool) ->
     )
 
 
+_ANTHROPIC_PARAMS = {
+    "max_tokens", "messages", "system", "tools", "tool_choice", "stop_sequences", "thinking", "temperature", "top_p",
+}
+
+
 class AnthropicOnNemotron:
-    """Drop-in for `anthropic.Anthropic` whose `messages.create` runs on Token Factory."""
+    """Drop-in for `anthropic.Anthropic` whose `messages.create` runs on Token Factory.
+
+    `model` overrides the model named in each call (OpenPort's evals use this). Leave it out and each
+    call's own `model` is used, which is what ported code does.
+    `extra_body` is merged into every request (e.g. to turn Nemotron reasoning on or off).
+    """
 
     def __init__(
         self,
-        model: ModelChoice,
+        model: ModelChoice | None = None,
         client: OpenAI | None = None,
         meter: UsageMeter | None = None,
         extra_body: dict | None = None,
@@ -370,47 +417,62 @@ class AnthropicOnNemotron:
         self._extra_body = extra_body
         self.messages = _Messages(self)
 
+    def _target(self, model: str) -> str:
+        if self._model is None:
+            return model
+        return self._model(model) if callable(self._model) else self._model
+
+
+class AsyncAnthropicOnNemotron(AnthropicOnNemotron):
+    """Drop-in for `anthropic.AsyncAnthropic`."""
+
+    def __init__(
+        self,
+        model: ModelChoice | None = None,
+        client: AsyncOpenAI | None = None,
+        meter: UsageMeter | None = None,
+        extra_body: dict | None = None,
+    ):
+        super().__init__(model, client or token_factory_async_client(), meter, extra_body)
+        self.messages = _AsyncMessages(self)
+
+
+def _prepare(owner: AnthropicOnNemotron, model: str, kwargs: dict) -> tuple[dict, str, bool]:
+    """Translate one Anthropic `messages.create` call. Returns (request, target model, include thinking)."""
+    if kwargs.get("stream"):
+        raise UnsupportedFeature("streaming Anthropic responses")
+    target = owner._target(model)
+    # metadata, service_tier, cache_control and the like have no Token Factory equivalent.
+    known = {key: value for key, value in kwargs.items() if key in _ANTHROPIC_PARAMS}
+    request = anthropic_to_openai(model=target, **known)
+    # Later wins: client-wide settings, then the translated thinking switch, then the call's own extra_body.
+    extra_body = {**(owner._extra_body or {}), **request.pop("extra_body", {}), **(kwargs.get("extra_body") or {})}
+    if extra_body:
+        request["extra_body"] = extra_body
+    thinking = known.get("thinking")
+    return request, target, bool(thinking) and thinking.get("type") != "disabled"
+
 
 class _Messages:
     def __init__(self, owner: AnthropicOnNemotron):
         self._owner = owner
 
-    def create(
-        self,
-        *,
-        model: str,
-        max_tokens: int,
-        messages: list[dict],
-        system: Any = None,
-        tools: list[dict] | None = None,
-        tool_choice: dict | None = None,
-        stop_sequences: list[str] | None = None,
-        thinking: dict | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        stream: bool = False,
-        **_ignored: Any,  # metadata, service_tier, cache_control, ... have no Token Factory equivalent
-    ) -> AnthropicMessage:
-        if stream:
-            raise UnsupportedFeature("streaming Anthropic responses")
+    def create(self, *, model: str, **kwargs: Any) -> AnthropicMessage:
         owner = self._owner
-        target = owner._model(model) if callable(owner._model) else owner._model
-        request = anthropic_to_openai(
-            model=target,
-            max_tokens=max_tokens,
-            messages=messages,
-            system=system,
-            tools=tools,
-            tool_choice=tool_choice,
-            stop_sequences=stop_sequences,
-            thinking=thinking,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        request = _merge_extra_body(request, owner._extra_body)
+        request, target, include_thinking = _prepare(owner, model, kwargs)
         start = time.perf_counter()
         response = owner._client.chat.completions.create(**request)
         if owner._meter is not None:
             owner._meter.record(target, getattr(response, "usage", None), time.perf_counter() - start)
-        include_thinking = bool(thinking) and thinking.get("type") != "disabled"
+        return openai_to_anthropic(response, model=target, include_thinking=include_thinking)
+
+
+class _AsyncMessages(_Messages):
+    async def create(self, *, model: str, **kwargs: Any) -> AnthropicMessage:
+        owner = self._owner
+        request, target, include_thinking = _prepare(owner, model, kwargs)
+        start = time.perf_counter()
+        response = await owner._client.chat.completions.create(**request)
+        if owner._meter is not None:
+            owner._meter.record(target, getattr(response, "usage", None), time.perf_counter() - start)
         return openai_to_anthropic(response, model=target, include_thinking=include_thinking)
