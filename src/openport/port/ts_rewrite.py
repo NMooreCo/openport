@@ -16,8 +16,9 @@ from ..runtime.openport_llm import TOKEN_FACTORY_BASE_URL
 from ..scan.findings import CALL_SUFFIXES, CallSiteFinding
 from ..scan.ts_scanner import _parser, _text, _unquote, _walk
 from .clients import decide_client_actions
-from .edits import Edit, apply_edits, indentation, line_end, newline_style, quoted_like, was_comment
+from .edits import Edit, apply_edits, before_newline, indentation, line_end, newline_style, quoted_like, was_comment
 from .plan import SiteDecision
+from .prompts import find_prompt_file, prompt_file_insertion, ts_literal_insertion
 
 PROVIDER_ONLY = {"apiKey", "baseURL", "organization", "project"}
 EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
@@ -87,6 +88,19 @@ class _TsRepo:
         candidates = [base] + [base + ext for ext in EXTENSIONS] + [f"{base}/index{ext}" for ext in EXTENSIONS]
         return next((c for c in candidates if (self.root / c).is_file()), None)
 
+    def imported(self, f: _TsFile, name: str) -> tuple[_TsFile, str] | None:
+        """Where an imported name comes from, when it's another module of the app: (file, exported name)."""
+        for node in _walk(f.root):
+            if node.type != "import_statement":
+                continue
+            source = _unquote(_text(node.child_by_field_name("source")))
+            for spec in (n for n in _walk(node) if n.type == "import_specifier"):
+                original, alias = spec.child_by_field_name("name"), spec.child_by_field_name("alias")
+                if _text(alias if alias is not None else original) == name:
+                    target = self.file(self.resolve(f.path, source))
+                    return (target, _text(original)) if target else None
+        return None
+
     def link(self, site: CallSiteFinding) -> list[_TsBinding]:
         f = self.file(site.file)
         if f is None:
@@ -139,6 +153,92 @@ def _top_level_strings(f: _TsFile) -> dict[str, Node]:
                 if value is not None and value.type == "string":
                     constants[_text(declarator.child_by_field_name("name"))] = value
     return constants
+
+
+_WRAPPERS = ("as_expression", "satisfies_expression", "parenthesized_expression", "non_null_expression")
+
+
+def _unwrap(node: Node | None) -> Node | None:
+    """`messages as any`, `(x)`, `x!` -> the expression inside."""
+    while node is not None and node.type in _WRAPPERS and node.named_children:
+        node = node.named_children[0]
+    return node
+
+
+def _declared(f: _TsFile, name: str, before: int | None = None) -> Node | None:
+    """The value of the declaration of `name` (the last one before `before`, if given)."""
+    best = None
+    for node in _walk(f.root):
+        if node.type == "variable_declarator" and _text(node.child_by_field_name("name")) == name:
+            if before is None or node.start_byte < before:
+                best = node
+    return best.child_by_field_name("value") if best is not None else None
+
+
+def _object_value(obj: Node, key: str) -> Node | None:
+    for child in obj.named_children:
+        if child.type == "pair" and _unquote(_text(child.child_by_field_name("key"))) == key:
+            return child.child_by_field_name("value")
+    return None
+
+
+def _system_literal(repo: _TsRepo, f: _TsFile, call: Node) -> tuple[_TsFile, Node] | None:
+    """Follow a call's system message back to the string or template literal it's written in."""
+    messages = _unwrap(_properties(call).get("messages"))
+    if messages is not None and messages.type in ("identifier", "shorthand_property_identifier"):
+        messages = _unwrap(_declared(f, _text(messages), call.start_byte))
+    if messages is None or messages.type != "array" or not messages.named_children:
+        return None
+    first = messages.named_children[0]
+    role = _object_value(first, "role") if first.type == "object" else None
+    if role is None or _unquote(_text(role)) not in ("system", "developer"):
+        return None
+    content = _unwrap(_object_value(first, "content"))
+    for _ in range(4):
+        if content is None:
+            return None
+        if content.type in ("string", "template_string"):
+            return f, content
+        if content.type != "identifier":
+            return None
+        name = _text(content)
+        value = _declared(f, name)
+        if value is None:
+            origin = repo.imported(f, name)
+            if origin is None:
+                return None
+            f, name = origin
+            value = _declared(f, name)
+        content = _unwrap(value)
+    return None
+
+
+def _set_number_property(f: _TsFile, call: Node, names: tuple[str, ...], value: float, floor: bool) -> list[Edit] | None:
+    """Set a numeric request property (or raise it to `value`, if `floor`). None when it can't be done safely."""
+    args = call.child_by_field_name("arguments")
+    obj = args.named_children[0] if args is not None and args.named_children else None
+    if obj is None or obj.type != "object":
+        return None
+    for name in names:
+        current = _object_value(obj, name)
+        if current is not None:
+            if current.type != "number":
+                return None
+            number = float(_text(current))
+            new = max(number, value) if floor else value
+            return [] if new == number else [Edit(current.start_byte, current.end_byte, f"{new:g}".encode())]
+    text = f"{names[0]}: {value:g}"
+    entries = [c for c in obj.named_children if c.type != "comment"]
+    if not entries:
+        return [Edit(obj.start_byte + 1, obj.start_byte + 1, f" {text} ".encode())]
+    last = entries[-1]
+    line_start = f.source.rfind(b"\n", 0, last.start_byte) + 1
+    if f.source[line_start:last.start_byte].strip():
+        return [Edit(last.end_byte, last.end_byte, f", {text}".encode())]
+    nl, indent = newline_style(f.source), f.source[line_start:last.start_byte]
+    end = before_newline(f.source, last.end_byte)
+    comma = [] if f.source[last.end_byte:end].lstrip().startswith(b",") else [Edit(last.end_byte, last.end_byte, b",")]
+    return comma + [Edit(end, end, nl + indent + text.encode() + b",")]
 
 
 def _arguments_text(f: _TsFile, binding: _TsBinding) -> bytes:
@@ -205,6 +305,8 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
                 split_names[site.id] = new_var
 
     const_uses: dict[tuple[str, str], list[tuple[str | None, Node]]] = defaultdict(list)
+    text_edits: dict[str, tuple[bytes, list[Edit]]] = {}
+    applied: set = set()
     for site in sites:
         f = repo.file(site.file)
         decision = plan[site.id]
@@ -230,6 +332,19 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
             decision.notes.append(f"Model comes from `{_text(value)}`: set it to {decision.model}")
         if decision.extra_body:
             decision.notes.append(f"Pass {decision.extra_body!r} in the request body by hand")
+        for names, number, floor, label in (
+            (("max_tokens", "max_completion_tokens"), decision.max_tokens, True, "allow at least {} output tokens"),
+            (("temperature",), decision.temperature, False, "temperature {}"),
+        ):
+            if number is None or (floor and not number):
+                continue
+            changed = _set_number_property(f, call, names, number, floor)
+            if changed is None:
+                decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
+            else:
+                edits[f.path] += changed
+        if decision.system_addendum and not _apply_ts_addendum(repo, f, call, decision, edits, text_edits, applied):
+            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
         if site.id in split_names:
             base = call.child_by_field_name("function")
             while base.type == "member_expression":
@@ -251,4 +366,32 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
                 if model is not None:
                     edits[path].append(Edit(node.start_byte, node.end_byte, f'"{model}"'.encode()))
 
-    return {path: apply_edits(repo.file(path).source, file_edits) for path, file_edits in edits.items() if file_edits}
+    output = {path: apply_edits(repo.file(path).source, file_edits) for path, file_edits in edits.items() if file_edits}
+    return output | {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()}
+
+
+def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, decision: SiteDecision, edits: dict, text_edits: dict, applied: set) -> bool:
+    """Write the tuned addendum into the call's system prompt. False if it couldn't be placed."""
+    addendum = decision.system_addendum
+    resolved = _system_literal(repo, f, call)
+    if resolved:
+        target, literal = resolved
+        key = (target.path, literal.start_byte, addendum)
+        if key in applied:
+            return True
+        edit = ts_literal_insertion(target.source, literal.start_byte, literal.end_byte, addendum)
+        if edit:
+            edits[target.path].append(edit)
+            applied.add(key)
+            return True
+    placed = bool(decision.system_prompts)
+    for prompt in decision.system_prompts:
+        hit = find_prompt_file(repo.root, prompt)
+        if hit is None:
+            placed = False
+            continue
+        path, offset, raw = hit
+        if (path, offset, addendum) not in applied:
+            text_edits.setdefault(path, (raw, []))[1].append(prompt_file_insertion(raw, offset, addendum))
+            applied.add((path, offset, addendum))
+    return placed

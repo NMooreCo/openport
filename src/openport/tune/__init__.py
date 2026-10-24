@@ -41,6 +41,8 @@ class Attempt:
     total: int
     cost_usd: float | None
     failed_cases: list[str] = field(default_factory=list)
+    prompt_tokens: int = 0  # totals across all cases, as measured on Nemotron
+    completion_tokens: int = 0
 
     def meets(self, target: float) -> bool:
         return self.tune_pass >= target and (self.holdout_pass is None or self.holdout_pass >= target)
@@ -58,6 +60,7 @@ class SiteTuning:
     function: str
     attempts: list[Attempt]
     chosen: Attempt | None
+    system_prompts: list[str] = field(default_factory=list)  # every distinct system prompt the app sent
 
     @property
     def baseline(self) -> Attempt | None:
@@ -106,9 +109,10 @@ def tune_site(
     by_id = {c["id"]: c for c in cases}
     attempts: list[Attempt] = []
     best: Attempt | None = None
+    system_prompts: list[str] = []
 
     def finish(chosen: Attempt | None) -> SiteTuning:
-        return SiteTuning(site.id, site.title, site.file, site.function, attempts, chosen)
+        return SiteTuning(site.id, site.title, site.file, site.function, attempts, chosen, system_prompts)
 
     for tier in tiers:
         model = models[tier]
@@ -116,6 +120,7 @@ def tune_site(
         for round_number in range(rounds):
             wrapped = VariantClient(client, variant)
             result = run_site(spec, site, tier, model, concurrency=concurrency, judge=judge, client=wrapped, cases=cases)
+            system_prompts.extend(s for s in wrapped.systems if s not in system_prompts)
             tuned = [r for r in result.cases if r.case_id not in held_ids]
             held = [r for r in result.cases if r.case_id in held_ids]
             attempt = Attempt(
@@ -129,6 +134,8 @@ def tune_site(
                 total=len(result.cases),
                 cost_usd=result.cost_usd,
                 failed_cases=[r.case_id for r in result.cases if not r.passed],
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
             )
             attempts.append(attempt)
             if on_attempt:
@@ -171,6 +178,8 @@ def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
         }
         if chosen.variant.reasoning is not None:
             entry["extra_body"] = {"chat_template_kwargs": {"enable_thinking": chosen.variant.reasoning}}
+        if chosen.variant.system_addendum:
+            entry["system_prompts"] = result.system_prompts  # lets the port find where each prompt is written
         plan[site_id] = entry
     return {"target": target, "call_sites": plan}
 

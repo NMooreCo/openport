@@ -82,8 +82,9 @@ def test_engineer_fix_passes_on_nano():
     plan = export_plan(SPEC, [result], 0.9)["call_sites"]["triage.triage_ticket"]
     assert plan["model"] == "nvidia/nano-test"
     assert plan["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
-    decisions = build_plan(scan_repo(SUPPORTDESK).findings, MODELS, "super", {"triage.triage_ticket": plan})
-    assert any(note.startswith("Tuned: append to the system prompt") for note in decisions["triage.triage_ticket"].notes)
+    assert plan["system_prompts"] and plan["system_prompts"][0].startswith("You are the triage system")
+    decision = build_plan(scan_repo(SUPPORTDESK).findings, MODELS, "super", {"triage.triage_ticket": plan})["triage.triage_ticket"]
+    assert decision.system_addendum.startswith("MAGIC RULE") and decision.extra_body == plan["extra_body"]
 
 
 def test_moves_up_a_tier_when_nano_cannot_pass():

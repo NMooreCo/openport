@@ -15,6 +15,11 @@ class SiteDecision:
     site_id: str
     model: str | None  # Token Factory model ID, or None to keep the call where it is
     extra_body: dict | None = None
+    # From tuning: written into the code by the port where it can be done safely.
+    system_addendum: str = ""
+    system_prompts: list[str] = field(default_factory=list)  # what the app sent, to find where prompts live
+    max_tokens: int | None = None  # a floor
+    temperature: float | None = None
     reason: str = ""  # why the call is kept, when it is
     notes: list[str] = field(default_factory=list)  # things a reviewer should check
 
@@ -65,18 +70,10 @@ def build_plan(
             decision.keep_because("Anthropic SDK in TypeScript: the runtime doesn't cover it yet")
         if not decision.keep:  # ported anyway: carry the scanner's warnings into the port report
             decision.notes += [NOTES[f] for f in finding.features if f in NEEDS_REVIEW - BLOCKERS]
-            decision.notes += _tuned_changes((assigned or {}).get("variant") or {})
+            variant = (assigned or {}).get("variant") or {}
+            decision.system_addendum = variant.get("system_addendum") or ""
+            decision.system_prompts = (assigned or {}).get("system_prompts") or []
+            decision.max_tokens = variant.get("max_tokens")
+            decision.temperature = variant.get("temperature")
         plan[finding.id] = decision
     return plan
-
-
-def _tuned_changes(variant: dict) -> list[str]:
-    """Prompt and setting changes from tuning that the port doesn't write into the code yet."""
-    changes = []
-    if variant.get("system_addendum"):
-        changes.append(f"Tuned: append to the system prompt: \"{variant['system_addendum']}\"")
-    if variant.get("max_tokens"):
-        changes.append(f"Tuned: allow at least {variant['max_tokens']} output tokens")
-    if variant.get("temperature") is not None:
-        changes.append(f"Tuned: temperature {variant['temperature']}")
-    return changes

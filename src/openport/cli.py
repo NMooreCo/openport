@@ -1,6 +1,7 @@
 """OpenPort command line."""
 
 import json
+import subprocess
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -234,6 +235,77 @@ def tune(
     eval_cost = sum(r.cost_usd for r in results)
     console.print(f"OpenPort's own cost: ${eval_cost + totals['helper_cost_usd']:.4f} (evals ${eval_cost:.4f}, engineer + judge ${totals['helper_cost_usd']:.4f})")
     console.print(f"Report: {report_path}\nPlan for `openport port --plan`: {plan_path}")
+
+
+@app.command()
+def pr(
+    ported: Path = typer.Argument(..., help="A ported copy, e.g. runs/ports/<name>"),
+    tune_report: Path | None = typer.Option(None, "--tune", help="Tuning report (default: the latest one for this target)"),
+    price: list[str] | None = typer.Option(None, "--price", help="Price by hand: MODEL=INPUT/OUTPUT in USD per 1M tokens (repeatable)"),
+    open_pr: bool = typer.Option(False, "--open", help="Commit, push to your fork and open the PR there"),
+    upstream: bool = typer.Option(False, help="With --open: propose the PR to the original repo instead of your fork"),
+) -> None:
+    """Write the PR description for a port. With --open, push the branch to your fork and open the PR."""
+    from . import pricing, report
+    from .github import execute, github_login, plan_pr
+
+    if not (ported / report.SUMMARY_FILE).exists():
+        _fail(f"{ported} has no {report.SUMMARY_FILE}; run `openport port` first")
+    folder = ported.resolve().name
+    name = folder.replace("__", "/")  # clones are stored as owner__name
+    tune_path = tune_report or report.latest_tune_report(folder.split("__")[-1])
+    tune = report.load_tune_report(tune_path)
+    manual = {p.model: p for p in map(pricing.parse_manual, price or [])}
+    cached = pricing._load_cache()
+    missing: list[str] = []
+
+    def price_of(model: str):
+        if model in manual:
+            return manual[model]
+        if model.startswith("nvidia/") or "nemotron" in model.lower():
+            try:
+                return pricing.token_factory_price(model)
+            except config.MissingKeyError:
+                missing.append(model)
+                return None
+        if model in cached:
+            return cached[model]
+        if pricing.available():
+            found = pricing.closed_model_price(model)
+            if found:
+                return found
+        missing.append(model)
+        return None
+
+    rows = report.build_rows(report.load_summary(ported), tune, price_of)
+    body = report.render(name, rows, tune)
+    config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    body_path = (config.RUNS_DIR / f"pr-{folder}.md").resolve()
+    body_path.write_text(body, encoding="utf-8")
+    console.print(f"PR description: {body_path}")
+    console.print(f"Tuning report: {tune_path or 'none (the PR says the calls are untuned)'}")
+    if missing:
+        console.print(f"[yellow]No price for {', '.join(sorted(set(missing)))}: pass --price MODEL=IN/OUT, or set TAVILY_API_KEY and NEBIUS_API_KEY[/yellow]")
+
+    try:
+        login = github_login()
+    except (OSError, subprocess.CalledProcessError):
+        login = "<your GitHub login>"
+    try:
+        plan = plan_pr(ported, report.TITLE, body_path, login, upstream)
+    except (ValueError, subprocess.CalledProcessError) as error:
+        if open_pr:
+            _fail(f"Can't open a PR from {ported}: {error}")
+        console.print(f"[yellow]Can't open a PR from {ported} yet: {error}[/yellow]")
+        return
+    if not open_pr:
+        where = f"your fork {plan.fork}" if plan.base_repo == plan.fork else f"{plan.base_repo} (upstream)"
+        console.print(f"Dry run. With --open, OpenPort would open the PR in {where} by running, in {ported}:")
+        for command in plan.commands:
+            console.print("  " + " ".join(f'"{part}"' if " " in part else part for part in command))
+        return
+    url = execute(plan, ported)
+    console.print(f"Opened {url}")
 
 
 def _target_root(target: str) -> Path:

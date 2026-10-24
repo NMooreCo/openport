@@ -7,6 +7,7 @@ code.
 """
 
 import copy
+import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -70,22 +71,43 @@ def apply_variant(variant: Variant, request: dict) -> dict:
     return request
 
 
+def system_text(request: dict) -> str | None:
+    """The system prompt of a chat completions request, as plain text."""
+    for message in request.get("messages") or []:
+        if isinstance(message, dict) and message.get("role") in ("system", "developer"):
+            content = message.get("content")
+            if isinstance(content, list):
+                return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            return content
+    return None
+
+
 @dataclass
 class VariantClient:
-    """Wraps a Token Factory client; applies a variant to every chat completion and keeps a sample request."""
+    """Wraps a Token Factory client and applies a variant to every chat completion.
+
+    It also records what the app sent before the variant was applied: the first request (`sample`)
+    and every distinct system prompt (`systems`). One call site can send several prompts, like a
+    review helper that loads a different prompt file per pass.
+    """
 
     client: Any
     variant: Variant
     sample: dict | None = field(default=None)
+    systems: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.chat = _Chat(self)
+        self._lock = threading.Lock()
 
     def _send(self, method_name: str, request: dict):
-        request = apply_variant(self.variant, request)
-        if self.sample is None:
-            self.sample = request
-        return getattr(self.client.chat.completions, method_name)(**request)
+        system = system_text(request)
+        with self._lock:
+            if self.sample is None:
+                self.sample = request
+            if system and system not in self.systems:
+                self.systems.append(system)
+        return getattr(self.client.chat.completions, method_name)(**apply_variant(self.variant, request))
 
 
 class _Completions:

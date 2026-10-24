@@ -185,6 +185,16 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - 34 offline tests.
 - Next: write the tuned addendum into the prompt's source (find it by searching for the text the app sends).
 
+**Sat 24: tuned changes, pricing, PR (built offline; not run live yet):**
+- **Prompt additions** go where each prompt is written:
+  - string literals in Python (plain, triple-quoted, f-strings, `.format()` templates with braces escaped)
+  - TypeScript strings and template literals, followed through local variables, `as` casts and imports
+  - prompt files (`.md`, `.txt`), found by searching for the exact text the app sent during tuning
+- **Settings:** `max_tokens` (raised, never lowered), `temperature` and the reasoning switch are written as arguments, matching each call's layout.
+- **Pricing** (`pricing.py`): Tavily searches only the providers' own pricing pages and Nano reads out the numbers. A price is accepted only if both numbers appear in the cited page; prices are cached and can be overridden by hand.
+- **`openport pr`:** a dry run by default; it writes the description and shows the git/gh commands. `--open` pushes to your fork and opens the PR there (`--upstream` to propose it to the original repo).
+- 39 offline tests.
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.

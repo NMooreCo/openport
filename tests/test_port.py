@@ -59,6 +59,110 @@ def test_supportdesk_port(tmp_path):
     assert ran.stdout.split() == ["OpenAI", "https://api.tokenfactory.nebius.com/v1/", "AnthropicOnNemotron", "OpenAI"]
 
 
+def test_supportdesk_tuned_changes_are_written_into_the_code(tmp_path):
+    tuned = {
+        "triage.triage_ticket": {
+            "model": "nano",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            "variant": {"system_addendum": "Reply with the JSON object only.", "max_tokens": 800},
+        },
+        "refunds.handle_refund_request": {
+            "model": "super",
+            "variant": {"system_addendum": 'Amounts are numbers, as in {"amount": 12.5}.'},
+        },
+        "replies.draft_reply": {"model": "super", "variant": {"system_addendum": "Never use bullet points.", "max_tokens": 1500}},
+        "policy.review_case": {"model": "ultra", "variant": {"system_addendum": "Show amounts with two decimals, e.g. {0:.2f}.", "temperature": 0.3}},
+    }
+    report = scan_repo(SUPPORTDESK)
+    result = port_repo(SUPPORTDESK, report, build_plan(report.findings, MODELS, "super", tuned), tmp_path / "out")
+    out = result.output
+    assert all(not s.notes for s in result.sites), [s.notes for s in result.sites]
+
+    triage = (out / "supportdesk/triage.py").read_text()
+    assert 'Respond with JSON only: {"category": "<category>", "priority": "<priority>"}\n\nReply with the JSON object only."""' in triage
+    assert "        response_format={\"type\": \"json_object\"},\n        extra_body={'chat_template_kwargs': {'enable_thinking': False}},\n        max_tokens=800,\n    )" in triage
+
+    replies = (out / "supportdesk/replies.py").read_text()
+    assert "max_tokens=1500," in replies and "max_tokens=600" not in replies  # a floor: raised, never lowered
+    assert "        temperature=0.3,\n    )" in (out / "supportdesk/policy.py").read_text()
+
+    # The prompts still render: braces in the additions survive .format() and the f-string.
+    check = (
+        "import supportdesk.refunds as r, supportdesk.policy as p, supportdesk.replies as d;"
+        "print(r.SYSTEM_PROMPT.format(today='T', policy='P').splitlines()[-1]);"
+        "print(p.SYSTEM_PROMPT.splitlines()[-1]);"
+        "print(d.BRAND_VOICE.splitlines()[-1])"
+    )
+    env = {**os.environ, "NEBIUS_API_KEY": "test-key", "PYTHONPATH": ""}
+    ran = subprocess.run([sys.executable, "-c", check], cwd=out, env=env, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines() == [
+        'Amounts are numbers, as in {"amount": 12.5}.',
+        "Show amounts with two decimals, e.g. {0:.2f}.",
+        "Never use bullet points.",
+    ]
+
+
+def test_addendum_lands_in_prompt_files(tmp_path):
+    prompt = "You review diffs for security problems.\nReport each finding as JSON with file, line and message.\n"
+    root = write(tmp_path / "repo", {
+        "prompts/security.md": prompt,
+        "review.py": '''import json
+from pathlib import Path
+
+from anthropic import Anthropic
+
+client = Anthropic()
+
+
+def _load(name):
+    return (Path(__file__).parent / "prompts" / f"{name}.md").read_text()
+
+
+def review(diff):
+    prompt = _load("security")
+    response = client.messages.create(model="claude-opus-4-5", max_tokens=1024, system=prompt, messages=[{"role": "user", "content": diff}])
+    return json.loads(response.content[0].text)
+''',
+    })
+    plan = {"review": {"model": "super", "system_prompts": [prompt], "variant": {"system_addendum": "Output only the JSON array."}}}
+    result, sites = port(root, tmp_path / "out", **plan)
+    assert (result.output / "prompts/security.md").read_text() == prompt.rstrip("\n") + "\n\nOutput only the JSON array.\n"
+    assert sites["review"].notes == []
+
+
+PROBLY_TUNED = {
+    "src/constants/messages.ts": "export const SYSTEM_MESSAGE = `You are a spreadsheet assistant.\nAnswer briefly.`;\n",
+    "src/pages/api/llm.ts": '''import { OpenAI } from "openai";
+import { SYSTEM_MESSAGE } from "@/constants/messages";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
+
+export async function handle(question: string) {
+  const messages = [
+    { role: "system", content: SYSTEM_MESSAGE },
+    { role: "user", content: question },
+  ];
+  return openai.chat.completions.create({
+    messages: messages as any,
+    model: "gpt-4o",
+  });
+}
+''',
+}
+
+
+def test_typescript_tuned_changes(tmp_path):
+    root = write(tmp_path / "repo", PROBLY_TUNED)
+    plan = {"llm.handle": {"model": "super", "variant": {"system_addendum": "Use `A1` notation for cells.", "temperature": 0.2}}}
+    result, sites = port(root, tmp_path / "out", **plan)
+    assert sites["llm.handle"].notes == []
+    constants = (result.output / "src/constants/messages.ts").read_text()
+    assert constants == "export const SYSTEM_MESSAGE = `You are a spreadsheet assistant.\nAnswer briefly.\n\nUse \\`A1\\` notation for cells.`;\n"
+    llm = (result.output / "src/pages/api/llm.ts").read_text()
+    assert '    model: "nvidia/super-test",  // was "gpt-4o"\n    temperature: 0.2,\n  });' in llm
+
+
 PREFLIGHT_LIKE = {
     "core/__init__.py": "",
     "core/anthropic_client.py": '''import threading

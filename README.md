@@ -55,6 +55,15 @@ uv run openport tune examples/supportdesk
 uv run openport port examples/supportdesk --plan runs/plan-supportdesk.json
 ```
 
+The port writes the tuned changes into the code: prompt additions go into the string or prompt file where each prompt is written, and the reasoning switch, `max_tokens` and `temperature` go into the call. Anything it can't place safely is listed for review.
+
+Write the PR description: each call's model before and after, its score as a plain swap and after tuning, its held-out score, and the estimated cost per 1,000 calls. Closed-model prices come from the providers' pricing pages via Tavily, and a price is used only if the page actually shows it. With `--open`, OpenPort commits the port to a branch, pushes it to your fork and opens the PR there, so the original maintainers aren't notified.
+
+```bash
+uv run openport pr runs/ports/jsliapark__preflight          # dry run: writes runs/pr-*.md
+uv run openport pr runs/ports/jsliapark__preflight --open   # opens the PR in your fork
+```
+
 ## Repo layout
 
 | Path | What it is |

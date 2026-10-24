@@ -11,8 +11,9 @@ from ..scan import _source_files
 from ..scan.findings import CallSiteFinding
 from ..scan.python_scanner import _constructor_sdk, _match_suffix, _module_name
 from .clients import ClientAction, decide_client_actions
-from .edits import Edit, apply_edits, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
+from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
 from .plan import SiteDecision
+from .prompts import find_prompt_file, prompt_file_insertion, python_literal_insertion
 
 RUNTIME_MODULE = "openport_llm"
 HELPERS = {
@@ -310,6 +311,142 @@ def _cleanup_sdk_imports(f: _File, replaced: list[tuple[int, int]]) -> list[Edit
     return edits
 
 
+def _insert_kwarg(f: _File, call: ast.Call, text: str) -> list[Edit]:
+    """Add `text` (e.g. "max_tokens=2000") as the call's last argument, matching its layout."""
+    args = [*call.args, *call.keywords]
+    if not args:
+        return []
+    last_start, last_end = max((f.span(a) for a in args), key=lambda s: s[1])
+    line_start = f.source.rfind(b"\n", 0, last_start) + 1
+    if call.lineno == call.end_lineno or f.source[line_start:last_start].strip():
+        return [Edit(last_end, last_end, b", " + text.encode())]
+    # One argument per line: add a line with the same indentation, after any trailing comment.
+    nl = newline_style(f.source)
+    indent = f.source[line_start:last_start]
+    after = f.source[last_end:before_newline(f.source, last_end)]
+    edits = [] if after.lstrip().startswith(b",") else [Edit(last_end, last_end, b",")]
+    end = before_newline(f.source, last_end)
+    return edits + [Edit(end, end, nl + indent + text.encode() + b",")]
+
+
+def _set_number_kwarg(f: _File, call: ast.Call, names: tuple[str, ...], value: float, floor: bool) -> list[Edit] | None:
+    """Set a numeric argument (or raise it to `value`, if `floor`). None when it's set by an expression."""
+    keyword = next((k for k in call.keywords if k.arg in names), None)
+    if keyword is None:
+        return _insert_kwarg(f, call, f"{names[0]}={value!r}") or None
+    current = keyword.value
+    if not (isinstance(current, ast.Constant) and isinstance(current.value, (int, float)) and not isinstance(current.value, bool)):
+        return None
+    new = max(current.value, value) if floor else value
+    return [] if new == current.value else [Edit(*f.span(current), repr(new).encode())]
+
+
+def _dict_value(node: ast.Dict, key: str) -> ast.AST | None:
+    for k, v in zip(node.keys, node.values):
+        if isinstance(k, ast.Constant) and k.value == key:
+            return v
+    return None
+
+
+def _assigned_value(scope: ast.AST, name: str, before_line: int) -> ast.AST | None:
+    """The value most recently assigned to `name` in `scope` before a line."""
+    best = None
+    for node in ast.walk(scope):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None and node.lineno < before_line:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == name for t in targets) and (best is None or node.lineno > best.lineno):
+                best = node
+    return best.value if best else None
+
+
+def _module_value(f: _File | None, name: str) -> ast.AST | None:
+    """The value of a module-level assignment (the last one wins); function bodies don't count."""
+    value = None
+    for node in f.tree.body if f else []:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                value = node.value
+    return value
+
+
+def _system_expression(f: _File, call: ast.Call, sdk: str, function: ast.AST | None) -> ast.AST | None:
+    """The expression a call uses as its system prompt."""
+    kwargs = {k.arg: k.value for k in call.keywords if k.arg}
+    if sdk == "anthropic":
+        system = kwargs.get("system")
+        if isinstance(system, ast.List) and system.elts and isinstance(system.elts[-1], ast.Dict):
+            return _dict_value(system.elts[-1], "text")
+        return system
+    messages = kwargs.get("messages")
+    if isinstance(messages, ast.Name):
+        messages = (_assigned_value(function, messages.id, call.lineno) if function else None) or _module_value(f, messages.id)
+    if isinstance(messages, ast.List) and messages.elts and isinstance(messages.elts[0], ast.Dict):
+        first = messages.elts[0]
+        role = _dict_value(first, "role")
+        if isinstance(role, ast.Constant) and role.value in ("system", "developer"):
+            return _dict_value(first, "content")
+    return None
+
+
+def _resolve_string(repo: "_Repo", f: _File, node: ast.AST, function: ast.AST | None, line: int) -> tuple[_File, ast.AST, bool] | None:
+    """Follow a prompt expression back to the string literal it's built from: (file, literal, is a template)."""
+    template = False
+    for _ in range(6):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return f, node, template
+        if isinstance(node, ast.JoinedStr):
+            return f, node, True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("format", "strip", "rstrip"):
+            template = template or node.func.attr == "format"
+            node = node.func.value
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            node = node.right  # PROMPT + EXTRA: append to the last part
+        elif isinstance(node, ast.Name):
+            value = (_assigned_value(function, node.id, line) if function else None) or _module_value(f, node.id)
+            if value is None:  # imported from another module of the app
+                module, original = repo.imports(f)[0].get(node.id, ("", ""))
+                f = repo.file(repo.modules.get(module))
+                value = _module_value(f, original) if f else None
+            if value is None:
+                return None
+            node, function, line = value, None, 10**9
+        else:
+            return None
+    return None
+
+
+def _apply_addendum(repo: "_Repo", f: _File, call: ast.Call, site: CallSiteFinding, decision: SiteDecision,
+                    edits: dict, text_edits: dict, applied: set) -> bool:
+    """Write the tuned addendum into each system prompt the call uses. False if any couldn't be placed."""
+    addendum = decision.system_addendum
+    function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None)
+    expression = _system_expression(f, call, site.sdk, function)
+    resolved = _resolve_string(repo, f, expression, function, call.lineno) if expression is not None else None
+    if resolved:
+        target, literal, template = resolved
+        key = (target.path, f"{literal.lineno}:{literal.col_offset}", addendum)
+        if key in applied:
+            return True
+        edit = python_literal_insertion(target.source, *target.span(literal), addendum, template)
+        if edit:
+            edits[target.path].append(edit)
+            applied.add(key)
+            return True
+    # Prompts loaded from files: find each prompt the app actually sent.
+    placed = bool(decision.system_prompts)
+    for prompt in decision.system_prompts:
+        hit = find_prompt_file(repo.root, prompt)
+        if hit is None:
+            placed = False
+            continue
+        path, offset, raw = hit
+        if (path, offset, addendum) not in applied:
+            text_edits.setdefault(path, (raw, []))[1].append(prompt_file_insertion(raw, offset, addendum))
+            applied.add((path, offset, addendum))
+    return placed
+
+
 def _anthropic_error_names(f: _File) -> list[str]:
     """Anthropic SDK exception classes this file refers to (they won't be raised by ported calls)."""
     aliases = {a.asname or a.name for n in ast.walk(f.tree) if isinstance(n, ast.Import) for a in n.names if a.name == "anthropic"}
@@ -372,8 +509,10 @@ def port_python(
             for site in action.ported:
                 split_names[site.id] = new_var
 
-    # Models, extra_body and receivers at each ported call site.
+    # Models, tuned settings and receivers at each ported call site.
     const_uses: dict[tuple[str, str], list[tuple[str | None, ast.Name]]] = defaultdict(list)
+    text_edits: dict[str, tuple[bytes, list[Edit]]] = {}  # prompt files: path -> (original bytes, edits)
+    applied: set = set()  # prompt insertions already made, so a shared prompt gets the addendum once
     for site in sites:
         f = repo.file(site.file)
         decision = plan[site.id]
@@ -401,11 +540,25 @@ def port_python(
             decision.notes.append(f"Model comes from `{f.text(value)}`: set it to {decision.model}")
 
         if decision.extra_body:
-            if any(k.arg == "extra_body" for k in call.keywords) or not (call.args or call.keywords):
-                decision.notes.append(f"Pass extra_body={decision.extra_body!r} here by hand")
+            inserted = [] if any(k.arg == "extra_body" for k in call.keywords) else _insert_kwarg(f, call, f"extra_body={decision.extra_body!r}")
+            if inserted:
+                edits[f.path] += inserted
             else:
-                last = max(f.span(n)[1] for n in [*call.args, *call.keywords])
-                edits[f.path].append(Edit(last, last, f", extra_body={decision.extra_body!r}".encode()))
+                decision.notes.append(f"Pass extra_body={decision.extra_body!r} here by hand")
+        if decision.max_tokens:
+            changed = _set_number_kwarg(f, call, ("max_tokens", "max_completion_tokens"), decision.max_tokens, floor=True)
+            if changed is None:
+                decision.notes.append(f"Tuned: allow at least {decision.max_tokens} output tokens (set by hand)")
+            else:
+                edits[f.path] += changed
+        if decision.temperature is not None:
+            changed = _set_number_kwarg(f, call, ("temperature",), decision.temperature, floor=False)
+            if changed is None:
+                decision.notes.append(f"Tuned: temperature {decision.temperature} (set by hand)")
+            else:
+                edits[f.path] += changed
+        if decision.system_addendum and not _apply_addendum(repo, f, call, site, decision, edits, text_edits, applied):
+            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
 
         if site.id in split_names:
             base = call.func
@@ -446,7 +599,9 @@ def port_python(
                     f"{site.file} handles {', '.join(errors)}: ported calls raise openai errors instead"
                 )
 
+    changed_files |= set(edits)
     output = {path: apply_edits(repo.file(path).source, edits[path]) for path in changed_files if edits[path]}
+    output |= {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()}
     if helpers:
         output[f"{vendor_dir}/{RUNTIME_MODULE}.py".lstrip("/")] = runtime_source
     return output
