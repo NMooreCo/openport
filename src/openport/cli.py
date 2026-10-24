@@ -412,6 +412,50 @@ def distill(
     console.print(f"Training set: {path}")
 
 
+@app.command()
+def finetune(
+    dataset: Path | None = typer.Argument(None, help="A training set from `openport distill` (omit with --job)"),
+    base: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", help="Base model for the LoRA fine-tune"),
+    suffix: str = typer.Option("openport", help="Suffix for the fine-tuned model's name"),
+    wait: bool = typer.Option(True, help="Follow the job until it finishes, then download the adapter"),
+    job: str | None = typer.Option(None, "--job", help="Follow an existing job instead of starting one"),
+) -> None:
+    """Fine-tune a smaller model on Token Factory from a distilled training set (LoRA), and download the adapter."""
+    from . import finetune as ft
+
+    try:
+        if job:
+            saved = config.RUNS_DIR / "finetunes" / f"{job}.json"
+            tune = ft.FineTune(**json.loads(saved.read_text(encoding="utf-8"))) if saved.exists() else ft.FineTune(job, base, "unknown", "", None, {})
+        else:
+            if dataset is None:
+                _fail("Give a training set, or --job to follow an existing job")
+            tune = ft.start(dataset, base=base, suffix=suffix)
+            console.print(f"Started fine-tuning job {tune.job_id}: {base} (LoRA), {tune.examples['train']} training and "
+                          f"{tune.examples['validation']} validation examples")
+        ft.save(tune)
+        if not wait:
+            console.print(f"Follow it later: openport finetune --job {tune.job_id}")
+            return
+
+        def status(state, messages):
+            for message in messages:
+                console.print(f"  {message}")
+            console.print(f"  [dim]status: {state}[/dim]")
+
+        tune = ft.follow(tune, on_status=status)
+        if tune.status == "succeeded":
+            tune = ft.download_adapter(tune)
+        ft.save(tune)
+    except (config.MissingKeyError, ValueError, RuntimeError, TimeoutError) as error:
+        _fail(str(error))
+    if tune.status != "succeeded":
+        _fail(f"Fine-tuning {tune.status}: {tune.error or 'see the events above'}")
+    console.print(f"[green]Done.[/green] Model: {tune.fine_tuned_model or '(see the job)'}; trained on {tune.trained_tokens or '?'} tokens")
+    for path in tune.adapter_files:
+        console.print(f"  adapter file: {path}")
+
+
 def _describe_variant(variant: dict) -> str:
     from .tune.variant import Variant
 
