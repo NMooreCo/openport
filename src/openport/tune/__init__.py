@@ -7,10 +7,14 @@ For each call site:
 
 About 30% of each call site's cases are held out: the engineer never sees them, and a variant only
 counts as passing if it clears the bar on both the cases it was tuned on and the held-out ones.
+
+With a Tavily key, the engineer also gets NVIDIA's own guidance for the model it's tuning for (see
+research.py), and the variant records the pages it relied on.
 """
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +28,7 @@ from ..evals.runner import CaseResult, make_judge, run_site
 from ..evals.spec import CallSite, Spec, load_spec
 from ..runtime.openport_llm import UsageMeter
 from .engineer import Engineer, make_engineer
+from .research import Guidance, Researcher, make_researcher
 from .variant import Variant, VariantClient
 
 HOLDOUT_FRACTION = 0.3
@@ -61,6 +66,7 @@ class SiteTuning:
     attempts: list[Attempt]
     chosen: Attempt | None
     system_prompts: list[str] = field(default_factory=list)  # every distinct system prompt the app sent
+    research: list[Guidance] = field(default_factory=list)  # NVIDIA guidance looked up for this call
 
     @property
     def baseline(self) -> Attempt | None:
@@ -102,6 +108,8 @@ def tune_site(
     concurrency: int = 8,
     limit: int | None = None,
     on_attempt: Callable[[CallSite, Attempt], None] | None = None,
+    researcher: Researcher | None = None,
+    on_research: Callable[[CallSite, Guidance], None] | None = None,
 ) -> SiteTuning:
     cases = site.cases(limit)
     tune_cases, holdout = split_cases(cases)
@@ -110,9 +118,10 @@ def tune_site(
     attempts: list[Attempt] = []
     best: Attempt | None = None
     system_prompts: list[str] = []
+    research: list[Guidance] = []
 
     def finish(chosen: Attempt | None) -> SiteTuning:
-        return SiteTuning(site.id, site.title, site.file, site.function, attempts, chosen, system_prompts)
+        return SiteTuning(site.id, site.title, site.file, site.function, attempts, chosen, system_prompts, research)
 
     for tier in tiers:
         model = models[tier]
@@ -147,7 +156,15 @@ def tune_site(
             failures = [(by_id[r.case_id], r) for r in tuned if not r.passed]
             if round_number == rounds - 1 or not failures:
                 break  # out of rounds, or only held-out cases fail (the engineer can't see those): move up a tier
-            variant = engineer(site, model, variant, wrapped.sample, failures)
+            guidance = researcher(site, model, failures) if researcher else None
+            if guidance is not None and guidance not in research:
+                research.append(guidance)
+                if on_research:
+                    on_research(site, guidance)
+            if guidance is None:
+                variant = engineer(site, model, variant, wrapped.sample, failures)
+            else:
+                variant = engineer(site, model, variant, wrapped.sample, failures, guidance=guidance)
     return finish(None)
 
 
@@ -194,7 +211,9 @@ def tune_spec(
     concurrency: int = 8,
     limit: int | None = None,
     use_judge: bool = True,
+    use_research: bool = True,
     on_attempt: Callable[[CallSite, Attempt], None] | None = None,
+    on_research: Callable[[CallSite, Guidance], None] | None = None,
 ) -> tuple[list[SiteTuning], dict, Path, Path]:
     spec = load_spec(target_dir)
     sites = [s for s in spec.call_sites if not site_ids or s.id in site_ids]
@@ -203,11 +222,13 @@ def tune_spec(
     helper_meter = UsageMeter()  # the engineer's and the judge's own calls: what OpenPort itself costs
     engineer = make_engineer(client, meter=helper_meter)
     judge = make_judge(helper_meter, client=client) if use_judge else None
+    researcher = make_researcher() if use_research and os.getenv("TAVILY_API_KEY") else None
 
     results = [
         tune_site(
             spec, site, models, client=client, engineer=engineer, judge=judge, target=target, rounds=rounds,
             tiers=tiers, concurrency=concurrency, limit=limit, on_attempt=on_attempt,
+            researcher=researcher, on_research=on_research,
         )
         for site in sites
     ]

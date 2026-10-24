@@ -37,6 +37,23 @@ export interface Attempt {
   total: number;
   cost_usd: number | null;
   meets: boolean;
+  sources?: Source[];
+}
+
+export interface Source {
+  title: string;
+  url: string;
+}
+
+/** NVIDIA guidance Tavily found for a call before the engineer proposed a fix. */
+export interface Research {
+  site: string;
+  file: string;
+  function: string;
+  model: string;
+  topic: string;
+  query: string;
+  sources: Source[];
 }
 
 export interface Tuned {
@@ -78,6 +95,7 @@ export interface RunState {
   sites: Finding[];
   models?: Record<string, string>;
   captured?: Captured;
+  research: Research[];
   attempts: Attempt[];
   tuned: Tuned[];
   cost?: { evals_usd: number; helper_usd: number };
@@ -89,7 +107,7 @@ export interface RunState {
 
 type RunEvent = { type: string; [key: string]: any };
 
-export const EVENT_TYPES = ["stage", "note", "scan", "models", "captured", "attempt", "tuned", "cost", "ported", "pr", "done", "failed"];
+export const EVENT_TYPES = ["stage", "note", "scan", "models", "captured", "research", "attempt", "tuned", "cost", "ported", "pr", "done", "failed"];
 
 export function initialState(id: string): RunState {
   return {
@@ -97,6 +115,7 @@ export function initialState(id: string): RunState {
     status: "queued",
     stages: { fetch: "pending", scan: "pending", capture: "pending", tune: "pending", port: "pending", pr: "pending" },
     sites: [],
+    research: [],
     attempts: [],
     tuned: [],
     notes: [],
@@ -125,6 +144,8 @@ export function reduce(state: RunState, event: RunEvent): RunState {
       const summary = `Captured a starter eval set: ${total} generated case${total === 1 ? "" : "s"} across ${event.sites.length} call${event.sites.length === 1 ? "" : "s"}.`;
       return { ...state, captured: { sites: event.sites, note: event.note }, notes: [...state.notes, summary, event.note] };
     }
+    case "research":
+      return { ...state, research: [...state.research, event as unknown as Research] };
     case "attempt":
       return { ...state, attempts: [...state.attempts, event as unknown as Attempt] };
     case "tuned":
@@ -170,6 +191,10 @@ export function useRun(runId: string | null): RunState | null {
 /** Tuning attempts for a scanned call site (matched on file and function). */
 export function attemptsFor(state: RunState, site: Finding): Attempt[] {
   return state.attempts.filter((a) => a.file === site.file && a.function === site.function);
+}
+
+export function researchFor(state: RunState, site: Finding): Research[] {
+  return state.research.filter((r) => r.file === site.file && r.function === site.function);
 }
 
 export function tunedFor(state: RunState, site: Finding): Tuned | undefined {

@@ -1,0 +1,84 @@
+"""Research: look up NVIDIA's own guidance for a model with Tavily, so the engineer's fix can follow it.
+
+Before the engineer proposes a fix for a call on a Nemotron model, Tavily searches NVIDIA's docs, the
+models' cards and Token Factory's docs for guidance on the kind of call it is (JSON output, tool
+calling, free text), or on the failure itself when reasoning text leaks into the answer. The engineer
+gets the excerpts with their sources and cites the ones it used, so the PR can show where a fix came from.
+"""
+
+import re
+from dataclasses import dataclass, field
+from typing import Callable
+
+from ..evals.runner import CaseResult
+from ..evals.spec import CallSite
+
+NVIDIA_DOMAINS = ["docs.nvidia.com", "developer.nvidia.com", "build.nvidia.com", "huggingface.co", "docs.tokenfactory.nebius.com"]
+QUERIES = {
+    "json": "{model} JSON structured output response_format recommended settings",
+    "tools": "{model} tool calling function calling recommended settings",
+    "reasoning": "{model} reasoning mode enable_thinking chat template when to turn reasoning off",
+    "text": "{model} system prompt instruction following recommended temperature and reasoning settings",
+}
+JSON_OUTPUTS = {"json_object", "json_schema", "json_in_text"}
+EXCERPT_CHARS = 700
+MAX_SOURCES = 3
+
+# search(query, domains) -> [{"url", "title", "content"}]
+Search = Callable[[str, list[str]], list[dict]]
+
+
+@dataclass
+class Guidance:
+    model: str
+    topic: str  # json | tools | reasoning | text
+    query: str
+    sources: list[dict] = field(default_factory=list)  # {"title", "url", "excerpt"}
+
+
+# researcher(site, model, failures) -> guidance, or None when nothing relevant was found
+Researcher = Callable[[CallSite, str, list[tuple[dict, CaseResult]]], Guidance | None]
+
+
+def model_family(model: str) -> str:
+    """"nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B" -> "NVIDIA Nemotron 3 Nano", the way NVIDIA's docs name it."""
+    match = re.search(r"nemotron[-_ ]?(\d+(?:[._]\d+)?)[-_ ](nano|super|ultra|lightning)", model, re.IGNORECASE)
+    if not match:
+        return model.split("/")[-1]
+    return f"NVIDIA Nemotron {match.group(1).replace('_', '.')} {match.group(2).capitalize()}"
+
+
+def topic_for(output: str, failures: list[tuple[dict, CaseResult]]) -> str:
+    """What to look up. Reasoning text leaking into the answer outranks the call's own shape."""
+    for _, result in failures:
+        seen = f"{result.output if isinstance(result.output, str) else ''} {result.error or ''}"
+        if "<think>" in seen or "</think>" in seen:
+            return "reasoning"
+    if output == "tools":
+        return "tools"
+    return "json" if output in JSON_OUTPUTS else "text"
+
+
+def make_researcher(search: Search | None = None) -> Researcher:
+    """A researcher that searches once per model and topic, and reuses the answer for the rest of the run."""
+    if search is None:
+        from ..pricing import tavily_search
+
+        search = tavily_search
+    found: dict[tuple[str, str], Guidance] = {}
+
+    def research(site: CallSite, model: str, failures: list[tuple[dict, CaseResult]]) -> Guidance | None:
+        topic = topic_for(site.output, failures)
+        if (model, topic) not in found:
+            query = QUERIES[topic].format(model=model_family(model))
+            results = search(query, NVIDIA_DOMAINS)
+            sources = [
+                {"title": r.get("title") or r["url"], "url": r["url"], "excerpt": " ".join((r.get("content") or "").split())[:EXCERPT_CHARS]}
+                for r in results
+                if r.get("url") and (r.get("content") or "").strip()
+            ][:MAX_SOURCES]
+            found[(model, topic)] = Guidance(model, topic, query, sources)
+        guidance = found[(model, topic)]
+        return guidance if guidance.sources else None
+
+    return research

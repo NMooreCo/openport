@@ -11,10 +11,11 @@ from .. import tokenfactory
 from ..evals.runner import CaseResult
 from ..evals.spec import CallSite
 from ..runtime.openport_llm import UsageMeter
+from .research import Guidance
 from .variant import Variant
 
-# engineer(site, model, variant, sample_request, failures) -> next variant
-Engineer = Callable[[CallSite, str, Variant, dict | None, list[tuple[dict, CaseResult]]], Variant]
+# engineer(site, model, variant, sample_request, failures, guidance=None) -> next variant
+Engineer = Callable[..., Variant]
 
 SYSTEM = """You tune LLM calls so an app keeps working after it moves from OpenAI or Anthropic models to NVIDIA Nemotron on Nebius Token Factory.
 
@@ -28,9 +29,10 @@ Rules:
 - Fix the kind of failure, never a specific case. Do not quote or hint at any expected answer, name, number or label from the failures. Your change is checked on cases you will never see.
 - Keep system_addendum under 120 words, plain and specific. Don't restate the whole prompt.
 - Change as little as you need to. Keep what already works.
+- If excerpts from NVIDIA's documentation are included, follow them where they explain the failures (for example, the settings NVIDIA recommends for this model), and list the URLs of the ones you relied on in sources. Don't list pages you didn't use.
 
 Respond with JSON only:
-{"reasoning": true | false | null, "system_addendum": "...", "max_tokens": integer or null, "temperature": number or null, "rationale": "one sentence on what you're fixing"}"""
+{"reasoning": true | false | null, "system_addendum": "...", "max_tokens": integer or null, "temperature": number or null, "rationale": "one sentence on what you're fixing", "sources": ["url", ...]}"""
 
 
 def _clip(value, limit: int = 600) -> str:
@@ -69,27 +71,41 @@ def parse_variant(text: str, fallback: Variant) -> Variant:
         return fallback
     max_tokens = data.get("max_tokens")
     temperature = data.get("temperature")
+    sources = data.get("sources")
     return Variant(
         reasoning=data.get("reasoning") if isinstance(data.get("reasoning"), bool) else None,
         system_addendum=str(data.get("system_addendum") or "").strip(),
         max_tokens=int(max_tokens) if isinstance(max_tokens, (int, float)) and max_tokens > 0 else None,
         temperature=float(temperature) if isinstance(temperature, (int, float)) else None,
         rationale=str(data.get("rationale") or "").strip(),
+        sources=[{"url": url} for url in sources if isinstance(url, str)] if isinstance(sources, list) else [],
     )
+
+
+def cite(variant: Variant, guidance: Guidance | None) -> Variant:
+    """Keep only citations of pages the engineer was actually given, with their titles."""
+    supplied = {s["url"]: s["title"] for s in (guidance.sources if guidance else [])}
+    variant.sources = [{"title": supplied[s["url"]], "url": s["url"]} for s in variant.sources if s.get("url") in supplied]
+    return variant
 
 
 def make_engineer(client: OpenAI | None = None, model: str | None = None, meter: UsageMeter | None = None) -> Engineer:
     client = client or tokenfactory.client()
     model = model or tokenfactory.tiers()["ultra"]
 
-    def engineer(site: CallSite, target_model: str, variant: Variant, sample: dict | None, failures) -> Variant:
+    def engineer(site: CallSite, target_model: str, variant: Variant, sample: dict | None, failures, guidance: Guidance | None = None) -> Variant:
+        settings = {k: v for k, v in variant.to_dict().items() if k != "sources"}
         prompt = (
             f"Call site: {site.title} ({site.sdk} SDK, {site.output} output), moving off {site.original_model}.\n"
             f"Running on: {target_model}\n"
-            f"Current settings: {json.dumps(variant.to_dict())}\n\n"
+            f"Current settings: {json.dumps(settings)}\n\n"
             f"The app's system prompt:\n<<<\n{_clip(_system_prompt(sample), 4000)}\n>>>\n\n"
             f"Failing cases:\n{describe_failures(failures)}"
         )
+        if guidance is not None and guidance.sources:
+            prompt += "\n\nGuidance from NVIDIA's documentation for this model (found with Tavily):\n" + "\n".join(
+                f"- {s['title']} ({s['url']}): {s['excerpt']}" for s in guidance.sources
+            )
         start = time.perf_counter()
         response = client.chat.completions.create(
             model=model,
@@ -98,6 +114,7 @@ def make_engineer(client: OpenAI | None = None, model: str | None = None, meter:
         )
         if meter is not None:
             meter.record(model, response.usage, time.perf_counter() - start)
-        return parse_variant(response.choices[0].message.content or "", fallback=variant)
+        proposed = parse_variant(response.choices[0].message.content or "", fallback=variant)
+        return proposed if proposed is variant else cite(proposed, guidance)
 
     return engineer

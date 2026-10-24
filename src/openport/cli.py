@@ -271,6 +271,7 @@ def tune(
     concurrency: int = typer.Option(8, help="Cases to run in parallel"),
     limit: int | None = typer.Option(None, help="Only use the first N cases of each call site"),
     judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
+    research: bool = typer.Option(True, help="Look up NVIDIA's guidance for each model with Tavily before proposing a fix (needs TAVILY_API_KEY)"),
 ) -> None:
     """Find the cheapest Nemotron model, and the smallest prompt or setting change, that makes each call pass."""
     from .tune import tune_spec
@@ -287,10 +288,14 @@ def tune(
             f"tuning {attempt.tune_pass:.0%}{held}{mark}"
         )
 
+    def found_guidance(site, guidance):
+        console.print(f"  {site.id:<10} [cyan]research[/cyan] {guidance.query} -> {len(guidance.sources)} NVIDIA page(s)")
+
     try:
         results, totals, report_path, plan_path = tune_spec(
             target, site_ids=sites.split(",") if sites else None, target=target_rate, rounds=rounds, tiers=tier_list,
-            concurrency=concurrency, limit=limit, use_judge=judge, on_attempt=progress,
+            concurrency=concurrency, limit=limit, use_judge=judge, use_research=research,
+            on_attempt=progress, on_research=found_guidance,
         )
     except (config.MissingKeyError, RuntimeError, FileNotFoundError) as error:
         _fail(str(error))

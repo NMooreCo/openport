@@ -1,4 +1,22 @@
-import { attemptsFor, pct, tierName, tunedFor, type Finding, type RunState } from "../run";
+import { attemptsFor, pct, researchFor, tierName, tunedFor, type Finding, type RunState, type Source } from "../run";
+
+// Links come from web search results, so only plain web URLs are rendered as links.
+const isWebUrl = (url: string) => /^https?:\/\//i.test(url);
+
+function SourceLinks({ sources }: { sources: Source[] }) {
+  return (
+    <>
+      {sources.filter((s) => isWebUrl(s.url)).map((s, i) => (
+        <span key={s.url}>
+          {i > 0 && ", "}
+          <a href={s.url} target="_blank" rel="noreferrer noopener" className="break-words underline decoration-sky-500/40 hover:text-white">
+            {s.title}
+          </a>
+        </span>
+      ))}
+    </>
+  );
+}
 
 const PORTABILITY = {
   auto: { label: "swap as-is", className: "bg-emerald-500/10 text-emerald-300" },
@@ -14,6 +32,7 @@ function scoreTone(rate: number, meets: boolean) {
 
 export function CallCard({ site, state }: { site: Finding; state: RunState }) {
   const attempts = attemptsFor(state, site);
+  const research = researchFor(state, site);
   const tuned = tunedFor(state, site);
   const ported = state.ported?.sites.find((p) => p.id === site.id);
   const tuning = state.stages.tune === "active" && !tuned;
@@ -80,12 +99,30 @@ export function CallCard({ site, state }: { site: Finding; state: RunState }) {
         </ol>
       )}
 
+      {research.length > 0 && (
+        <ul className="mt-3 space-y-1.5 text-xs" aria-label="NVIDIA guidance found with Tavily">
+          {research.map((r) => (
+            <li key={`${r.model}-${r.topic}`} className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-2 leading-relaxed text-sky-200/90">
+              <span className="text-muted">Tavily searched NVIDIA's docs: </span>
+              <span className="break-words">{r.query}</span>
+              <span className="mt-1 block"><SourceLinks sources={r.sources} /></span>
+            </li>
+          ))}
+        </ul>
+      )}
+
       <p className={`mt-3 text-sm ${status.tone}`}>{status.text}</p>
 
       {change && (
         <div className="mt-2 rounded-lg bg-ink/60 p-2.5 text-xs leading-relaxed text-slate-300">
           <span className="text-muted">Change: </span>{change.variant}
           {change.addendum && <p className="mt-1 italic text-slate-400">“{change.addendum}”</p>}
+          {change.sources && change.sources.length > 0 && (
+            <p className="mt-1 text-sky-300/90">
+              <span className="text-muted">Follows NVIDIA's guidance: </span>
+              <SourceLinks sources={change.sources} />
+            </p>
+          )}
         </div>
       )}
 

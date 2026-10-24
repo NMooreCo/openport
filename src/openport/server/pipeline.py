@@ -72,6 +72,7 @@ def _attempt_event(site_id: str, title: str, file: str, function: str, attempt, 
         "variant": attempt.variant.describe(),
         "addendum": attempt.variant.system_addendum,
         "rationale": attempt.variant.rationale,
+        "sources": attempt.variant.sources,
         "tune_pass": attempt.tune_pass,
         "holdout_pass": attempt.holdout_pass,
         "pass_rate": attempt.pass_rate,
@@ -156,6 +157,10 @@ def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> 
             target=target_rate,
             on_attempt=lambda site, attempt: run.emit(
                 "attempt", **_attempt_event(site.id, site.title, site.file, site.function, attempt, target_rate)
+            ),
+            on_research=lambda site, guidance: run.emit(
+                "research", site=site.id, file=site.file, function=site.function, model=guidance.model, topic=guidance.topic,
+                query=guidance.query, sources=[{"title": s["title"], "url": s["url"]} for s in guidance.sources],
             ),
         )
         for r in results:
