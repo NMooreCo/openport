@@ -244,6 +244,13 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - Found and fixed on the first live run: a Windows UTF-8 console crash.
 - Next: grow the eval sets (held-out sets are only 3–5 cases, so one case can push a call up a tier — triage landed on Ultra, which costs more than gpt-5-mini: $0.11 → $0.35 per 1k).
 
+**Sat 24: bigger eval sets, research and the final SupportDesk numbers.**
+- Eval sets grown from 54 to 118 hand-labelled cases (held-out sets of 6–9), with a test that checks the labels against the app's own data.
+- With the bigger sets, the small-set results didn't all hold: triage no longer needed Ultra, and the reply drafter's "100%" turned out to be lucky draws (its two failing cases both passed on rerun).
+- Free text scored by a judge is now sampled twice per case (`samples: 2`); every sample counts against the same 90% bar.
+- Tavily research step in tuning: on, with sources limited to the exact model. Measured honestly: following the model cards' generic sampling advice helped one call and hurt two (see FEEDBACK.md), so the engineer now treats it as background.
+- **Final SupportDesk result (research on): 4 of 5 calls ported, each 95–100% with 100% held-out, at $42.82 → $1.63 per 1,000 runs of each call (96% less).** triage → Super, pii → Super as written, refunds (gpt-5) → Nano as written, policy (Claude Opus) → Nano. The reply drafter stays on Claude Sonnet: best tier 85%, under the bar. That's the job for the fine-tune ("Ultra teaches a smaller model").
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).

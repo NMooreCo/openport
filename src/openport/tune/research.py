@@ -18,7 +18,8 @@ QUERIES = {
     "json": "{model} JSON structured output response_format recommended settings",
     "tools": "{model} tool calling function calling recommended settings",
     "reasoning": "{model} reasoning mode enable_thinking chat template when to turn reasoning off",
-    "text": "{model} system prompt instruction following recommended temperature and reasoning settings",
+    # Not "recommended temperature": asking for sampling defaults pulled every free-text fix toward them.
+    "text": "{model} system prompt instruction following and output formatting best practices",
 }
 JSON_OUTPUTS = {"json_object", "json_schema", "json_in_text"}
 EXCERPT_CHARS = 700
