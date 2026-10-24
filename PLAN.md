@@ -287,7 +287,8 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - The fine-tune left the queue after 2 h 21 min and started training. The follower then stopped on a 500 from the events list while the job carried on; it now retries server errors at the next poll (up to 20 in a row), and the CLI says how to pick the job up again.
 - **The fine-tune succeeded** (Llama 3.1 8B LoRA, 14 minutes of training, 193,041 tokens), but its adapter won't download until the account has funds again (`402`). Next: `openport finetune --job ftjob-ba4f5926762e41f2ad0e612e9c9516ca` to download it, then serve it (a Dedicated Endpoint bills GPU-hours, so ask first, or vLLM on AI Cloud) and run the reply drafter's evals on it.
 - Found while checking the deck: the AuthKit upgrade recording predates quote checking, so re-record it once credit is back (`docs/VIDEO.md`).
-- 178 offline tests.
+- **The upgrader bumps `poetry.lock` and `pnpm-lock.yaml` too**, so every lockfile it reads, it can upgrade. Poetry pins each package, then puts `pyproject.toml` back and keeps it wherever its constraints allow the new version (else `^1.7.1` becomes `^2.14.0`); pnpm runs the repo's own version, with overrides for transitive packages. Poetry 2.5.1 and pnpm hold back releases under the age cutoff themselves, and every version any lockfile bump adds is now checked against its registry's release date before it's kept. Checked live on lab copies of AuthKit (Poetry: PyJWT, requests and pytest; pnpm: jsonwebtoken), both proven by their tests, with lockfiles that change only what the bumps need. Still to do for upgrades: test runs on Serverless Jobs.
+- 184 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
