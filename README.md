@@ -48,6 +48,13 @@ Measure the "plain swap" baseline for the SupportDesk demo app: what happens if 
 uv run openport baseline examples/supportdesk
 ```
 
+Tune each call. OpenPort starts it on Nemotron Nano exactly as written. If it misses the target, Nemotron Ultra reads the failures and proposes a fix (extra prompt instructions, reasoning on or off, a higher token limit, temperature), and it tries again, moving up to Super and then Ultra if needed. About 30% of each call's cases are held out: Ultra never sees them, and a fix only counts if it passes those too. The result is a plan for `openport port`.
+
+```bash
+uv run openport tune examples/supportdesk
+uv run openport port examples/supportdesk --plan runs/plan-supportdesk.json
+```
+
 ## Repo layout
 
 | Path | What it is |

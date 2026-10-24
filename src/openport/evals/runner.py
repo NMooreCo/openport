@@ -115,6 +115,7 @@ def run_site(
     judge: Judge | None = None,
     extra_body: dict | None = None,
     client: OpenAI | None = None,
+    cases: list[dict] | None = None,
 ) -> SiteResult:
     """Point the call site's SDK client at `model`, run every case, and put the original client back."""
     prepare_imports(spec)
@@ -124,7 +125,7 @@ def run_site(
     original = getattr(module, site.client_attr)
     setattr(module, site.client_attr, swapped_client(site, model, meter, client or tokenfactory.client(), extra_body))
     try:
-        cases = site.cases(limit)
+        cases = cases if cases is not None else site.cases(limit)
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             results = list(pool.map(lambda case: _run_case(site, function, case, judge), cases))
     finally:

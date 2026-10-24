@@ -176,6 +176,15 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - 28 offline tests.
 - Not yet: rewriting Anthropic code natively as chat completions (Super's job), and Anthropic in TypeScript.
 
+**Sun 25 tuning loop (built early, Fri 23; not run live yet):** `openport tune <target>`.
+- **Ladder:** Nano as written (the baseline), then up to 3 rounds where Ultra proposes a variant, then Super, then Ultra.
+- **Variant knobs**, applied at the client so app code is untouched during tuning: system-prompt addendum, reasoning on/off, a `max_tokens` floor, temperature.
+- **Held-out cases:** a stable ~30% split; the engineer only sees tuning-case failures, and a variant must pass both sets.
+- **Engineer rules:** fix the class of failure, never quote expected answers.
+- **Output:** a plan for `openport port --plan`. The reasoning switch is written into the code; addendum, `max_tokens` and temperature appear as "Tuned:" notes for now.
+- 34 offline tests.
+- Next: write the tuned addendum into the prompt's source (find it by searching for the text the app sends).
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.
@@ -184,6 +193,19 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 Keep a running `FEEDBACK.md` all week. Every friction point with Token Factory, Nemotron, Serverless or fine-tuning goes in it. It's free material for the feedback prize.
 
 **Daily rule:** each day's work runs end to end before you stop.
+
+## Phase 2: `openport upgrade` (security updates), after the core demo works end to end
+
+The same "prove it, then ship it" engine, second kind of PR: patch vulnerable dependencies and fix the code the upgrade breaks.
+
+1. **Find vulnerable versions:** read lockfiles (`uv.lock`, `poetry.lock`, `requirements*.txt`, `package-lock.json`, `pnpm-lock.yaml`) and query the OSV.dev API (free, no key).
+2. **Pick the target version:** the earliest version that fixes the advisory and is at least N days old (default 7). Recent supply-chain attacks shipped malicious *new* releases, so never jump to the newest one the day it lands.
+3. **Research the change:** Tavily fetches the advisory, changelog and migration guide (all newer than any model's training data). This is the central Tavily use.
+4. **Fix the code:** Super patches call sites the upgrade breaks, using OpenPort's byte-precise edits.
+5. **Prove it:** run the repo's own test suite before and after (Nebius Serverless Jobs for parallel runs).
+6. **Ship:** a PR with the advisory, the version jump and why, code changes, and test results. Never auto-merge.
+
+Pitch: "OpenPort keeps your app open and current. It moves your LLM calls onto open models, patches vulnerable packages, and every change ships as a PR with proof."
 
 ## Risks
 

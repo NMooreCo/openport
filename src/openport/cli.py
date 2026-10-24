@@ -184,6 +184,58 @@ def scan(
     console.print(f"Saved {path}")
 
 
+@app.command()
+def tune(
+    target: Path = typer.Argument(..., help="Target app folder, or its openport.evals.yaml"),
+    sites: str | None = typer.Option(None, help="Comma-separated eval call-site IDs (default: all)"),
+    target_rate: float = typer.Option(0.9, "--target", help="Pass rate a call must reach on both tuning and held-out cases"),
+    rounds: int = typer.Option(3, help="Attempts per tier before moving up"),
+    tiers: str = typer.Option("nano,super,ultra", help="Comma-separated tiers, cheapest first"),
+    concurrency: int = typer.Option(8, help="Cases to run in parallel"),
+    limit: int | None = typer.Option(None, help="Only use the first N cases of each call site"),
+    judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
+) -> None:
+    """Find the cheapest Nemotron model, and the smallest prompt or setting change, that makes each call pass."""
+    from .tune import tune_spec
+
+    tier_list = tuple(t.strip() for t in tiers.split(",") if t.strip())
+    if set(tier_list) - set(config.TIERS):
+        _fail(f"Unknown tiers in {tiers!r}")
+
+    def progress(site, attempt):
+        held = "" if attempt.holdout_pass is None else f", held-out {attempt.holdout_pass:.0%}"
+        mark = " [green]passes[/green]" if attempt.meets(target_rate) else ""
+        console.print(
+            f"  {site.id:<10} {attempt.tier:<6} round {attempt.round}  {attempt.variant.describe():<44} "
+            f"tuning {attempt.tune_pass:.0%}{held}{mark}"
+        )
+
+    try:
+        results, totals, report_path, plan_path = tune_spec(
+            target, site_ids=sites.split(",") if sites else None, target=target_rate, rounds=rounds, tiers=tier_list,
+            concurrency=concurrency, limit=limit, use_judge=judge, on_attempt=progress,
+        )
+    except (config.MissingKeyError, RuntimeError, FileNotFoundError) as error:
+        _fail(str(error))
+
+    table = Table(title=f"Tuning results (target {target_rate:.0%} on tuning and held-out cases)")
+    for column in ("Call site", "Plain Nano", "Chosen", "Pass rate", "Held-out", "Change", "Eval cost"):
+        table.add_column(column)
+    for r in results:
+        base = f"{r.baseline.pass_rate:.0%}" if r.baseline else "?"
+        if r.chosen:
+            c = r.chosen
+            held = "-" if c.holdout_pass is None else f"{c.holdout_pass:.0%}"
+            table.add_row(r.site_id, base, f"[green]{c.tier}[/green]", f"{c.pass_rate:.0%}", held, c.variant.describe(), f"${r.cost_usd:.4f}")
+        else:
+            best = r.best
+            table.add_row(r.site_id, base, "[yellow]none[/yellow]", f"best {best.pass_rate:.0%}" if best else "?", "-", "-", f"${r.cost_usd:.4f}")
+    console.print(table)
+    eval_cost = sum(r.cost_usd for r in results)
+    console.print(f"OpenPort's own cost: ${eval_cost + totals['helper_cost_usd']:.4f} (evals ${eval_cost:.4f}, engineer + judge ${totals['helper_cost_usd']:.4f})")
+    console.print(f"Report: {report_path}\nPlan for `openport port --plan`: {plan_path}")
+
+
 def _target_root(target: str) -> Path:
     from .workspace import fetch_repo, is_remote
 

@@ -56,7 +56,7 @@ def build_plan(
         choice = (assigned or {}).get("model")
         blockers = BLOCKERS & set(finding.features)
         if choice == "keep":
-            decision.keep_because("kept by the plan")
+            decision.keep_because((assigned or {}).get("reason") or "kept by the plan")
         elif choice:
             decision.model = models.get(choice, choice)
         elif blockers:
@@ -65,5 +65,18 @@ def build_plan(
             decision.keep_because("Anthropic SDK in TypeScript: the runtime doesn't cover it yet")
         if not decision.keep:  # ported anyway: carry the scanner's warnings into the port report
             decision.notes += [NOTES[f] for f in finding.features if f in NEEDS_REVIEW - BLOCKERS]
+            decision.notes += _tuned_changes((assigned or {}).get("variant") or {})
         plan[finding.id] = decision
     return plan
+
+
+def _tuned_changes(variant: dict) -> list[str]:
+    """Prompt and setting changes from tuning that the port doesn't write into the code yet."""
+    changes = []
+    if variant.get("system_addendum"):
+        changes.append(f"Tuned: append to the system prompt: \"{variant['system_addendum']}\"")
+    if variant.get("max_tokens"):
+        changes.append(f"Tuned: allow at least {variant['max_tokens']} output tokens")
+    if variant.get("temperature") is not None:
+        changes.append(f"Tuned: temperature {variant['temperature']}")
+    return changes
