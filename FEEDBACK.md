@@ -20,8 +20,9 @@ Two kinds of notes are tracked separately and honestly:
 - Found: only Chat Completions is compatible; Responses-API calls must be rewritten to `chat.completions`.
 - Suggestion: call this out explicitly in the compatibility docs — it's easy to assume "OpenAI-compatible" includes the newer Responses API.
 
-**[live] Tool calling and JSON/structured-output reliability per tier.** (pending keys)
-- I built `openport smoke` to check `json_object`, `json_schema`, forced/`auto` tool choice and the reasoning switch on Nano, Super and Ultra. Results go here once I can run it.
+**[live] Nano fails strict structured output (`json_schema`); Super and Ultra pass.** (Oct 24)
+- Ran `openport smoke` against all three tiers. `json_object` (JSON mode), `auto`/forced tool calling, a tool round-trip, and the reasoning on/off switch all pass on Nano, Super and Ultra. But strict JSON-schema structured output (`chat.completions.parse` with a Pydantic schema) **fails on Nano** while passing on Super and Ultra.
+- Impact: a cheap high-volume extraction call that relies on strict schemas can't just drop onto Nano; it needs Super, or a prompt that coaxes schema-valid output. This is exactly what OpenPort's tuning ladder is for, but it's worth a docs note on which tiers support strict structured output.
 
 ## Nemotron models and tiers
 
@@ -30,8 +31,10 @@ Two kinds of notes are tracked separately and honestly:
 - Found: OpenPort resolves the Nano/Super/Ultra tier IDs from `/v1/models` at runtime instead of hard-coding, which is more robust but means a startup round-trip and some guessing about which listed model is which tier.
 - Suggestion: a documented tier label (or a `family`/`tier` field in the models list) so tooling can map "the small Nemotron" to an ID without heuristics.
 
-**[live] Does a plain base-URL swap actually degrade quality?** (pending keys)
-- The whole headline depends on measuring this. Numbers go here after the first `openport baseline` run.
+**[live] A plain base-URL swap does leave a real, measurable gap.** (Oct 24)
+- First `openport baseline` on SupportDesk (54 cases): a plain swap to Nemotron scores **74%** on Nano, **83%** on Super, **85%** on Ultra — none at parity with the original closed models.
+- The free-text reply call (strict tone/format rules) collapses on a plain swap: **0% / 25% / 38%** across the tiers, because Nemotron doesn't follow the app's sign-off and no-promises rules without tuning. The JSON/tool calls fare much better (refunds 100%, policy 89–100%).
+- Takeaway: the open models are capable, but "just change the base URL" is not safe to ship as-is — which is the whole reason OpenPort proves each call before porting it.
 
 ## Pricing
 

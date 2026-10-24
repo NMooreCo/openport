@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,15 @@ from rich.console import Console
 from rich.table import Table
 
 from . import config, tokenfactory
+
+# Windows consoles default to cp1252, which can't encode characters that turn up in model output
+# (non-breaking hyphens, smart quotes, box drawing); writing them would crash a run mid-stream.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
 
 app = typer.Typer(
     help="OpenPort: move your app from closed LLM APIs onto NVIDIA Nemotron, and prove it still works.",
