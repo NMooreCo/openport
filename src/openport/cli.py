@@ -513,8 +513,13 @@ def check(
 def upgrade(
     target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
     min_age: int = typer.Option(7, "--min-age", help="Only propose a fix version at least this many days old"),
+    apply: bool = typer.Option(False, "--apply", help="Upgrade a copy, run the repo's tests before and after in Docker, and have Super fix what breaks"),
+    rounds: int = typer.Option(3, help="With --apply: fix attempts before giving up"),
+    test_image: str | None = typer.Option(None, help="With --apply: container image for the tests (default: Python 3.12)"),
+    test_command: str | None = typer.Option(None, help="With --apply: shell command that installs and runs the tests"),
+    out: Path | None = typer.Option(None, help="With --apply: where to write the upgraded copy (default: runs/upgrades/<name>)"),
 ) -> None:
-    """Phase 2 (dry run): find vulnerable dependencies and the safe version that fixes each, via OSV.dev."""
+    """Find vulnerable dependencies and the safe version that fixes each (OSV.dev); with --apply, upgrade and prove it."""
     from .upgrade import plan_upgrades, read_lockfiles
 
     root = _target_root(target)
@@ -530,21 +535,74 @@ def upgrade(
         console.print(f"[green]No known vulnerabilities in {len(deps)} dependencies.[/green]")
         return
 
-    colors = {"upgrade": "green", "held: fix too new": "yellow", "no fix available": "red"}
+    colors = {"upgrade": "green", "partial": "green", "held: fix too new": "yellow", "no fix available": "red"}
     table = Table(title=f"Vulnerable dependencies in {root.resolve().name}")
     for column in ("Package", "Installed", "Fix", "Advisories", "Status"):
         table.add_column(column)
     for up in plans:
         fix = f"[green]{up.target.version}[/green] ({up.target.age_days}d old)" if up.target else "—"
         color = colors.get(up.status, "white")
-        table.add_row(up.dep.name, up.dep.version, fix, ", ".join(up.advisory_ids), f"[{color}]{up.status}[/{color}]")
+        ids = up.advisory_ids
+        table.add_row(up.dep.name, up.dep.version, fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""), f"[{color}]{up.status}[/{color}]")
     console.print(table)
 
-    upgradable = sum(up.status == "upgrade" for up in plans)
-    console.print(
-        f"\n{len(plans)} vulnerable of {len(deps)} dependencies: {upgradable} have a safe fix. "
-        "Dry run: `openport upgrade` proposes versions; it doesn't change files yet."
+    upgradable = sum(up.target is not None for up in plans)
+    console.print(f"\n{len(plans)} vulnerable of {len(deps)} dependencies: {upgradable} have a safe fix.")
+    if not apply:
+        console.print("Dry run. With --apply, OpenPort upgrades a copy, runs the tests before and after, and fixes what breaks.")
+        return
+    _apply_upgrades(root, plans, rounds, test_image, test_command, out, min_age)
+
+
+def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, out, min_age: int) -> None:
+    from .upgrade import report as upgrade_report
+    from .upgrade.fix import make_fixer
+    from .upgrade.research import research_upgrade
+    from .upgrade.run import upgrade_repo
+    from .upgrade.testrun import PYTHON_IMAGE, PYTHON_TESTS, run_tests
+
+    if shutil.which("docker") is None:
+        _fail("--apply runs the repo's tests in a Docker container; install Docker first.")
+    try:
+        fixer = make_fixer()
+    except config.MissingKeyError:
+        fixer = None
+        console.print("[yellow]No NEBIUS_API_KEY: OpenPort will bump and test, but can't fix code the upgrade breaks.[/yellow]")
+    researcher = research_upgrade if os.getenv("TAVILY_API_KEY") else None
+
+    def show(test_run):
+        return f"[{'green' if test_run.ok else 'red'}]{'pass' if test_run.ok else 'FAIL'}[/] {test_run.summary} ({test_run.seconds}s)"
+
+    def event(kind, data):
+        if kind == "before":
+            console.print(f"  Tests before the upgrade: {show(data)}")
+        elif kind == "after_bump":
+            console.print(f"  Tests after the version bump: {show(data)}")
+        elif kind == "research":
+            console.print(f"  [cyan]Tavily[/cyan]: {len(data)} page(s) on what changed")
+        elif kind == "round":
+            for edit, why in data.rejected:
+                console.print(f"  [yellow]Rejected Super's edit to {edit.file}: {why}[/yellow]")
+            if data.edits:
+                files = ", ".join(sorted({e.file for e in data.edits}))
+                console.print(f"  Super changed {files}: {data.rationale}\n  Tests after the fix: {show(data.tests)}")
+
+    name = root.resolve().name
+    out_dir = out or config.RUNS_DIR / "upgrades" / name
+    console.print(f"\nUpgrading a copy in {out_dir} (the original is untouched)...")
+    run = upgrade_repo(
+        root, out_dir, plans=plans, rounds=rounds, researcher=researcher, fixer=fixer, on_event=event,
+        run_tests=lambda folder: run_tests(folder, image=test_image or PYTHON_IMAGE, command=test_command or PYTHON_TESTS),
     )
+    if not run.upgraded:
+        _fail("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
+    config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    diff_path = config.RUNS_DIR / f"upgrade-{name}.diff"
+    diff_path.write_text(run.diff, encoding="utf-8")
+    body_path = config.RUNS_DIR / f"pr-upgrade-{name}.md"
+    body_path.write_text(upgrade_report.render(run, min_age), encoding="utf-8")
+    verdict = "[green]Proven: the tests pass before and after the upgrade.[/green]" if run.proven else "[red]Not proven: see the test results.[/red]"
+    console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
 
 
 @app.command()

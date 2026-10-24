@@ -232,7 +232,10 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **Advisories:** queries OSV.dev per dependency at its installed version (free, no key) and extracts the fixed versions.
 - **Safe target:** picks the lowest stable release that fixes every advisory, is newer than installed, and is at least `--min-age` days old (default 7) — the supply-chain guard against freshly-published malicious releases; holds if the only fix is too new.
 - **CLI:** a dry-run report (vulnerable deps, installed -> fix, advisory IDs, status). 86 offline tests.
-- Not yet (needs a live environment): Tavily research on the advisory/changelog, Super patching broken call sites, running the repo's test suite before/after, and opening the PR.
+- **Done (Oct 24): `--apply`.** It upgrades a copy, runs the repo's tests in Docker before and after, has Tavily read the changelog and advisory, and has Super fix application code (exact edits; edits to tests are rejected). It writes the diff and PR description.
+  - On real OSV data, selection now fixes what it safely can (one disputed advisory without a fix no longer blocks PyJWT), follows OSV's per-branch ranges, and counts each flaw once (GHSA and PYSEC records merged).
+  - Live on `examples/authkit`: PyJWT 1.7.1 → 2.14.0 and requests 2.31.0 → 2.33.0 fix 15 advisories. Tests: 5 passed before; 4 failed after the bump; Super dropped `.decode()` (2 still failing), then added `algorithms=["HS256"]` → 5 passed. **Proven.** One proposed edit was rejected by the exact-match guard.
+- Still to do: bump lockfile-managed deps (uv.lock, poetry.lock, package-lock.json) through their package managers; `--open` the PR like `openport pr`; run the test jobs on Serverless Jobs.
 
 **Sat 24: first live runs on Token Factory.**
 - `openport smoke`: JSON mode, tool calling (auto, forced, round trip) and the reasoning switch work on all three tiers; strict `json_schema` fails on Nano (Super and Ultra pass).

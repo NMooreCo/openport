@@ -77,14 +77,22 @@ Keep it honest after merging. `openport port` adds a GitHub Action (when the rep
 uv run openport check .
 ```
 
-## Upgrade vulnerable dependencies (Phase 2, dry run)
+## Upgrade vulnerable dependencies
 
-The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vulnerable packages. `openport upgrade` reads the repo's lockfiles, asks [OSV.dev](https://osv.dev) which installed versions are vulnerable, and picks the earliest version that fixes each advisory and is at least a week old — so a brand-new malicious release can't be auto-selected. Today it reports; the code fixes, test runs and PR are next.
+The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vulnerable packages and fix the code the upgrade breaks.
+
+1. `openport upgrade` reads the repo's lockfiles and asks [OSV.dev](https://osv.dev) which installed versions are vulnerable.
+2. For each package it picks the release that fixes the most advisories while being **at least a week old**, so a brand-new malicious release can't be auto-selected. Advisories with no fix yet are reported, not ignored.
+3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container.
+4. If the upgrade breaks them, Tavily reads the changelog and advisory, and Nemotron Super fixes the application code (never the tests) until they pass.
+5. It writes the diff and a PR description with the advisories, the version chosen and why, the code changes with their sources, and the test results.
 
 ```bash
-uv run openport upgrade .            # Python and Node lockfiles; OSV.dev, no key needed
-uv run openport upgrade . --min-age 14
+uv run openport upgrade examples/authkit            # dry run: what's vulnerable, and the safe version
+uv run openport upgrade examples/authkit --apply    # upgrade a copy, prove it with the tests
 ```
+
+On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5.
 
 ## Dashboard
 
