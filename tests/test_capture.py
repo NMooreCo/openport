@@ -22,6 +22,7 @@ LOG_FILES = {
     "replies.draft_reply": EVALS / "replies.jsonl",
     "policy.review_case": EVALS / "policy.jsonl",
 }
+TRIAGE_CASES = sum(1 for line in (EVALS / "triage.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
 
 
 def finding(**kwargs) -> CallSiteFinding:
@@ -213,7 +214,7 @@ def test_capture_supportdesk_with_logs():
     assert by_id["triage.triage_ticket"].spec["grader"] == {"type": "fields", "fields": ["category", "priority"]}
     assert by_id["refunds.handle_refund_request"].spec["grader"] == {"type": "fields", "fields": ["action", "amount"]}
     assert by_id["replies.draft_reply"].spec["grader"]["type"] == "text_rules"
-    assert len(by_id["triage.triage_ticket"].cases) == 15
+    assert len(by_id["triage.triage_ticket"].cases) == TRIAGE_CASES
     assert all(s.source == "logs" for s in result.sites)
 
 
@@ -234,5 +235,5 @@ def test_write_capture_roundtrips_through_load_spec(tmp_path):
     assert spec.target == "supportdesk"
     assert len(spec.call_sites) == 5
     triage = next(s for s in spec.call_sites if s.id == "triage.triage_ticket")
-    assert len(triage.cases()) == 15
+    assert len(triage.cases()) == TRIAGE_CASES
     assert spec.source_root.exists()

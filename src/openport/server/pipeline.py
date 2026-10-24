@@ -18,7 +18,7 @@ from ..workspace import fetch_repo
 
 EXAMPLES = Path(os.getenv("OPENPORT_EXAMPLES", Path(__file__).resolve().parents[3] / "examples"))
 PRESETS = [
-    {"id": "supportdesk", "label": "SupportDesk", "detail": "Demo app: 5 calls on OpenAI + Anthropic, 54 labelled test cases", "path": "supportdesk"},
+    {"id": "supportdesk", "label": "SupportDesk", "detail": "Demo app: 5 calls on OpenAI + Anthropic, 118 labelled test cases", "path": "supportdesk"},
     {"id": "preflight", "label": "jsliapark/preflight", "detail": "AI PR reviewer: 4 Claude Opus calls", "repo": "jsliapark/preflight"},
     {"id": "probly", "label": "PragmaticMachineLearning/probly", "detail": "Spreadsheet assistant: 4 GPT-4o calls, tools and vision", "repo": "PragmaticMachineLearning/probly"},
 ]

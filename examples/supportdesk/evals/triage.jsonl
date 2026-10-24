@@ -13,3 +13,19 @@
 {"id": "triage-13", "input": {"ticket": "CHEAP FOLLOWERS!!! 10k Instagram followers for $5, visit our site now"}, "expected": {"category": "other", "priority": "low"}}
 {"id": "triage-14", "input": {"ticket": "Ordered a replacement water filter with expedited shipping for a trip that leaves tomorrow morning. Tracking says 'delivery exception'. Without it our group has no way to treat water."}, "expected": {"category": "shipping", "priority": "urgent"}}
 {"id": "triage-15", "input": {"ticket": "How should I wash my down sleeping bag without ruining the loft?"}, "expected": {"category": "product_question", "priority": "low"}}
+{"id": "triage-16", "input": {"ticket": "I changed the email on my account last month and now I can't log in with either address."}, "expected": {"category": "account", "priority": "normal"}}
+{"id": "triage-17", "input": {"ticket": "Can I pay for one order with a gift card and a credit card together?"}, "expected": {"category": "billing", "priority": "low"}}
+{"id": "triage-18", "input": {"ticket": "My stove's fuel line is cracked and it smells like gas when I connect the canister. Order FH-100288."}, "expected": {"category": "returns", "priority": "urgent"}}
+{"id": "triage-19", "input": {"ticket": "The Squeeze filter clogged after one liter and we're two days from the trailhead with no other way to treat water. What do we do?"}, "expected": {"category": "returns", "priority": "urgent"}}
+{"id": "triage-20", "input": {"ticket": "Tracking for FH-100277 says delivered yesterday, but there's nothing on my porch and my neighbors don't have it."}, "expected": {"category": "shipping", "priority": "normal"}}
+{"id": "triage-21", "input": {"ticket": "If my refund for FH-100281 isn't processed this week, I'm filing a complaint with the state attorney general."}, "expected": {"category": "returns", "priority": "urgent"}}
+{"id": "triage-22", "input": {"ticket": "Please delete my account and all the data you have on me."}, "expected": {"category": "account", "priority": "normal"}}
+{"id": "triage-23", "input": {"ticket": "The size chart says M fits a 38-40 inch chest. I'm 39.5 and want to layer under the Alpine jacket. M or L?"}, "expected": {"category": "product_question", "priority": "low"}}
+{"id": "triage-24", "input": {"ticket": "Your site logs me out every time I add something to my cart on my phone, so I can't buy anything."}, "expected": {"category": "technical", "priority": "normal"}}
+{"id": "triage-25", "input": {"ticket": "I ordered the boots in black and got brown. Can I swap them for the right color?"}, "expected": {"category": "returns", "priority": "normal"}}
+{"id": "triage-26", "input": {"ticket": "I was charged $89 twice, and the second charge is for an order I never placed."}, "expected": {"category": "billing", "priority": "normal"}}
+{"id": "triage-27", "input": {"ticket": "URGENT!!! Limited time: 10,000 followers for $5. Click the link in our bio now!!!"}, "expected": {"category": "other", "priority": "low"}}
+{"id": "triage-28", "input": {"ticket": "My son's Beacon headlamp overheated and burned his forehead. He needed first aid."}, "expected": {"category": "returns", "priority": "urgent"}}
+{"id": "triage-29", "input": {"ticket": "Just wanted to say thanks for the quick help with my exchange last week. Maya was great."}, "expected": {"category": "other", "priority": "low"}}
+{"id": "triage-30", "input": {"ticket": "The password reset link you sent says it has expired, and asking for a new one sends the same expired link."}, "expected": {"category": "account", "priority": "normal"}}
+{"id": "triage-31", "input": {"ticket": "Where is order FH-100290? It's been three weeks and I need the tent for a wedding on Saturday."}, "expected": {"category": "shipping", "priority": "normal"}}

@@ -1,6 +1,7 @@
 """Run SupportDesk's real code through the eval runner against a scripted fake Token Factory."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,12 @@ from openport.evals.spec import load_spec
 
 from .fakes import FakeTokenFactory, completion
 
-SPEC = load_spec(Path(__file__).parents[1] / "examples" / "supportdesk")
+SUPPORTDESK = Path(__file__).parents[1] / "examples" / "supportdesk"
+SPEC = load_spec(SUPPORTDESK)
+ORDERS = {o["order_id"]: o for o in json.loads((SUPPORTDESK / "supportdesk/data/orders.json").read_text(encoding="utf-8"))}
+CATEGORIES = {"billing", "shipping", "returns", "product_question", "account", "technical", "other"}
+PRIORITIES = {"urgent", "normal", "low"}
+PII_TAGS = {"[NAME]", "[EMAIL]", "[PHONE]", "[ADDRESS]", "[CARD]"}
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +36,41 @@ def test_spec_and_datasets_are_well_formed():
         assert cases, call_site.id
         assert len({case["id"] for case in cases}) == len(cases)
         assert all({"id", "input", "expected"} <= case.keys() for case in cases)
+
+
+def test_labels_are_internally_consistent():
+    """Catch label slips in the hand-labelled sets: each expected value must be possible given the case and the app's data."""
+    for case in site("triage").cases():
+        assert case["expected"]["category"] in CATEGORIES and case["expected"]["priority"] in PRIORITIES, case["id"]
+
+    for case in site("pii").cases():
+        ticket, expected = case["input"]["ticket"], case["expected"]
+        assert all(s in ticket for s in expected["pii_strings"] + expected["must_keep"]), case["id"]
+        assert set(expected["tags"]) <= PII_TAGS, case["id"]
+        assert expected["order_id"] is None or re.fullmatch(r"FH-\d{6}", expected["order_id"]), case["id"]
+
+    for case in site("replies").cases():
+        given, expected = case["input"], case["expected"]
+        greeting = given["customer_name"].split()[0] if given.get("customer_name") else "Hi there"
+        assert greeting in expected["must_include"], case["id"]
+        # The app only promises to mention order numbers the customer gave.
+        assert all(item in given["ticket"] for item in expected["must_include"] if item.startswith("FH-")), case["id"]
+
+    for case in site("refunds").cases():
+        order = ORDERS[re.search(r"FH-\d{6}", case["input"]["ticket"]).group(0)]
+        expected = case["expected"]
+        if expected["action"] == "refund":
+            ceiling = sum(i["price"] for i in order["items"]) + order["shipping_cost"]
+            assert 0 < expected["amount"] <= min(ceiling, 250), case["id"]  # agents can't go over $250 (s8)
+        else:
+            assert expected["amount"] is None, case["id"]
+        if order["refunds_last_90_days"] >= 3:
+            assert expected["action"] == "escalate", case["id"]  # repeat refunds go to a supervisor first (s10)
+
+    for case in site("policy").cases():
+        expected = case["expected"]
+        assert expected["decision"] in {"approve", "partial", "deny"}, case["id"]
+        assert (expected["decision"] == "deny") == (expected["refund_amount"] == 0), case["id"]
 
 
 def test_triage_runs_through_swapped_openai_client():
