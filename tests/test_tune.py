@@ -111,6 +111,18 @@ def test_every_sample_is_counted_but_cases_are_counted_once():
     assert (result.chosen.total, result.chosen.cases, result.chosen.pass_rate) == (2 * n, n, 1.0)
 
 
+def test_a_tier_can_be_served_somewhere_else():
+    """A fine-tuned student on its own endpoint: its tier uses its own client, the others use Token Factory."""
+    token_factory = triage_fake(lambda request: False)
+    student = triage_fake(lambda request: True)
+    result = tune_site(
+        SPEC, TRIAGE, {**MODELS, "student": "ft:llama-3.1-8b:student"}, client=token_factory, engineer=RecordingEngineer(Variant()),
+        tiers=("nano", "student", "super"), rounds=1, clients={"student": student},
+    )
+    assert [(a.tier, a.model) for a in result.attempts] == [("nano", "nvidia/nano-test"), ("student", "ft:llama-3.1-8b:student")]
+    assert result.chosen.tier == "student" and {r["model"] for r in student.requests} == {"ft:llama-3.1-8b:student"}
+
+
 def test_parse_variant_tolerates_chatter():
     text = 'Here you go:\n```json\n{"reasoning": false, "system_addendum": "JSON only.", "max_tokens": 0, "temperature": null, "rationale": "x"}\n```'
     variant = parse_variant(text, fallback=Variant())

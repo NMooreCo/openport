@@ -274,6 +274,7 @@ def tune(
     limit: int | None = typer.Option(None, help="Only use the first N cases of each call site"),
     judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
     research: bool = typer.Option(True, help="Look up NVIDIA's guidance for each model with Tavily before proposing a fix (needs TAVILY_API_KEY)"),
+    model: list[str] | None = typer.Option(None, "--model", help="Add or override a tier: NAME=MODEL_ID or NAME=MODEL_ID@BASE_URL (repeatable), e.g. a fine-tuned student; list it in --tiers"),
     jobs: bool = typer.Option(False, "--jobs", help="Tune each call site in its own Nebius Serverless Job, all at once (needs the nebius CLI)"),
     job_image: str | None = typer.Option(None, envvar="OPENPORT_JOB_IMAGE", help="With --jobs: the container image to run (built from the Dockerfile)"),
     job_platform: str | None = typer.Option(None, envvar="OPENPORT_JOB_PLATFORM", help="With --jobs: a CPU platform, from `nebius compute platform list`"),
@@ -284,13 +285,21 @@ def tune(
     """Find the cheapest Nemotron model, and the smallest prompt or setting change, that makes each call pass."""
     from .tune import tune_spec
 
+    extra: dict[str, tuple[str, str | None]] = {}
+    for item in model or []:
+        name, sep, value = item.partition("=")
+        model_id, _, base_url = value.partition("@")
+        if not sep or not name.strip() or not model_id.strip():
+            _fail(f"--model wants NAME=MODEL_ID[@BASE_URL], got {item!r}")
+        extra[name.strip()] = (model_id.strip(), base_url.strip() or None)
     tier_list = tuple(t.strip() for t in tiers.split(",") if t.strip())
-    if set(tier_list) - set(config.TIERS):
-        _fail(f"Unknown tiers in {tiers!r}")
+    if set(tier_list) - set(config.TIERS) - set(extra):
+        _fail(f"Unknown tiers in {tiers!r}; add a tier with --model NAME=MODEL_ID")
 
     if jobs:
         tune_flags = ["--target", str(target_rate), "--rounds", str(rounds), "--tiers", ",".join(tier_list), "--concurrency", str(concurrency)]
         tune_flags += (["--limit", str(limit)] if limit else []) + ([] if judge else ["--no-judge"]) + ([] if research else ["--no-research"])
+        tune_flags += [flag for item in model or [] for flag in ("--model", item)]
         secrets = job_secret or [s for s in os.getenv("OPENPORT_JOB_SECRETS", "").split(",") if s.strip()]
         _tune_on_jobs(target, sites, tune_flags, job_image, job_platform, job_preset, secrets, job_registry_secret)
         return
@@ -310,7 +319,7 @@ def tune(
         results, totals, report_path, plan_path = tune_spec(
             target, site_ids=sites.split(",") if sites else None, target=target_rate, rounds=rounds, tiers=tier_list,
             concurrency=concurrency, limit=limit, use_judge=judge, use_research=research,
-            on_attempt=progress, on_research=found_guidance,
+            on_attempt=progress, on_research=found_guidance, extra_models=extra,
         )
     except (config.MissingKeyError, RuntimeError, FileNotFoundError) as error:
         _fail(str(error))

@@ -111,6 +111,7 @@ def tune_site(
     on_attempt: Callable[[CallSite, Attempt], None] | None = None,
     researcher: Researcher | None = None,
     on_research: Callable[[CallSite, Guidance], None] | None = None,
+    clients: dict[str, OpenAI] | None = None,  # per-tier clients, for a tier served somewhere else
 ) -> SiteTuning:
     cases = site.cases(limit)
     tune_cases, holdout = split_cases(cases)
@@ -128,7 +129,7 @@ def tune_site(
         model = models[tier]
         variant = best.variant if best else Variant()
         for round_number in range(rounds):
-            wrapped = VariantClient(client, variant)
+            wrapped = VariantClient((clients or {}).get(tier, client), variant)
             result = run_site(spec, site, tier, model, concurrency=concurrency, judge=judge, client=wrapped, cases=cases)
             system_prompts.extend(s for s in wrapped.systems if s not in system_prompts)
             tuned = [r for r in result.cases if r.case_id not in held_ids]
@@ -216,11 +217,18 @@ def tune_spec(
     use_research: bool = True,
     on_attempt: Callable[[CallSite, Attempt], None] | None = None,
     on_research: Callable[[CallSite, Guidance], None] | None = None,
+    extra_models: dict[str, tuple[str, str | None]] | None = None,  # tier -> (model ID, base URL or None)
 ) -> tuple[list[SiteTuning], dict, Path, Path]:
     spec = load_spec(target_dir)
     sites = [s for s in spec.call_sites if not site_ids or s.id in site_ids]
     models = tokenfactory.tiers()
     client = tokenfactory.client()
+    clients: dict[str, OpenAI] = {}
+    for tier, (model_id, base_url) in (extra_models or {}).items():
+        models = {**models, tier: model_id}
+        if base_url:  # e.g. a regional Dedicated Endpoint or a vLLM server; the key may be its own
+            key = os.getenv(f"OPENPORT_{tier.upper()}_API_KEY") or config.require("NEBIUS_API_KEY")
+            clients[tier] = OpenAI(base_url=base_url, api_key=key)
     helper_meter = UsageMeter()  # the engineer's and the judge's own calls: what OpenPort itself costs
     engineer = make_engineer(client, meter=helper_meter)
     judge = make_judge(helper_meter, client=client) if use_judge else None
@@ -230,7 +238,7 @@ def tune_spec(
         tune_site(
             spec, site, models, client=client, engineer=engineer, judge=judge, target=target, rounds=rounds,
             tiers=tiers, concurrency=concurrency, limit=limit, on_attempt=on_attempt,
-            researcher=researcher, on_research=on_research,
+            researcher=researcher, on_research=on_research, clients=clients,
         )
         for site in sites
     ]
