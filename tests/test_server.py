@@ -123,6 +123,36 @@ def server_nospec(tmp_path, monkeypatch):
     sys.modules.pop("miniapp", None)
 
 
+@pytest.fixture
+def server_pack(tmp_path, monkeypatch):
+    """A public repo with no eval spec, and an OpenPort eval pack for it."""
+    clone = tmp_path / "clones" / "owner__mini"
+    for path, text in NOSPEC_APP.items():
+        (clone / path).parent.mkdir(parents=True, exist_ok=True)
+        (clone / path).write_text(text)
+    pack = tmp_path / "examples" / "evalpacks" / "mini"
+    pack.mkdir(parents=True)
+    spec = MINI_APP["evals/openport.evals.yaml"].replace("source_root: ..", "source_root: repo:owner/mini")
+    (pack / "openport.evals.yaml").write_text(spec)
+    (pack / "classify.jsonl").write_text(MINI_APP["evals/classify.jsonl"])
+    fake = fake_token_factory()
+    monkeypatch.setattr(pipeline, "EXAMPLES", tmp_path / "examples")
+    monkeypatch.setattr(pipeline, "PRESETS", [{"id": "mini3", "label": "owner/mini", "detail": "remote app", "repo": "owner/mini"}])
+    monkeypatch.setattr(pipeline, "fetch_repo", lambda target: (clone, False))
+    monkeypatch.setattr("openport.workspace.fetch_repo", lambda target: (clone, False))
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(tokenfactory, "client", lambda: fake)
+    monkeypatch.setattr(tokenfactory, "tiers", lambda: MODELS)
+    monkeypatch.setattr(tokenfactory, "catalog", lambda: {})
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    runs.clear()
+    yield TestClient(app)
+    runs.clear()
+    sys.modules.pop("miniapp.classify", None)
+    sys.modules.pop("miniapp", None)
+
+
 def wait_for(client, run_id, timeout=30):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -167,6 +197,16 @@ def test_pipeline_end_to_end(server):
     assert stream.count("event: attempt") == 2 and "event: done" in stream
     again = server.post("/api/runs", json={"target": "mini"}).json()
     assert again["reused"] and again["id"] == started["id"]
+
+
+def test_pipeline_uses_an_eval_pack_for_a_repo_without_a_spec(server_pack):
+    started = server_pack.post("/api/runs", json={"target": "mini3"}).json()
+    run = wait_for(server_pack, started["id"])
+    assert run["status"] == "done", run["events"][-1]
+    events = run["events"]
+    assert [e["stage"] for e in events if e["type"] == "stage"] == ["fetch", "scan", "tune", "port", "pr"]  # no capture
+    assert any("eval pack" in e.get("message", "") and "4 hand-labelled cases" in e["message"] for e in events if e["type"] == "note")
+    assert next(e for e in events if e["type"] == "ported")["sites"][0]["status"] == "ported"
 
 
 def test_pipeline_captures_when_no_spec(server_nospec):

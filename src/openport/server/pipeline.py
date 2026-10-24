@@ -8,8 +8,11 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import yaml
+
 from .. import config, pricing, report, tokenfactory
 from ..capture import capture_repo, write_capture
+from ..evals.spec import SPEC_FILE, load_spec
 from ..port import build_plan, load_assignments, port_repo
 from ..port import find_eval_spec
 from ..scan import scan_repo
@@ -19,7 +22,7 @@ from ..workspace import fetch_repo
 EXAMPLES = Path(os.getenv("OPENPORT_EXAMPLES", Path(__file__).resolve().parents[3] / "examples"))
 PRESETS = [
     {"id": "supportdesk", "label": "SupportDesk", "detail": "Demo app: 5 calls on OpenAI + Anthropic, 118 labelled test cases", "path": "supportdesk"},
-    {"id": "preflight", "label": "jsliapark/preflight", "detail": "AI PR reviewer: 4 Claude Opus calls", "repo": "jsliapark/preflight"},
+    {"id": "preflight", "label": "jsliapark/preflight", "detail": "AI PR reviewer: 4 Claude Opus calls, 119 labelled test cases", "repo": "jsliapark/preflight"},
     {"id": "probly", "label": "PragmaticMachineLearning/probly", "detail": "Spreadsheet assistant: 4 GPT-4o calls, tools and vision", "repo": "PragmaticMachineLearning/probly"},
 ]
 GITHUB_REPO = re.compile(r"^(?:https?://github\.com/)?([A-Za-z0-9][\w.-]*/[A-Za-z0-9_][\w.-]*?)(?:\.git)?/?$")
@@ -45,6 +48,16 @@ class Run:
 
     def summary(self) -> dict:
         return {"id": self.id, "target": self.target, "label": self.label, "status": self.status, "created": self.created}
+
+
+def eval_pack_for(target: str) -> Path | None:
+    """OpenPort's own eval spec for a public repo that ships none (examples/evalpacks/*, matched on `source_root`)."""
+    packs = EXAMPLES / "evalpacks"
+    for spec in sorted(packs.glob(f"*/{SPEC_FILE}")) if packs.is_dir() else []:
+        raw = yaml.safe_load(spec.read_text(encoding="utf-8")) or {}
+        if raw.get("source_root") == f"repo:{target}":
+            return spec.parent
+    return None
 
 
 def resolve_target(target: str) -> tuple[str, str, Path | None]:
@@ -146,6 +159,10 @@ def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> 
 
     spec_rel = find_eval_spec(root)
     spec_target = (root / spec_rel) if spec_rel else None
+    if spec_target is None and local is None and (pack := eval_pack_for(target)):
+        spec_target = pack
+        cases = sum(len(s.cases()) for s in load_spec(pack).call_sites)
+        run.emit("note", message=f"This repo ships no eval spec, so OpenPort uses its own eval pack for it: {cases} hand-labelled cases.")
     if spec_target is None and AUTO_CAPTURE:
         spec_target = _capture_spec(run, root, name, scan)
 
