@@ -135,6 +135,7 @@ def download_adapter(tune: FineTune, *, client: OpenAI | None = None) -> FineTun
     final = max(checkpoints, key=lambda c: getattr(c, "step_number", 0) or 0)
     folder = config.RUNS_DIR / "finetunes" / tune.job_id
     folder.mkdir(parents=True, exist_ok=True)
+    tune.adapter_files = []  # a retry downloads them all again
     for file_id in getattr(final, "result_files", None) or []:
         name = client.files.retrieve(file_id).filename or file_id
         path = folder / Path(name).name

@@ -456,13 +456,20 @@ def finetune(
             console.print(f"  [dim]status: {state}[/dim]")
 
         tune = ft.follow(tune, on_status=status)
+        ft.save(tune)
         if tune.status == "succeeded":
             tune = ft.download_adapter(tune)
-        ft.save(tune)
+            ft.save(tune)
     except (config.MissingKeyError, ValueError, RuntimeError, TimeoutError) as error:
         _fail(str(error))
     except APIError as error:
-        _fail(f"Token Factory: {error}" + (f"\nThe job carries on; follow it again with: openport finetune --job {tune.job_id}" if tune else ""))
+        if tune and tune.status == "succeeded":
+            hint = f"\nThe fine-tune succeeded; download its adapter again with: openport finetune --job {tune.job_id}"
+        elif tune:
+            hint = f"\nThe job carries on; follow it again with: openport finetune --job {tune.job_id}"
+        else:
+            hint = ""
+        _fail(f"Token Factory: {error}{hint}")
     if tune.status != "succeeded":
         _fail(f"Fine-tuning {tune.status}: {tune.error or 'see the events above'}")
     console.print(f"[green]Done.[/green] Model: {tune.fine_tuned_model or '(see the job)'}; trained on {tune.trained_tokens or '?'} tokens")

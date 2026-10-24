@@ -95,6 +95,7 @@ def test_follow_until_done_then_download_the_final_checkpoint(tmp_path):
     assert [Path(p).name for p in tune.adapter_files] == ["f1.safetensors", "f2.safetensors"]  # the last checkpoint only
     assert Path(tune.adapter_files[0]).read_bytes() == b"weights f1"
     assert json.loads(ft.save(tune).read_text())["status"] == "succeeded"
+    assert len(ft.download_adapter(tune, client=client).adapter_files) == 2  # a retry doesn't list them twice
 
 
 def server_error():
