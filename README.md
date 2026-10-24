@@ -62,6 +62,23 @@ uv run openport tune examples/supportdesk
 uv run openport port examples/supportdesk --plan runs/plan-supportdesk.json
 ```
 
+With `TAVILY_API_KEY` set, before proposing a fix the tuner looks up NVIDIA's own guidance for the exact model it's tuning on (Nemotron 3 Nano, Super or Ultra, not a sibling like Nano Omni). Ultra cites the pages it relied on, and the PR links them next to the change.
+
+Tune every call at once on **Nebius Serverless Jobs**: each call site runs in its own container job, built from this repo's Dockerfile, and the results merge into one report and plan. API keys reach the jobs only as MysteryBox secrets. It needs the `nebius` CLI (Linux or macOS; on Windows, set `OPENPORT_NEBIUS_CLI` to run it through WSL).
+
+```bash
+uv run openport tune examples/supportdesk --jobs --job-image <registry>/openport:<tag> --job-platform <cpu-platform> --job-preset <preset> \
+  --job-secret NEBIUS_API_KEY=<mysterybox-secret> --job-secret TAVILY_API_KEY=<mysterybox-secret>
+```
+
+For a high-volume call, Ultra can teach a smaller model. `openport distill` has Super invent new inputs (never the eval cases), has Ultra answer them with the call's tuned settings, and keeps only the answers that pass the call's own checks, so the training set contains no closed-model outputs. `openport finetune` uploads it to Token Factory and LoRA-fine-tunes an open model on it. Token Factory doesn't fine-tune Nemotron yet, so the default student is Llama 3.1 8B Instruct. Once the student is served (a Dedicated Endpoint, or your own vLLM server), `--model` puts it on the tuning ladder, where it faces the same evals as every tier.
+
+```bash
+uv run openport distill examples/supportdesk --site replies --examples 300
+uv run openport finetune runs/distill-supportdesk-replies.jsonl --suffix supportdesk-replies
+uv run openport tune examples/supportdesk --sites replies --tiers nano,student,super --model student=<model-id>@<base-url>
+```
+
 The port writes the tuned changes into the code: prompt additions go into the string or prompt file where each prompt is written, and the reasoning switch, `max_tokens` and `temperature` go into the call. Anything it can't place safely is listed for review.
 
 Write the PR description: each call's model before and after, its score as a plain swap and after tuning, its held-out score, and the estimated cost per 1,000 calls. Closed-model prices come from the providers' pricing pages via Tavily, and a price is used only if the page actually shows it. With `--open`, OpenPort commits the port to a branch, pushes it to your fork and opens the PR there, so the original maintainers aren't notified.
@@ -136,10 +153,11 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | Grading free-text outputs (the LLM judge) | Ultra | [`evals/runner.py`](src/openport/evals/runner.py) |
 | Labelling generated eval cases | Ultra | [`capture/generate.py`](src/openport/capture/generate.py) |
 | Fixing the code a dependency upgrade broke | Super | [`upgrade/fix.py`](src/openport/upgrade/fix.py) |
+| Inventing training inputs, and answering them as the teacher | Super, Ultra | [`distill.py`](src/openport/distill.py) |
 
 **Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
 
-> Still to come: spreading eval runs across **Nebius Serverless Jobs** for parallelism, hosting the dashboard on a **Nebius Serverless Endpoint**, and **Token Factory fine-tuning** (Ultra teaching Nano on high-volume calls). These are in [PLAN.md](PLAN.md) and need live API keys to exercise.
+> Built, not yet run live: `tune --jobs` on **Nebius Serverless Jobs** (waiting on my AI Cloud setup) and serving the fine-tuned student, which needs a Dedicated Endpoint. Hosting the dashboard on a **Nebius Serverless Endpoint** is next. The plan is in [PLAN.md](PLAN.md).
 
 ## License
 

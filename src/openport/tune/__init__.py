@@ -204,6 +204,16 @@ def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
     return {"target": target, "call_sites": plan}
 
 
+def carry_forward(report: dict, plan: dict, previous_report: dict | None, previous_plan: dict | None, source: str) -> None:
+    """Re-tuning some calls: the others keep their latest results, so this run's report and plan stay whole."""
+    tuned = {(r["file"], r["function"]) for r in report["results"]}
+    kept = [r for r in (previous_report or {}).get("results", []) if (r["file"], r["function"]) not in tuned]
+    if kept:
+        report["results"] += kept
+        report["carried_over"] = {"from": source, "sites": [r["site_id"] for r in kept]}
+    plan["call_sites"] = {**(previous_plan or {}).get("call_sites", {}), **plan["call_sites"]}
+
+
 def tune_spec(
     target_dir: Path,
     *,
@@ -248,26 +258,23 @@ def tune_spec(
     )
     plan = export_plan(spec, results, target)
 
+    report = {
+        "kind": "tune",
+        "target": spec.target,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "target_pass_rate": target,
+        "models": {tier: models[tier] for tier in tiers},
+        "helper_cost_usd": helper_cost,
+        "results": [json.loads(json.dumps(asdict(r), default=str)) for r in results],
+    }
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = config.RUNS_DIR / f"tune-{spec.target}-{stamp}.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "kind": "tune",
-                "target": spec.target,
-                "created_at": datetime.now().isoformat(timespec="seconds"),
-                "target_pass_rate": target,
-                "models": {tier: models[tier] for tier in tiers},
-                "helper_cost_usd": helper_cost,
-                "results": [asdict(r) for r in results],
-            },
-            indent=2,
-            ensure_ascii=False,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
     plan_path = config.RUNS_DIR / f"plan-{spec.target}.json"
+    earlier = sorted(config.RUNS_DIR.glob(f"tune-{spec.target}-*.json"))
+    if site_ids and earlier:
+        previous_plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else None
+        carry_forward(report, plan, json.loads(earlier[-1].read_text(encoding="utf-8")), previous_plan, earlier[-1].name)
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
     return results, {"helper_cost_usd": helper_cost}, report_path, plan_path

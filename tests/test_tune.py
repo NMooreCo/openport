@@ -86,6 +86,19 @@ def test_engineer_sees_every_prompt_a_call_sends(tmp_path, monkeypatch):
     __import__("sys").modules.pop("twoprompts", None)
 
 
+def test_retuning_some_calls_keeps_the_others():
+    from openport.tune import carry_forward
+
+    previous_report = {"results": [{"site_id": "triage", "file": "a.py", "function": "f"}, {"site_id": "pii", "file": "b.py", "function": "g"}]}
+    previous_plan = {"target": 0.9, "call_sites": {"a.f": {"model": "nano"}, "b.g": {"model": "super"}}}
+    report = {"results": [{"site_id": "pii", "file": "b.py", "function": "g", "new": True}]}
+    plan = {"target": 0.9, "call_sites": {"b.g": {"model": "nano"}}}
+    carry_forward(report, plan, previous_report, previous_plan, "tune-x-1.json")
+    assert [r["site_id"] for r in report["results"]] == ["pii", "triage"] and report["results"][0]["new"]
+    assert report["carried_over"] == {"from": "tune-x-1.json", "sites": ["triage"]}
+    assert plan["call_sites"] == {"a.f": {"model": "nano"}, "b.g": {"model": "nano"}}  # the re-tuned call's new result wins
+
+
 def test_engineer_prompt_shows_each_system_prompt():
     from openport.tune.engineer import describe_prompts
 
