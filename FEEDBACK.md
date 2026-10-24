@@ -4,7 +4,7 @@ A running log of friction and wins while building OpenPort, for the Nebius x NVI
 
 Two kinds of notes are tracked separately and honestly:
 - **[build]** — observations from reading the docs and writing code against the API (true as of the dates shown).
-- **[live]** — observations from actually running against Token Factory. These are **pending API keys** and will be filled in as I do real runs; I am not reporting numbers I haven't measured.
+- **[live]** — observations from actually running against Token Factory (from Oct 24). I only report numbers I measured.
 
 ---
 
@@ -41,6 +41,11 @@ Two kinds of notes are tracked separately and honestly:
 - Found: OpenPort resolves the Nano/Super/Ultra tier IDs from `/v1/models` at runtime instead of hard-coding, which is more robust but means a startup round-trip and some guessing about which listed model is which tier.
 - Suggestion: a documented tier label (or a `family`/`tier` field in the models list) so tooling can map "the small Nemotron" to an ID without heuristics.
 
+**[live] Reasoning tokens count against `max_tokens`, so apps ported from closed models get cut off.** (Oct 24)
+- [preflight](https://github.com/jsliapark/preflight) asks for `max_tokens=1024`, plenty for Claude's direct answer. On Nemotron, reasoning is on by default and its tokens come out of the same budget: on a five-line diff Nano spent 800 of the 1,024 tokens, most of them reasoning. On bigger diffs the JSON answer arrives cut off, and the app reports a parse error.
+- That reads like a formatting problem, and the obvious fix (reasoning off) cost accuracy on this review task: 83% → 66% of the cases on Nano. On Super, keeping reasoning on and raising the budget to 4,096 (plus stricter instructions) passed. OpenPort's tuner now tells its engineer when a failing reply hit the token limit.
+- Suggestion: say this in the switch guide's first paragraph. "Raise `max_tokens` when you move a call over, or turn reasoning off" is the single most useful line for anyone porting. A separate reasoning budget, if one exists, deserves the same prominence.
+
 **[live] Super's code edits are right, but its copied snippets can be mis-indented.** (Oct 24)
 - `openport upgrade --apply` has Nemotron Super repair code a dependency upgrade broke, as exact search-and-replace edits. Its diagnosis was right every time (PyJWT 2 returns `str` from `encode`; `decode` needs `algorithms=`), and it cited the PyJWT changelog Tavily found. But in one run it copied the line to replace with 8 spaces of indentation where the file has 4, and repeated the same snippet three rounds in a row, so no edit could apply and the upgrade wasn't proven.
 - OpenPort now matches snippets regardless of indentation (only when exactly one place matches) and re-indents the replacement. The same run then proved the upgrade in two rounds.
@@ -60,13 +65,24 @@ Two kinds of notes are tracked separately and honestly:
 
 ## Serverless Jobs / Endpoints
 
-**[live] Spreading eval runs across Serverless Jobs; hosting the dashboard on an Endpoint.** (pending keys)
-- Setup friction, cold starts and parallel-run behaviour go here once wired up.
+**[build] The `nebius` CLI doesn't run on Windows, and a job defaults to a GPU.** (Oct 24)
+- Expected: one CLI for every OS, and a job that runs where you'd expect a script to.
+- Found: the CLI installs on Ubuntu and macOS only, so on Windows OpenPort calls it through WSL (`OPENPORT_NEBIUS_CLI`). And `nebius ai job create` uses a GPU platform (H100) unless you name another, so a CPU-only job, like tuning that only calls Token Factory, bills GPU time by default unless you set a CPU platform. OpenPort refuses GPU platforms for tuning jobs unless asked.
+- Suggestion: a Windows build (or a note pointing to WSL), and either a CPU default for jobs or a confirmation when a job lands on a GPU.
+
+**[live] Spreading eval runs across Serverless Jobs; hosting the dashboard on an Endpoint.** (pending AI Cloud setup)
+- Setup friction, cold starts and parallel-run behaviour go here once it runs.
 
 ## Fine-tuning (SFT / LoRA)
 
-**[live] "Ultra teaches Nano": fine-tuning a small model on Ultra-generated outputs.** (pending keys)
-- Turnaround time, job UX and the quality lift go here after the first tune.
+**[build] No Nemotron model can be fine-tuned yet, and serving a fine-tune needs a Dedicated Endpoint.** (Oct 24)
+- Expected: "Ultra teaches Nano": fine-tune Nemotron Nano on Ultra's answers and serve it like the other tiers.
+- Found: the fine-tunable list has no Nemotron model, so OpenPort's student is Llama 3.1 8B Instruct (LoRA). Meta models are served only through Dedicated Endpoints, and serving custom weights is a beta you request. The fine-tuning page I first found returned 404; the working docs are under `/post-training/`, found via `llms.txt`.
+- Suggestion: Nemotron Nano fine-tuning would make "the big model teaches the small one" possible inside one model family. Until then, a single page that walks from the dataset to a served fine-tune would save a lot of digging.
+
+**[live] A fine-tuning job reports "running" with no progress and no queue position.** (Oct 24)
+- My first LoRA job (Llama 3.1 8B, 209 training examples, 3 epochs) processed both datasets within a minute, then sat at `status: running` with `trained_steps: 0`, `total_steps: null` and no new events for over an hour.
+- Suggestion: a `queued` status, a queue position or an ETA. A job that says "running" while waiting for capacity makes it hard to tell a queue from a stuck job.
 
 ---
 

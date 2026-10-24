@@ -254,6 +254,20 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - Tavily research step in tuning: on, with sources limited to the exact model. Measured honestly: following the model cards' generic sampling advice helped one call and hurt two (see FEEDBACK.md), so the engineer now treats it as background.
 - **Final SupportDesk result (research on): 4 of 5 calls ported, each 95–100% with 100% held-out, at $42.82 → $1.63 per 1,000 runs of each call (96% less).** triage → Super, pii → Super as written, refunds (gpt-5) → Nano as written, policy (Claude Opus) → Nano. The reply drafter stays on Claude Sonnet: best tier 85%, under the bar. That's the job for the fine-tune ("Ultra teaches a smaller model").
 
+**Sat 24 (afternoon): preflight end to end, the upgrade dashboard, and a sturdier tuner.**
+- **preflight** ([jsliapark/preflight](https://github.com/jsliapark/preflight), 4 Claude Opus calls, no evals of its own): OpenPort's eval pack has 119 hand-labelled cases, checked the way preflight's own `test_evals.py` checks them, and is pinned to the reviewed commit `7a00fa2`. **All 4 calls ported: review → Super (97% / 92% held-out, every case sampled twice), diff_analyzer → Super (100% / 100%), standards → Nano as written (94% / 100%), pr_description → Nano as written (94% / 100%). $69.93 → $1.38 per 1,000 runs of each call (98% less).** Tuning cost about $0.10 per review run.
+  - The first run's prompts reached Nemotron garbled (a bare `open()` on Windows uses cp1252); the CLI now runs in Python's UTF-8 mode.
+  - The review call ate most of its `max_tokens=1024` on reasoning and its JSON came back cut off; the engineer read that as a format problem and switched reasoning off, which cost accuracy. It now hears when a reply hit the token limit, sees what it already tried with each score, and sees every system prompt a call sends (preflight's review loads one per pass). With those, it kept reasoning on and raised the budget to 4,096.
+  - Runs of the same settings varied by up to 15 points held-out on 13 cases, so the review call now samples every case twice (both count).
+  - Citations: the engineer had cited unrelated NVIDIA pages. A citation now needs the sentence it followed, checked word for word against the page Tavily returned, and the PR shows the quote.
+- **Dashboard upgrade mode:** the launcher switches between "Port to Nemotron" and "Upgrade dependencies"; an upgrade run streams the advisories, the versions chosen, the tests before and after, each fix with its quoted sources, and the PR. Checked live on AuthKit: 5 passed → 4 failed → 5 passed after Super's second fix.
+  - Found live and fixed: Super copied a line with the wrong indentation three rounds running, so no edit applied (now matched regardless of indentation, if exactly one place matches); Windows `write_text` turned edited files into CRLF; research cited other projects' bump PRs (now only the package's own pages and advisory databases).
+  - `openport upgrade --apply --open` pushes a proven upgrade to your fork and opens the PR.
+- **Hosted-demo safety:** testing a call imports the repo's code next to the API keys, so the Docker image sets `OPENPORT_RUN_REPO_CODE=vetted`: only the bundled demo apps and pinned eval packs run; other repos are scanned and ported untuned, and the launcher says so.
+- `openport tune --sites X` now keeps the other calls' results in the report and plan.
+- **Fine-tune:** the Llama 3.1 8B LoRA job (209 training examples distilled from Ultra) processed its datasets in a minute, then sat at "running" with 0 steps for over an hour (FEEDBACK.md).
+- 153 offline tests.
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).
