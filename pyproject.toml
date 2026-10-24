@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 openport = "openport.cli:app"
+openport-job = "openport.jobs:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -31,6 +32,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openport"]
+# The built dashboard is gitignored, but a wheel built after `npm run build` should ship it.
+artifacts = ["src/openport/server/static/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,6 +1,8 @@
 """OpenPort command line."""
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict
@@ -272,6 +274,12 @@ def tune(
     limit: int | None = typer.Option(None, help="Only use the first N cases of each call site"),
     judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
     research: bool = typer.Option(True, help="Look up NVIDIA's guidance for each model with Tavily before proposing a fix (needs TAVILY_API_KEY)"),
+    jobs: bool = typer.Option(False, "--jobs", help="Tune each call site in its own Nebius Serverless Job, all at once (needs the nebius CLI)"),
+    job_image: str | None = typer.Option(None, envvar="OPENPORT_JOB_IMAGE", help="With --jobs: the container image to run (built from the Dockerfile)"),
+    job_platform: str | None = typer.Option(None, envvar="OPENPORT_JOB_PLATFORM", help="With --jobs: a CPU platform, from `nebius compute platform list`"),
+    job_preset: str | None = typer.Option(None, envvar="OPENPORT_JOB_PRESET", help="With --jobs: a preset of that platform"),
+    job_secret: list[str] | None = typer.Option(None, "--job-secret", help="With --jobs: ENV=MYSTERYBOX_SECRET for each key the jobs need (repeatable; or OPENPORT_JOB_SECRETS=ENV=SECRET,...)"),
+    job_registry_secret: str | None = typer.Option(None, envvar="OPENPORT_JOB_REGISTRY_SECRET", help="With --jobs: a MysteryBox secret with registry credentials, if the image is private"),
 ) -> None:
     """Find the cheapest Nemotron model, and the smallest prompt or setting change, that makes each call pass."""
     from .tune import tune_spec
@@ -279,6 +287,13 @@ def tune(
     tier_list = tuple(t.strip() for t in tiers.split(",") if t.strip())
     if set(tier_list) - set(config.TIERS):
         _fail(f"Unknown tiers in {tiers!r}")
+
+    if jobs:
+        tune_flags = ["--target", str(target_rate), "--rounds", str(rounds), "--tiers", ",".join(tier_list), "--concurrency", str(concurrency)]
+        tune_flags += (["--limit", str(limit)] if limit else []) + ([] if judge else ["--no-judge"]) + ([] if research else ["--no-research"])
+        secrets = job_secret or [s for s in os.getenv("OPENPORT_JOB_SECRETS", "").split(",") if s.strip()]
+        _tune_on_jobs(target, sites, tune_flags, job_image, job_platform, job_preset, secrets, job_registry_secret)
+        return
 
     def progress(site, attempt):
         held = "" if attempt.holdout_pass is None else f", held-out {attempt.holdout_pass:.0%}"
@@ -315,6 +330,52 @@ def tune(
     console.print(table)
     eval_cost = sum(r.cost_usd for r in results)
     console.print(f"OpenPort's own cost: ${eval_cost + totals['helper_cost_usd']:.4f} (evals ${eval_cost:.4f}, engineer + judge ${totals['helper_cost_usd']:.4f})")
+    console.print(f"Report: {report_path}\nPlan for `openport port --plan`: {plan_path}")
+
+
+def _tune_on_jobs(target: Path, sites: str | None, tune_flags: list[str], image, platform, preset, secret_specs: list[str], registry_secret) -> None:
+    from .jobs import JobSettings, tune_on_jobs
+
+    if shutil.which("nebius") is None:
+        _fail("--jobs needs the nebius CLI, signed in to your Nebius AI Cloud project: https://docs.nebius.com/cli/install")
+    secrets: dict[str, str] = {}
+    for item in secret_specs:
+        env, sep, selector = item.partition("=")
+        if not sep or not env.strip() or not selector.strip():
+            _fail(f"--job-secret wants ENV=MYSTERYBOX_SECRET, got {item!r}")
+        secrets[env.strip()] = selector.strip()
+    settings = JobSettings(image=image or "", platform=platform or "", preset=preset or "", secrets=secrets, registry_secret=registry_secret)
+
+    def event(kind, job):
+        if kind == "submitted":
+            console.print(f"  {job.site:<10} [cyan]submitted[/cyan] {job.job_id}")
+        else:
+            color = "green" if job.state == "COMPLETED" else "red" if job.state in ("FAILED", "ERROR", "CANCELLED") else "yellow"
+            console.print(f"  {job.site:<10} [{color}]{job.state.lower()}[/{color}] {job.detail}")
+
+    try:
+        jobs, report_path, plan_path = tune_on_jobs(target, settings, site_ids=sites.split(",") if sites else None, tune_flags=tune_flags, on_event=event)
+    except subprocess.CalledProcessError as error:
+        _fail(f"nebius CLI failed ({' '.join(error.cmd[:4])}): {(error.stderr or '').strip()[:500]}")
+    except (ValueError, RuntimeError, TimeoutError, FileNotFoundError) as error:
+        _fail(str(error))
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    table = Table(title=f"Tuning on Nebius Serverless Jobs ({len(jobs)} jobs in parallel)")
+    for column in ("Call site", "Job", "State", "Chosen", "Pass rate", "Held-out"):
+        table.add_column(column)
+    for job in jobs:
+        result = next((r for r in report["results"] if r["site_id"] == job.site), None)
+        chosen = (result or {}).get("chosen")
+        if chosen:
+            held = "-" if chosen["holdout_pass"] is None else f"{chosen['holdout_pass']:.0%}"
+            row = [f"[green]{chosen['tier']}[/green]", f"{chosen['passed'] / chosen['total']:.0%}", held]
+        else:
+            row = ["[yellow]none[/yellow]" if result else "-", "-", "-"]
+        table.add_row(job.site, job.job_id, job.state.lower(), *row)
+    console.print(table)
+    eval_cost = sum(a.get("cost_usd") or 0 for r in report["results"] for a in r["attempts"])
+    console.print(f"OpenPort's own cost: ${eval_cost + report['helper_cost_usd']:.4f} (evals ${eval_cost:.4f}, engineer + judge ${report['helper_cost_usd']:.4f})")
     console.print(f"Report: {report_path}\nPlan for `openport port --plan`: {plan_path}")
 
 
