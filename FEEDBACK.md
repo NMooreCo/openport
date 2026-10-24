@@ -95,6 +95,10 @@ Two kinds of notes are tracked separately and honestly:
 - What OpenPort does now: it treats 5xx, connection errors and 429s on the job endpoints as transient and retries at the next poll.
 - Suggestion: if the events list can fail while a job runs, say so in the docs, or serve the last known events instead of a 500.
 
+**[live] A finished fine-tune's adapter can't be downloaded once the balance hits zero.** (Oct 24)
+- The job succeeded (14 minutes of training, 193,041 tokens, checkpoints at steps 2, 4 and 6), and listing its checkpoints works, but fetching their files returns `402 Payment Required: You have exhausted your budget`. The training ran on credit I no longer have, so the weights are stuck until funds are added.
+- Suggestion: let an account download what it already paid for, or warn before a job starts that a later download needs a positive balance.
+
 ---
 
 _Maintained as the build progresses. Dates are when an observation was first recorded._

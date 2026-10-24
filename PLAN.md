@@ -285,6 +285,7 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 **Sat 24 (night): the demo deck, and the fine-tune starts training.**
 - Slides: the [OpenPort demo deck](https://claude.ai/artifact/7sCexTSrzz65KbvYVCs4os) (private), 10 slides, one per beat of `docs/VIDEO.md`, with the voiceover in each slide's speaker notes. Pass rates match the PRs (all cases and held-out); the costs, the plain-swap headline and the URLs stay bracketed placeholders until the re-measure.
 - The fine-tune left the queue after 2 h 21 min and started training. The follower then stopped on a 500 from the events list while the job carried on; it now retries server errors at the next poll (up to 20 in a row), and the CLI says how to pick the job up again.
+- **The fine-tune succeeded** (Llama 3.1 8B LoRA, 14 minutes of training, 193,041 tokens), but its adapter won't download until the account has funds again (`402`). Next: `openport finetune --job ftjob-ba4f5926762e41f2ad0e612e9c9516ca` to download it, then serve it (a Dedicated Endpoint bills GPU-hours, so ask first, or vLLM on AI Cloud) and run the reply drafter's evals on it.
 - Found while checking the deck: the AuthKit upgrade recording predates quote checking, so re-record it once credit is back (`docs/VIDEO.md`).
 - 178 offline tests.
 
