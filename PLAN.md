@@ -238,10 +238,11 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - `openport smoke`: JSON mode, tool calling (auto, forced, round trip) and the reasoning switch work on all three tiers; strict `json_schema` fails on Nano (Super and Ultra pass).
 - `openport baseline` (plain swap): **74%** Nano / **83%** Super / **85%** Ultra across 54 cases; the reply drafter scores 0% / 25% / 38%.
 - `openport tune`: all 5 calls reach **100%** on both tuning and held-out cases. Chosen tiers: refunds and policy on Nano, pii and replies on Super, triage on Ultra. OpenPort's own cost: **$0.12**.
-- **Headline: plain swap 74% → OpenPort 100% (54/54), at about 4% of the cost** (per 1k calls of each, across the 4 calls with a verified closed-model price; Tavily couldn't verify gpt-5's). Biggest wins: policy (Claude Opus → Nano) $25.07 → $0.31 per 1k; replies 0% → 100%.
+- **Headline: plain swap 74% → OpenPort 100% (54/54), at about 3% of the cost**: $50.68 → $1.69 per 1,000 calls of each, with all five closed-model prices read off the providers' own pages. Biggest wins: policy (Claude Opus → Nano) $25.07 → $0.31 per 1k; refunds (gpt-5 → Nano) $23.54 → $0.66; replies 0% → 100%. "Before" costs are estimates: Nemotron's measured token counts at the closed models' prices.
+- Pricing fix: the first PR run missed gpt-5's price (one extraction attempt, which Nano can miss) and had pinned Sonnet 5.5's price on the Sonnet 5 page (the numbers happened to match). The lookup now retries, reads with reasoning off, and only accepts a page that names the exact model.
 - Port and PR (dry run) from the plan: every tuned prompt addition and setting landed in the code, with nothing left for review.
 - Found and fixed on the first live run: a Windows UTF-8 console crash.
-- Next: verify gpt-5's price; grow the eval sets (held-out sets are only 3–5 cases, so one case can push a call up a tier — triage landed on Ultra, which costs more than gpt-5-mini: $0.11 → $0.35 per 1k).
+- Next: grow the eval sets (held-out sets are only 3–5 cases, so one case can push a call up a tier — triage landed on Ultra, which costs more than gpt-5-mini: $0.11 → $0.35 per 1k).
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.

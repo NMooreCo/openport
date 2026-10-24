@@ -3,8 +3,9 @@
 Token Factory publishes its prices in /v1/models. OpenAI and Anthropic prices aren't in any API
 and change often, so OpenPort searches the providers' own pricing pages with Tavily, and Nemotron
 Nano reads the numbers out of the results. A price is only accepted if both numbers appear in the
-text of the page it's attributed to. Results are cached in runs/prices.json, and you can set prices
-by hand: `--price gpt-5-mini=0.25/2.00` (USD per million input/output tokens).
+text of a page that names the exact model (so Sonnet 5's price is never pinned on Sonnet 5.5).
+Extraction is retried, since a single read can miss. Results are cached in runs/prices.json, and
+you can set prices by hand: `--price gpt-5-mini=0.25/2.00` (USD per million input/output tokens).
 """
 
 import json
@@ -17,6 +18,7 @@ from typing import Callable
 from . import config, tokenfactory
 
 CACHE = config.RUNS_DIR / "prices.json"
+CLAUDE_FAMILIES = ("opus", "sonnet", "haiku", "fable", "mythos")
 PRICING_DOMAINS = {
     "openai": ["openai.com", "platform.openai.com"],
     "anthropic": ["anthropic.com", "docs.anthropic.com", "claude.com", "docs.claude.com"],
@@ -82,6 +84,9 @@ def nano_extract(model: str, results: list[dict]) -> dict | None:
         model=tokenfactory.tiers()["nano"],
         messages=[{"role": "user", "content": EXTRACT_PROMPT.format(model=model, results=text)}],
         max_tokens=4096,
+        # A format-strict read of two numbers: reasoning off and no sampling make it steadier.
+        temperature=0,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     match = re.search(r"\{.*\}", response.choices[0].message.content or "", re.DOTALL)
     try:
@@ -96,8 +101,31 @@ def _appears(number: float, text: str) -> bool:
     return any(re.search(rf"(?<![\d.]){re.escape(form)}(?![\d])", text) for form in forms)
 
 
-def verified(extracted: dict | None, results: list[dict]) -> tuple[float, float, str] | None:
-    """Accept an extracted price only if both numbers appear in the text of the cited page."""
+def model_names(model: str) -> list[str]:
+    """Ways a pricing page names a model: its API ID and its display name ("claude-sonnet-5-5" -> "Sonnet 5.5")."""
+    names = {model}
+    parts = model.lower().split("-")
+    if parts[0] == "claude":
+        family = next((p for p in parts if p in CLAUDE_FAMILIES), None)
+        version = ".".join(p for p in parts[1:] if p.isdigit() and len(p) < 8)  # 8 digits is a date suffix
+        if family and version:
+            names |= {f"{family} {version}", f"claude {version} {family}"}
+    elif len(parts) > 2:  # gpt-5-mini -> "gpt-5 mini"
+        names.add(f"{parts[0]}-{parts[1]} " + " ".join(parts[2:]))
+    return sorted(names, key=len, reverse=True)
+
+
+def mentions_model(model: str, text: str) -> bool:
+    """Does the text name exactly this model? "GPT-5" doesn't count for gpt-5.5 or gpt-5-mini, nor "Sonnet 5" for 5.5."""
+    for name in model_names(model):
+        words = re.escape(name).replace(r"\ ", r"[\s-]+")
+        if re.search(rf"(?<![\w.]){words}(?![\w]|\.\d|-\w)", text, re.IGNORECASE):
+            return True
+    return False
+
+
+def verified(extracted: dict | None, results: list[dict], model: str | None = None) -> tuple[float, float, str] | None:
+    """Accept an extracted price only if both numbers appear in the cited page and, given `model`, the page names it."""
     if not extracted:
         return None
     try:
@@ -110,6 +138,8 @@ def verified(extracted: dict | None, results: list[dict]) -> tuple[float, float,
     cited = [r for r in results if r.get("url") == source] or results
     for result in cited:
         text = result.get("content") or ""
+        if model and not mentions_model(model, text):
+            continue
         if _appears(input_price, text) and _appears(output_price, text):
             return input_price, output_price, result.get("url") or source
     return None
@@ -121,8 +151,17 @@ def closed_model_price(model: str, *, search: Search | None = None, extract: Ext
         return cache[model]
     search = search or tavily_search
     extract = extract or nano_extract
-    results = search(f"{model} API pricing per million input output tokens", PRICING_DOMAINS[provider_of(model)])
-    found = verified(extract(model, results), results)
+    domains = PRICING_DOMAINS[provider_of(model)]
+    # A single read can miss, so: read the results, read them again, then try a broader search.
+    attempts = [f"{model} API pricing per million input output tokens", None, f"{model} pricing"]
+    results: list[dict] = []
+    found = None
+    for query in attempts:
+        if query is not None:
+            results = search(query, domains)
+        found = verified(extract(model, results), results, model)
+        if found:
+            break
     if found is None:
         return None
     price = Price(model, found[0], found[1], found[2], date.today().isoformat())

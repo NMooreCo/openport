@@ -31,6 +31,44 @@ def test_price_is_accepted_only_if_the_page_says_so():
     assert pricing.parse_manual("claude-opus-5-5=5/25").output_per_m == 25
 
 
+def test_a_page_must_name_the_exact_model():
+    assert pricing.mentions_model("claude-sonnet-5-5", "Claude Sonnet 5.5 The best combination $2 / MTok $10 / MTok")
+    assert not pricing.mentions_model("claude-sonnet-5-5", "Claude Sonnet 5 $2 / MTok $10 / MTok")
+    assert not pricing.mentions_model("claude-sonnet-5", "Claude Sonnet 5.5 $2 / MTok")
+    assert pricing.mentions_model("gpt-5", "Quick comparison GPT-5 $1.25 GPT-5 Mini $0.25")
+    assert not pricing.mentions_model("gpt-5", "Introducing GPT-5.5 and GPT-5-mini")
+    assert pricing.mentions_model("gpt-5-mini", "GPT-5 mini: Input $0.25")
+    assert pricing.mentions_model("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet $3 / MTok")
+
+    # Sonnet 5's page has the right numbers but the wrong model: not accepted for Sonnet 5.5.
+    sonnet_5_page = {"url": "https://www.anthropic.com/news/claude-sonnet-5", "content": "Claude Sonnet 5 costs $2 / $10 per million tokens."}
+    extracted = {"input": 2, "output": 10, "source": sonnet_5_page["url"]}
+    assert pricing.verified(extracted, [sonnet_5_page], "claude-sonnet-5-5") is None
+    assert pricing.verified(extracted, [sonnet_5_page], "claude-sonnet-5") == (2.0, 10.0, sonnet_5_page["url"])
+
+
+def test_price_lookup_retries_a_missed_read():
+    reads = iter([{"input": 9.99, "output": 2, "source": PAGE["url"]}, {"input": 0.25, "output": 2, "source": PAGE["url"]}])
+    searched = []
+    price = pricing.closed_model_price(
+        "gpt-5-mini",
+        search=lambda query, domains: searched.append(query) or [PAGE],
+        extract=lambda model, results: next(reads),
+        use_cache=False,
+    )
+    assert price.input_per_m == 0.25
+    assert len(searched) == 1  # the second read reused the first search
+
+    misses = []
+    assert pricing.closed_model_price(
+        "gpt-5-mini",
+        search=lambda query, domains: misses.append(query) or [PAGE],
+        extract=lambda model, results: None,
+        use_cache=False,
+    ) is None
+    assert len(misses) == 2  # gave up after three reads and one broader search
+
+
 def test_pr_description(tmp_path):
     scan = scan_repo(SUPPORTDESK)
     assignments = {"triage.triage_ticket": {"model": "nano", "variant": {"reasoning": False, "system_addendum": "JSON only."}}}
