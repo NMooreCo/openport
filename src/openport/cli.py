@@ -600,7 +600,7 @@ def upgrade(
     root = _target_root(target)
     deps = read_lockfiles(root)
     if not deps:
-        _fail("No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml).")
+        _fail("No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock).")
     console.print(f"Read {len(deps)} dependencies. Checking OSV.dev...")
     try:
         plans = plan_upgrades(deps, min_age_days=min_age)

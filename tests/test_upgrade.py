@@ -68,17 +68,35 @@ def test_parse_pnpm_lock():
     assert names(deps) == {("axios", "1.6.0"), ("@scope/pkg", "2.0.1"), ("old-style", "1.2.3")}
 
 
-def test_read_lockfiles_dedup(tmp_path):
+def test_read_lockfiles_keeps_each_version_once(tmp_path):
     (tmp_path / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
-    (tmp_path / "uv.lock").write_text('[[package]]\nname = "requests"\nversion = "2.99.0"\n', encoding="utf-8")
-    (tmp_path / "package-lock.json").write_text(
-        json.dumps({"packages": {"": {"name": "app"}, "node_modules/axios": {"version": "1.6.0"}}}), encoding="utf-8"
-    )
+    (tmp_path / "uv.lock").write_text('[[package]]\nname = "requests"\nversion = "2.31.0"\n\n[[package]]\nname = "idna"\nversion = "3.4"\n',
+                                      encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(json.dumps({"packages": {
+        "": {"name": "app"}, "node_modules/semver": {"version": "7.5.1"}, "node_modules/old/node_modules/semver": {"version": "5.7.1"}}}),
+        encoding="utf-8")
     deps = read_lockfiles(tmp_path)
-    # requests appears in both Python lockfiles but is kept once (first wins: requirements.txt);
-    # axios comes from the npm lockfile.
-    assert names(deps) == {("requests", "2.31.0"), ("axios", "1.6.0")}
-    assert next(d for d in deps if d.name == "requests").source == "requirements.txt"
+    # requests 2.31.0 is in both Python lockfiles but kept once; both versions of semver count
+    assert names(deps) == {("requests", "2.31.0"), ("idna", "3.4"), ("semver", "7.5.1"), ("semver", "5.7.1")}
+
+
+def test_subprojects_yarn_and_bun_lockfiles_are_read(tmp_path):
+    for folder in ("api", "web", "tests/fixtures"):
+        (tmp_path / folder).mkdir(parents=True)
+    (tmp_path / "api" / "uv.lock").write_text('[[package]]\nname = "flask"\nversion = "2.0.1"\n')
+    (tmp_path / "web" / "yarn.lock").write_text(
+        '# yarn lockfile v1\n\n"@babel/core@^7.0.0", "@babel/core@^7.1.0":\n  version "7.12.3"\n  resolved "https://registry.yarnpkg.com/x"\n\n'
+        'lodash@^4.17.15:\n  version "4.17.15"\n')
+    (tmp_path / "bun.lock").write_text('{\n  "lockfileVersion": 1,\n  "packages": {\n    "react": ["react@18.2.0", "", {}, "sha512-x"],\n'
+                                       '    "app": ["app@workspace:.", ],\n  },\n}\n')
+    (tmp_path / "tests" / "fixtures" / "package-lock.json").write_text(json.dumps({"packages": {"node_modules/evil": {"version": "0.0.1"}}}))
+    deps = read_lockfiles(tmp_path)
+    assert {(d.name, d.version, d.source) for d in deps} == {  # a test fixture's lockfile isn't the app's
+        ("flask", "2.0.1", "api/uv.lock"), ("@babel/core", "7.12.3", "web/yarn.lock"), ("lodash", "4.17.15", "web/yarn.lock"),
+        ("react", "18.2.0", "bun.lock")}
+    berry = ('__metadata:\n  version: 6\n\n"lodash@npm:^4.17.21":\n  version: 4.17.21\n  resolution: "lodash@npm:4.17.21"\n\n'
+             '"app@workspace:.":\n  version: 0.0.0-use.local\n  resolution: "app@workspace:."\n')
+    assert names(lockfiles.parse_yarn_lock(berry)) == {("lodash", "4.17.21")}
 
 
 def test_read_lockfiles_empty(tmp_path):

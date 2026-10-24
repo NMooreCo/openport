@@ -2,15 +2,22 @@
 
 Phase 2 (`openport upgrade`) uses these versions to ask OSV.dev which packages are vulnerable.
 Lockfiles are parsed, never installed or run. Supported: Python (requirements*.txt, uv.lock,
-poetry.lock) and Node (package-lock.json, pnpm-lock.yaml).
+poetry.lock) and Node (package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock), at the repo's root
+and in its subprojects (a monorepo's api/uv.lock and web/pnpm-lock.yaml).
 """
 
 import json
+import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+# Folders whose lockfiles aren't the app's: installs, builds, and test fixtures.
+SKIP_DIRS = {"node_modules", ".git", ".venv", "venv", "env", "__pycache__", "dist", "build", ".next", "site-packages",
+             ".tox", "tests", "test", "__tests__", "fixtures", "__fixtures__", "testdata"}
 
 
 @dataclass(frozen=True)
@@ -18,7 +25,7 @@ class Dependency:
     name: str
     version: str
     ecosystem: str  # OSV ecosystem: "PyPI" or "npm"
-    source: str  # the lockfile it came from
+    source: str  # the lockfile it came from: its name at the root, else its path ("api/uv.lock")
 
 
 def parse_requirements(text: str) -> list[Dependency]:
@@ -91,25 +98,89 @@ def parse_pnpm_lock(text: str) -> list[Dependency]:
     return deps
 
 
+def _split_spec(spec: str) -> tuple[str, str]:
+    """"@scope/name@1.2.3" -> ("@scope/name", "1.2.3"); the last "@" that isn't the first character splits them."""
+    at = spec.rfind("@")
+    return (spec[:at], spec[at + 1 :]) if at > 0 else (spec, "")
+
+
+def parse_yarn_lock(text: str) -> list[Dependency]:
+    """yarn.lock, classic (v1, its own format) or Berry (v2+, YAML)."""
+    deps: list[Dependency] = []
+    if "__metadata:" in text:  # Berry: "name@npm:^1.0.0": {version, resolution: "name@npm:1.0.3"}
+        for key, entry in (yaml.safe_load(text) or {}).items():
+            if key == "__metadata" or not isinstance(entry, dict) or not entry.get("version"):
+                continue
+            resolution = str(entry.get("resolution") or key.split(",")[0].strip())
+            name = _split_spec(resolution.split("@npm:")[0] if "@npm:" in resolution else resolution)[0]
+            if name and "@workspace:" not in resolution and "@patch:" not in resolution:
+                deps.append(Dependency(name, str(entry["version"]), "npm", "yarn.lock"))
+        return deps
+    name = None
+    for line in text.splitlines():
+        if line and not line.startswith((" ", "#")) and line.rstrip().endswith(":"):
+            first = line.rstrip()[:-1].split(",")[0].strip().strip('"')
+            name = _split_spec(first)[0] or None
+        elif name and (match := re.match(r'^\s+version:?\s+"?([^"\s]+)"?', line)):
+            deps.append(Dependency(name, match[1], "npm", "yarn.lock"))
+            name = None
+    return deps
+
+
+def parse_bun_lock(text: str) -> list[Dependency]:
+    """bun.lock (Bun 1.2+): JSON with trailing commas; each package is ["name@version", ...]."""
+    data = json.loads(re.sub(r",(\s*[}\]])", r"\1", text))
+    deps: list[Dependency] = []
+    for entry in (data.get("packages") or {}).values():
+        if isinstance(entry, list) and entry and isinstance(entry[0], str):
+            name, version = _split_spec(entry[0])
+            if name and re.match(r"^\d", version):  # a registry version, not a workspace or git reference
+                deps.append(Dependency(name, version, "npm", "bun.lock"))
+    return deps
+
+
+PARSERS = {
+    "uv.lock": lambda text: parse_toml_lock(text, "uv.lock"),
+    "poetry.lock": lambda text: parse_toml_lock(text, "poetry.lock"),
+    "package-lock.json": parse_package_lock,
+    "pnpm-lock.yaml": parse_pnpm_lock,
+    "yarn.lock": parse_yarn_lock,
+    "bun.lock": parse_bun_lock,
+}
+
+
+def _lockfiles(root: Path):
+    """The repo's lockfiles, root first, then its subprojects', skipping installs, builds and test fixtures."""
+    for directory, subdirs, files in os.walk(root):
+        subdirs[:] = sorted(d for d in subdirs if d not in SKIP_DIRS and not d.startswith("."))
+        for name in sorted(files):
+            if name in PARSERS or re.fullmatch(r"requirements[^/]*\.txt", name):
+                yield Path(directory) / name
+
+
 def read_lockfiles(root: Path) -> list[Dependency]:
-    """Every dependency found across the repo's root lockfiles, deduplicated by ecosystem and name."""
+    """Every dependency found across the repo's lockfiles, once per ecosystem, name and version. A root
+    lockfile's dependencies have its name as their source; a subproject's, its path ("api/uv.lock")."""
     root = Path(root)
     found: list[Dependency] = []
-    for req in sorted(root.glob("requirements*.txt")):
-        found += parse_requirements(req.read_text(encoding="utf-8", errors="replace"))
-    for name, source in (("uv.lock", "uv.lock"), ("poetry.lock", "poetry.lock")):
-        path = root / name
-        if path.is_file():
-            found += parse_toml_lock(path.read_text(encoding="utf-8", errors="replace"), source)
-    if (root / "package-lock.json").is_file():
-        found += parse_package_lock((root / "package-lock.json").read_text(encoding="utf-8", errors="replace"))
-    if (root / "pnpm-lock.yaml").is_file():
-        found += parse_pnpm_lock((root / "pnpm-lock.yaml").read_text(encoding="utf-8", errors="replace"))
+    for path in _lockfiles(root):
+        relative = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            if path.name.startswith("requirements"):
+                deps = parse_requirements(text)
+            else:
+                deps = PARSERS[path.name](text)
+        except (ValueError, TypeError, AttributeError, yaml.YAMLError, tomllib.TOMLDecodeError):
+            continue  # a lockfile its own tool can't have written; the others still count
+        if "/" in relative:  # a subproject's: say where
+            deps = [Dependency(d.name, d.version, d.ecosystem, relative) for d in deps]
+        found += deps
 
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     unique: list[Dependency] = []
     for dep in found:
-        key = (dep.ecosystem, dep.name.lower())
+        key = (dep.ecosystem, dep.name.lower(), dep.version)
         if key not in seen:
             seen.add(key)
             unique.append(dep)

@@ -79,9 +79,18 @@ def upgrade_repo(
 ) -> UpgradeRun:
     emit = on_event or (lambda kind, data: None)
     plans = plans if plans is not None else plan_upgrades(read_lockfiles(root), min_age_days=min_age_days)
-    upgraded = [p for p in plans if p.target and p.dep.source in BUMPABLE_SOURCES]
-    skipped = [(p, p.status if not p.target else f"pinned in {p.dep.source}; update it with its package manager")
-               for p in plans if p not in upgraded]
+    upgraded, skipped = [], []
+    for p in plans:
+        if not p.target:
+            skipped.append((p, p.status))
+        elif "/" in p.dep.source:
+            skipped.append((p, f"locked in {p.dep.source}: run the upgrade on that folder"))
+        elif p.dep.source not in BUMPABLE_SOURCES:
+            skipped.append((p, f"{p.dep.source} can't be updated by OpenPort yet: update it with its package manager"))
+        elif any(u.dep.source == p.dep.source and u.dep.name.lower() == p.dep.name.lower() for u in upgraded):
+            skipped.append((p, f"{p.dep.name} {p.dep.version} is also locked here; this upgrade moves the other one only"))
+        else:
+            upgraded.append(p)
     run = UpgradeRun(Path(root).resolve().name, upgraded, skipped, None, None, out=str(out))
     if not upgraded:
         return run

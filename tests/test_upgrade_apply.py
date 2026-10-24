@@ -306,6 +306,23 @@ def test_a_lockfile_bump_that_fails_leaves_those_packages_out(tmp_path):
     assert (tmp_path / "out2" / "package.json").read_bytes() == (root / "package.json").read_bytes()  # the override is undone
 
 
+def test_only_root_lockfiles_openport_can_rewrite_are_upgraded(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "package.json").write_text('{"dependencies": {}, "scripts": {"test": "node --test"}}')
+    (root / "package-lock.json").write_text("{}")
+    plans = [upgrade("flask", "2.0.1", "2.3.3", source="api/uv.lock"), upgrade("lodash", "4.17.15", "4.17.21", source="yarn.lock"),
+             upgrade("semver", "5.7.1", "5.7.2", source="package-lock.json"), upgrade("semver", "7.5.1", "7.5.4", source="package-lock.json")]
+    run = upgrade_repo(root, tmp_path / "out", plans=plans, run_tests=lambda folder: passing(),
+                       run_container=lambda *args: TestRun(True, 0, "", "", 1.0))
+    assert [(p.dep.name, p.dep.version) for p in run.upgraded] == [("semver", "5.7.1")]
+    assert [why for _, why in run.skipped] == [
+        "locked in api/uv.lock: run the upgrade on that folder",
+        "yarn.lock can't be updated by OpenPort yet: update it with its package manager",
+        "semver 7.5.1 is also locked here; this upgrade moves the other one only",  # one override can't serve both
+    ]
+
+
 def test_a_bump_that_pulls_in_a_brand_new_release_is_turned_away(tmp_path):
     root = tmp_path / "app"
     root.mkdir()

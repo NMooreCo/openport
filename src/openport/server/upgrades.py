@@ -63,7 +63,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     deps = read_lockfiles(root)
     run.emit("deps", count=len(deps), files=sorted({d.source for d in deps}))
     if not deps:
-        run.emit("note", message="No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml).")
+        run.emit("note", message="No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock).")
         return
     plans = plan_upgrades(deps)
     run.emit("advisories", packages=[_package(p) for p in plans])
