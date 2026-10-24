@@ -80,8 +80,26 @@ class UnsupportedFeature(Exception):
 class ModelUsage:
     calls: int = 0
     prompt_tokens: int = 0
-    completion_tokens: int = 0
+    completion_tokens: int = 0  # everything the model produced, reasoning included (what Token Factory bills)
+    answer_tokens: int = 0  # the reply alone, without the reasoning that led to it
     seconds: float = 0.0
+
+
+def answer_tokens(usage: Any, message: Any) -> int:
+    """The completion tokens that make up the reply itself, not the model's reasoning.
+
+    Uses the reasoning count when Token Factory reports one (Super does); otherwise (Nano doesn't)
+    splits the completion by the length of the reasoning text and the reply.
+    """
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning = getattr(details, "reasoning_tokens", None) if details is not None else None
+    if reasoning is None:
+        thought = len(_reasoning_text(message) or "") if message is not None else 0
+        calls = getattr(message, "tool_calls", None) or []
+        said = len(getattr(message, "content", None) or "") + sum(len(c.function.arguments or "") + len(c.function.name) for c in calls)
+        reasoning = round(completion * thought / (thought + said)) if thought + said else 0
+    return max(completion - reasoning, 0)
 
 
 @dataclass
@@ -91,7 +109,7 @@ class UsageMeter:
     by_model: dict[str, ModelUsage] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def record(self, model: str, usage: Any, seconds: float) -> None:
+    def record(self, model: str, usage: Any, seconds: float, message: Any = None) -> None:
         with self._lock:
             totals = self.by_model.setdefault(model, ModelUsage())
             totals.calls += 1
@@ -99,6 +117,7 @@ class UsageMeter:
             if usage is not None:
                 totals.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
                 totals.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+                totals.answer_tokens += answer_tokens(usage, message)
 
 
 def _merge_extra_body(kwargs: dict, extra_body: dict | None) -> dict:
@@ -140,7 +159,7 @@ class SwappedOpenAI:
         start = time.perf_counter()
         response = method(**kwargs)
         if self._meter is not None:
-            self._meter.record(kwargs["model"], getattr(response, "usage", None), time.perf_counter() - start)
+            self._meter.record(kwargs["model"], getattr(response, "usage", None), time.perf_counter() - start, _first_message(response))
         return response
 
     def __getattr__(self, name: str):
@@ -350,6 +369,11 @@ def anthropic_to_openai(
     return request
 
 
+def _first_message(response: Any) -> Any:
+    choices = getattr(response, "choices", None) or []
+    return getattr(choices[0], "message", None) if choices else None
+
+
 def _reasoning_text(message: Any) -> str | None:
     for key in ("reasoning_content", "reasoning"):
         value = getattr(message, key, None) or (getattr(message, "model_extra", None) or {}).get(key)
@@ -463,7 +487,7 @@ class _Messages:
         start = time.perf_counter()
         response = owner._client.chat.completions.create(**request)
         if owner._meter is not None:
-            owner._meter.record(target, getattr(response, "usage", None), time.perf_counter() - start)
+            owner._meter.record(target, getattr(response, "usage", None), time.perf_counter() - start, _first_message(response))
         return openai_to_anthropic(response, model=target, include_thinking=include_thinking)
 
 
@@ -474,5 +498,5 @@ class _AsyncMessages(_Messages):
         start = time.perf_counter()
         response = await owner._client.chat.completions.create(**request)
         if owner._meter is not None:
-            owner._meter.record(target, getattr(response, "usage", None), time.perf_counter() - start)
+            owner._meter.record(target, getattr(response, "usage", None), time.perf_counter() - start, _first_message(response))
         return openai_to_anthropic(response, model=target, include_thinking=include_thinking)

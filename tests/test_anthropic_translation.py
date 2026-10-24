@@ -75,6 +75,18 @@ def test_server_tools_are_flagged_not_silently_dropped():
         )
 
 
+def test_answer_tokens_leave_out_the_reasoning():
+    from types import SimpleNamespace
+
+    from openport.runtime.openport_llm import answer_tokens
+
+    reported = SimpleNamespace(completion_tokens=178, completion_tokens_details=SimpleNamespace(reasoning_tokens=173))  # as Super reports
+    assert answer_tokens(reported, None) == 5
+    unreported = SimpleNamespace(completion_tokens=100, completion_tokens_details=None)  # Nano gives no breakdown: split by length
+    assert answer_tokens(unreported, completion(content="x" * 25, reasoning="y" * 75).choices[0].message) == 25
+    assert answer_tokens(unreported, completion(content="all of it is the reply").choices[0].message) == 100
+
+
 def test_response_translation():
     response = completion(content="Here you go.", tool_calls=[("call_1", "get_weather", {"city": "Oslo"})], reasoning="thinking...")
     message = openai_to_anthropic(response, model="nemotron", include_thinking=True)

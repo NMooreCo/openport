@@ -49,6 +49,7 @@ class Attempt:
     prompt_tokens: int = 0  # totals across all cases, as measured on Nemotron
     completion_tokens: int = 0
     cases: int = 0  # distinct cases; `passed` and `total` count every sample
+    answer_tokens: int = 0  # completion tokens of the replies alone, without the reasoning
 
     def meets(self, target: float) -> bool:
         return self.tune_pass >= target and (self.holdout_pass is None or self.holdout_pass >= target)
@@ -154,6 +155,7 @@ def tune_site(
                 failed_cases=list(dict.fromkeys(r.case_id for r in result.cases if not r.passed)),
                 prompt_tokens=result.prompt_tokens,
                 completion_tokens=result.completion_tokens,
+                answer_tokens=result.answer_tokens,
                 cases=len({r.case_id for r in result.cases}),
             )
             attempts.append(attempt)

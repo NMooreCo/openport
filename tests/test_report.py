@@ -104,3 +104,10 @@ def test_pr_description(tmp_path):
     assert "held out" in body and "## Move LLM calls to NVIDIA Nemotron" in body
     # Calls without tuning data or prices don't get made-up numbers.
     assert "| `pii.extract_pii`" in body and "| `nvidia/super-test` | - | - | - | - |" in body
+
+    # When the report knows how much of Nemotron's output was the reply itself, the original model isn't charged
+    # for Nemotron's reasoning: 1,000 calls of 400 in / 30 reply tokens is $0.16 on gpt-5-mini. Nemotron still pays for all 100.
+    chosen["answer_tokens"] = 300
+    [triage] = [r for r in report.build_rows(report.load_summary(tmp_path / "out"), tune, prices.get) if r.id == "triage.triage_ticket"]
+    assert round(triage.cost_was, 4) == 0.16 and round(triage.cost_now, 4) == 0.048
+    assert "Nemotron's reasoning not counted" in report.render("supportdesk", [triage], tune)

@@ -45,6 +45,7 @@ class SiteResult:
     prompt_tokens: int
     completion_tokens: int
     cost_usd: float | None
+    answer_tokens: int = 0  # the completion tokens of the replies alone, without Nemotron's reasoning
 
     @property
     def passed(self) -> int:
@@ -161,6 +162,7 @@ def run_site(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cost_usd=None if any(c is None for c in costs) else sum(costs),
+        answer_tokens=sum(u.answer_tokens for u in used.values()),
     )
 
 

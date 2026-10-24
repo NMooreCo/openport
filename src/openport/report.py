@@ -34,6 +34,7 @@ class Row:
     addendum: str = ""
     sources: list[dict] = field(default_factory=list)  # NVIDIA guidance the tuned change relied on
     per_call_tokens: tuple[float, float] | None = None  # (prompt, completion), measured on Nemotron
+    per_call_answer: float | None = None  # the reply's tokens alone, without Nemotron's reasoning
     cost_was: float | None = None  # USD per 1,000 calls
     cost_now: float | None = None
 
@@ -80,12 +81,15 @@ def build_rows(sites: list[dict], tune_report: dict | None, price_of: Callable[[
                 row.sources = [s for s in variant.sources if s.get("quote")]  # only citations checked against the page
                 if chosen["total"]:
                     row.per_call_tokens = (chosen["prompt_tokens"] / chosen["total"], chosen["completion_tokens"] / chosen["total"])
+                    if chosen.get("answer_tokens"):  # reports from before Oct 24 evening don't have it
+                        row.per_call_answer = chosen["answer_tokens"] / chosen["total"]
         if row.per_call_tokens and row.was and row.now:
             was_price, now_price = price_of(row.was), price_of(row.now)
-            if was_price:
-                row.cost_was = was_price.cost(*row.per_call_tokens) * 1000
-            if now_price:
-                row.cost_now = now_price.cost(*row.per_call_tokens) * 1000
+            prompt, completion = row.per_call_tokens
+            if was_price:  # the original model writes the same reply; Nemotron's reasoning isn't counted against it
+                row.cost_was = was_price.cost(prompt, row.per_call_answer if row.per_call_answer is not None else completion) * 1000
+            if now_price:  # Nemotron is billed for everything it produced, reasoning included
+                row.cost_now = now_price.cost(prompt, completion) * 1000
         rows.append(row)
     return rows
 
@@ -132,8 +136,10 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
     if costs and len(costs) == len(ported):
         before, after = sum(r.cost_was for r in costs), sum(r.cost_now for r in costs)
         saving = f" ({(before - after) / before:.0%} less)" if before > 0 and after < before else ""
+        how = (": the original model is charged for the same prompts and replies (Nemotron's reasoning not counted), "
+               "Nemotron for everything it produced" if all(r.per_call_answer is not None for r in costs) else "")
         lines += ["", f"**Estimated cost for 1,000 runs of each call: {_usd(before)} → {_usd(after)}{saving}.** "
-                  "Estimated from token counts measured on Nemotron, at list prices."]
+                  f"Estimated from token counts measured on Nemotron, at list prices{how}."]
 
     if kept:
         lines += ["", "**Kept on the original provider:**"]
