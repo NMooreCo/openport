@@ -122,6 +122,8 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 
 ## 3-minute video script (full scope, including the package updater)
 
+The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/VIDEO.md); this is the outline.
+
 - **0:00–0:15 The problem.** "Switching to open models is a three-line change. Almost nobody does it, because nobody can prove it won't break." Headline: plain swap **74%** (measured Oct 24, Nano) → OpenPort **Y%**, at **Z%** of the cost.
 - **0:15–0:30** Paste SupportDesk into the dashboard. The scan finds 5 calls across the OpenAI and Anthropic SDKs.
 - **0:30–1:10** The tuning board, live:
