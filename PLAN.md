@@ -120,18 +120,28 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 
 **3. A TypeScript version of SupportDesk** (or probly) to show TS support works end to end.
 
-## 3-minute video script
+## 3-minute video script (full scope, including the package updater)
 
-- **0:00–0:20 The problem.** "Switching to open models is a base-URL change. So why doesn't anyone do it? Nobody can prove it won't break." Show the headline number: plain swap X% → OpenPort Y%.
-- **0:20–0:40** Paste the SupportDesk URL. The scan finds 5 calls across the OpenAI and Anthropic SDKs.
-- **0:40–1:30** The tuning board, live:
-  - Nano fails one call at 72% → Tavily pulls Nemotron guidance → Ultra rewrites the prompt → 96% → locked.
-  - Another call moves up to Super.
-  - Evals spread out across Serverless Jobs, and the cost meter keeps ticking.
-- **1:30–1:50** Ultra teaches Nano: the fine-tuned Nano passes a call that plain Nano couldn't.
-- **1:50–2:20** The PR opens: the diff, the quality table, savings, and the CI gate catching a deliberately broken prompt. Quick cut to the real open-source repo's PR.
-- **2:20–2:45** Architecture: which Nemotron model does what, Token Factory, Serverless Jobs and Endpoints, fine-tuning, Tavily.
-- **2:45–3:00** Close: "Prove it, then port it."
+- **0:00–0:15 The problem.** "Switching to open models is a three-line change. Almost nobody does it, because nobody can prove it won't break." Headline: plain swap **74%** (measured Oct 24, Nano) → OpenPort **Y%**, at **Z%** of the cost.
+- **0:15–0:30** Paste SupportDesk into the dashboard. The scan finds 5 calls across the OpenAI and Anthropic SDKs.
+- **0:30–1:10** The tuning board, live:
+  - Nano misses a call → Tavily pulls Nemotron guidance → Ultra rewrites the prompt → it passes → locked.
+  - Another call climbs to Super.
+  - Evals fan out across Serverless Jobs, and the cost meter keeps ticking.
+- **1:10–1:25** Ultra teaches Nano: the fine-tuned Nano passes a call that plain Nano couldn't.
+- **1:25–1:50** The PR: the tuned prompt written into the code, the quality table, cost per 1k calls before and after, and the CI gate catching a deliberately broken prompt. Quick cut to the real open-source repo's (preflight) PR.
+- **1:50–2:20** `openport upgrade`: it finds a vulnerable dependency, picks a fix that's at least a week old, Tavily reads the advisory and changelog, Super patches the code the upgrade breaks, the repo's tests pass before and after, and a second PR opens.
+- **2:20–2:45** Architecture: which Nemotron tier does what; Token Factory, Serverless Jobs and Endpoints, fine-tuning, Tavily.
+- **2:45–3:00** Close: "OpenPort keeps your app open and current. Prove it, then ship it."
+
+### Submission requirements (from the Devpost page, checked Oct 24)
+
+- **Video:** 3 minutes or shorter, a **public YouTube** video showing the project working and how it uses Token Factory and Nemotron.
+- **Code:** a **public** repository with an open-source license visible at the top (MIT is in place; the repo is private until I submit).
+- **Working demo:** a URL to a hosted app or test build. The dashboard needs to be deployed (a Nebius Serverless Endpoint is encouraged).
+- **README:** setup instructions, how OpenPort uses Nemotron, where Token Factory helped, and any other Nebius tools used.
+- **Feedback** on Token Factory, AI Cloud and the NVIDIA models (FEEDBACK.md).
+- **Credits:** $25 of Token Factory credits via the [promo form](https://nebius.com/promo-code?utm_promo_event_code=2026-devpost-global-ai-hack&utm_promo_code_type=Token_Factory&utm_promo_activation_code=NEBIUS-DEVPOST-GLOBAL26) (activation code `NEBIUS-DEVPOST-GLOBAL26`), plus another $25 (and Tavily credits) by joining the free [Nebius Builders Program](https://dev.nebius.com/builders).
 
 ## Schedule
 
@@ -224,9 +234,19 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **CLI:** a dry-run report (vulnerable deps, installed -> fix, advisory IDs, status). 86 offline tests.
 - Not yet (needs a live environment): Tavily research on the advisory/changelog, Super patching broken call sites, running the repo's test suite before/after, and opening the PR.
 
+**Sat 24: first live runs on Token Factory.**
+- `openport smoke`: JSON mode, tool calling (auto, forced, round trip) and the reasoning switch work on all three tiers; strict `json_schema` fails on Nano (Super and Ultra pass).
+- `openport baseline` (plain swap): **74%** Nano / **83%** Super / **85%** Ultra across 54 cases; the reply drafter scores 0% / 25% / 38%.
+- `openport tune`: all 5 calls reach **100%** on both tuning and held-out cases. Chosen tiers: refunds and policy on Nano, pii and replies on Super, triage on Ultra. OpenPort's own cost: **$0.12**.
+- **Headline: plain swap 74% → OpenPort 100% (54/54), at about 4% of the cost** (per 1k calls of each, across the 4 calls with a verified closed-model price; Tavily couldn't verify gpt-5's). Biggest wins: policy (Claude Opus → Nano) $25.07 → $0.31 per 1k; replies 0% → 100%.
+- Port and PR (dry run) from the plan: every tuned prompt addition and setting landed in the code, with nothing left for review.
+- Found and fixed on the first live run: a Windows UTF-8 console crash.
+- Next: verify gpt-5's price; grow the eval sets (held-out sets are only 3–5 cases, so one case can push a call up a tier — triage landed on Ultra, which costs more than gpt-5-mini: $0.11 → $0.35 per 1k).
+
 **Still open for Fri 23:**
-- Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
-- Create the public GitHub repo.
+- Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
+- Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).
+- Done (Oct 24): both credit grants requested (promo form and Builders Program).
 - Done: demo repos chosen (preflight + probly; see Demo targets).
 
 Keep a running `FEEDBACK.md` all week. Every friction point with Token Factory, Nemotron, Serverless or fine-tuning goes in it. It's free material for the feedback prize.

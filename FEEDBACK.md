@@ -23,6 +23,11 @@ Two kinds of notes are tracked separately and honestly:
 **[live] Nano fails strict structured output (`json_schema`); Super and Ultra pass.** (Oct 24)
 - Ran `openport smoke` against all three tiers. `json_object` (JSON mode), `auto`/forced tool calling, a tool round-trip, and the reasoning on/off switch all pass on Nano, Super and Ultra. But strict JSON-schema structured output (`chat.completions.parse` with a Pydantic schema) **fails on Nano** while passing on Super and Ultra.
 - Impact: a cheap high-volume extraction call that relies on strict schemas can't just drop onto Nano; it needs Super, or a prompt that coaxes schema-valid output. This is exactly what OpenPort's tuning ladder is for, but it's worth a docs note on which tiers support strict structured output.
+- Confirmed in tuning: for SupportDesk's PII extraction call, adding prompt instructions on Nano made it *worse* (43% on tuning cases, 0% held-out); moving to Super fixed it (100% / 100%).
+
+**[live] The reasoning switch is the most powerful tuning knob.** (Oct 24)
+- In `openport tune`, 4 of 5 calls ended up changing Nemotron's reasoning setting. Turning it **off** fixed format-following for classification, extraction and reply drafting (and cut output tokens). Turning it **on** let Nano handle a multi-step policy call that previously ran on Claude Opus — at 100% pass rate, $25.07 → $0.31 per 1,000 calls.
+- Suggestion: a short guide on when to switch reasoning off (format-strict outputs) versus on (multi-step decisions) would help anyone porting from closed models.
 
 ## Nemotron models and tiers
 
