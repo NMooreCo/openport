@@ -74,7 +74,8 @@ def test_a_pinned_repo_is_fetched_at_exactly_that_commit(tmp_path, monkeypatch):
     assert fresh and root == tmp_path / "repos" / commit[:12] / "jsliapark__preflight" and root.is_dir()
     assert [args[3:] for args in calls] == [
         ["init", "--quiet"],
-        ["fetch", "--depth", "1", "--quiet", "https://github.com/jsliapark/preflight.git", commit],
+        ["remote", "add", "origin", "https://github.com/jsliapark/preflight.git"],  # so `openport pr` can find the repo
+        ["fetch", "--depth", "1", "--quiet", "origin", commit],
         ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ]
     assert workspace.fetch_repo(f"jsliapark/preflight@{commit}") == (root, False)  # reused, not fetched again

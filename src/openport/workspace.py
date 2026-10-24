@@ -43,7 +43,12 @@ def fetch_repo(target: str) -> tuple[Path, bool]:
     partial = destination.with_name(destination.name + ".partial")  # a failed fetch never looks like a clone
     shutil.rmtree(partial, ignore_errors=True)
     partial.mkdir()
-    for args in (["init", "--quiet"], ["fetch", "--depth", "1", "--quiet", url, commit], ["checkout", "--quiet", "--detach", "FETCH_HEAD"]):
+    for args in (
+        ["init", "--quiet"],
+        ["remote", "add", "origin", url],  # `openport pr` finds the GitHub repo from origin, as in a clone
+        ["fetch", "--depth", "1", "--quiet", "origin", commit],
+        ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+    ):
         subprocess.run(["git", "-C", str(partial), *args], check=True)
     partial.rename(destination)
     return destination, True
