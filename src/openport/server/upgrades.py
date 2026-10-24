@@ -54,7 +54,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     from ..upgrade.fix import make_fixer
     from ..upgrade.research import research_upgrade
     from ..upgrade.run import upgrade_repo
-    from ..upgrade.testrun import run_tests, test_setup
+    from ..upgrade.testrun import run_suites, run_tests, test_setups
 
     run.emit("stage", stage="fetch")
     root = local if local is not None else fetch_repo(target)[0]
@@ -79,6 +79,8 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
             run.emit("tests", step=kind, **_tests(data))
             if kind == "after_bump" and not data.ok:
                 run.emit("stage", stage="fix")  # the research and Super's edits come next
+        elif kind == "bumped":  # the packages actually upgraded: a lockfile the package manager couldn't update drops out
+            run.emit("bumped", packages=[p.dep.name for p in data])
         elif kind == "research":
             run.emit("research", sources=[{"title": s["title"], "url": s["url"]} for s in data])
         elif kind == "round":
@@ -90,8 +92,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
 
     def tests(folder: Path):
-        image, command = test_setup(folder, ecosystems)
-        return run_tests(folder, image=image, command=command)
+        return run_suites(folder, test_setups(folder, ecosystems), run_tests=run_tests)
 
     result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=tests,
                           researcher=researcher, fixer=make_fixer(), on_event=event)

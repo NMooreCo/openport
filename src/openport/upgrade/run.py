@@ -6,15 +6,20 @@ and have Nemotron Super repair whatever the upgrade broke.
 3. If they fail: Tavily reads the changelogs and advisories, Super proposes exact edits to application
    code (never tests), and the tests run again, for a few rounds.
 4. Diff the copy against the original. The original repo is never touched.
+
+The upgrade lives in `out`, which only OpenPort's own edits and the package managers' lockfiles change.
+The tests and package managers run on a fresh scratch copy each time, so nothing the repo's code does
+in its container can reach the diff or the PR.
 """
 
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
 from . import Upgrade, plan_upgrades, read_lockfiles
-from .apply import Edit, apply_bumps, apply_edits, copy_repo, diff
+from .apply import Edit, apply_bumps, apply_edits, copy_repo, diff, remove_tree
 from .bump import LOCKFILES, bump_steps
 from .fix import source_files
 from .testrun import TestRun, run_in_container
@@ -79,29 +84,64 @@ def upgrade_repo(
         return run
 
     copy_repo(root, out)
-    run.before = run_tests(out)
+    scratches: list[Path] = []
+
+    def scratch_copy() -> Path:
+        """A fresh copy of the upgrade for a container to work in. If an earlier copy can't be deleted (a
+        container left something this OS can't remove), the next one gets a new folder instead of failing."""
+        base = Path(out).with_name(Path(out).name + ".scratch")
+        for folder in (base, *(base.with_name(f"{base.name}-{i}") for i in range(1, 100))):
+            try:
+                copy_repo(out, folder)
+            except OSError:
+                continue
+            scratches.append(folder)
+            return folder
+        raise OSError(f"couldn't make a scratch copy next to {out}")
+
+    def tested() -> TestRun:
+        return run_tests(scratch_copy())  # never `out` itself: the tests run the repo's code
+
+    try:
+        return _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container)
+    finally:
+        for folder in set(scratches):
+            try:
+                remove_tree(folder)
+            except OSError:  # harmless: it's never read again, and the next run works around it
+                pass
+
+
+def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container) -> UpgradeRun:
+    run.before = tested()
     emit("before", run.before)
-    run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in upgraded if p.dep.source == "requirements.txt"})
+    run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in run.upgraded if p.dep.source == "requirements.txt"})
     locked: dict[str, dict[str, str]] = {}
-    for p in upgraded:
+    for p in run.upgraded:
         if p.dep.source in LOCKFILES:
             locked.setdefault(p.dep.source, {})[p.dep.name] = p.target.version
     cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
-    package_json = out / "package.json"
+    package_json = Path(out) / "package.json"
     original_package = package_json.read_bytes() if package_json.is_file() else None  # npm's step may add overrides
     for step in bump_steps(out, locked, cutoff):
-        result = run_container(out, step.image, step.command)
+        work = scratch_copy()
+        result = run_container(work, step.image, step.command)
+        touched = [step.lockfile] + (["package.json"] if step.lockfile == "package-lock.json" else [])
         if result.ok:
-            run.changed += [step.lockfile] + (["package.json"] if step.lockfile == "package-lock.json" else [])
+            for name in touched:  # only the files the package manager is there to change come back
+                if (work / name).is_file():
+                    shutil.copy2(work / name, Path(out) / name)
+            run.changed += touched
             continue
         if step.lockfile == "package-lock.json" and original_package is not None:
             package_json.write_bytes(original_package)  # a failed bump leaves no half-made change behind
         failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
         run.upgraded = [p for p in run.upgraded if p not in failed]
         run.skipped += [(p, f"{step.lockfile} couldn't be updated: {result.summary or 'the package manager failed'}") for p in failed]
+    emit("bumped", run.upgraded)
     if not run.upgraded:
         return run
-    run.after_bump = run_tests(out)
+    run.after_bump = tested()
     emit("after_bump", run.after_bump)
 
     current, notes = run.after_bump, ""
@@ -118,7 +158,7 @@ def upgrade_repo(
                 run.fix_error = f"{type(error).__name__}: {error}"[:300]
                 break
             applied, rejected = apply_edits(out, edits)
-            current = run_tests(out) if applied else current
+            current = tested() if applied else current
             run.rounds.append(FixRound(applied, rejected, rationale, sources, current))
             emit("round", run.rounds[-1])
             if current.ok:

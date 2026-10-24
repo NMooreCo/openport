@@ -69,6 +69,17 @@ def test_price_lookup_retries_a_missed_read():
     assert len(misses) == 2  # gave up after three reads and one broader search
 
 
+def test_a_target_only_reads_its_own_tuning_reports(tmp_path, monkeypatch):
+    """supportdesk-ts's reports sort after supportdesk's; the Python app's PR must never pick them up."""
+    from openport import config
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
+    for name in ("tune-supportdesk-20261024-151225.json", "tune-supportdesk-ts-20261025-101010.json", "tune-supportdesk-notes.json"):
+        (tmp_path / name).write_text("{}")
+    assert [p.name for p in report.tune_reports("supportdesk")] == ["tune-supportdesk-20261024-151225.json"]
+    assert report.latest_tune_report("supportdesk-ts").name == "tune-supportdesk-ts-20261025-101010.json"
+
+
 def test_pr_description(tmp_path):
     scan = scan_repo(SUPPORTDESK)
     assignments = {"triage.triage_ticket": {"model": "nano", "variant": {"reasoning": False, "system_addendum": "JSON only."}}}

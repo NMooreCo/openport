@@ -30,9 +30,11 @@ class BumpStep:
 
 
 def uv_step(bumps: dict[str, str], cutoff: datetime) -> BumpStep:
-    """`uv lock --upgrade-package NAME==VERSION`: works for transitive packages too, within the project's constraints."""
+    """`uv lock --upgrade-package NAME==VERSION`: works for transitive packages too, within the project's constraints.
+    uv records --exclude-newer in uv.lock, which would make the repo's own `uv lock --check` fail; the plain
+    `uv lock` after it drops the option and keeps every version just resolved."""
     flags = " ".join(f"--upgrade-package {shlex.quote(f'{name}=={version}')}" for name, version in bumps.items())
-    command = f"{UV_INSTALL} && uv lock --exclude-newer {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} {flags}"
+    command = f"{UV_INSTALL} && uv lock --exclude-newer {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} {flags} && uv lock"
     return BumpStep("uv.lock", PYTHON_IMAGE, command, list(bumps))
 
 

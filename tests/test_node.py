@@ -85,6 +85,25 @@ def test_proxy_sends_requests_through_the_swapped_client():
         assert post(proxy.base_url("c").replace("/v1", "/v1/embeddings"), {})[0] == 404
 
 
+def test_proxy_passes_token_factorys_errors_on_as_they_came():
+    """The Python SDK unwraps "error"; the app's SDK expects it, so the original body goes back."""
+    import httpx
+    from openai import APIStatusError
+
+    body = {"error": {"type": "insufficient_quota", "message": "Payment Required: You have exhausted your budget."}}
+
+    class Client:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(**request):
+                    response = httpx.Response(402, json=body, request=httpx.Request("POST", "https://api.tokenfactory.nebius.com/v1/chat/completions"))
+                    raise APIStatusError("Error code: 402", response=response, body=body["error"])
+
+    with node.EvalProxy(Client) as proxy:
+        assert post(proxy.base_url("c") + "/chat/completions", {"model": "m", "messages": []}) == (402, body)
+
+
 def test_the_app_gets_no_secrets(monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "nb-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")

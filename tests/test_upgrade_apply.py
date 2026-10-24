@@ -85,20 +85,61 @@ def test_edits_and_bumps_keep_each_files_line_endings(tmp_path):
     assert (tmp_path / "requirements.txt").read_bytes() == b"PyJWT==2.14.0\r\nrequests==2.31.0\r\n"
 
 
-def test_a_proven_upgrade_can_be_opened_as_a_pr_from_the_copy(tmp_path):
+def test_a_proven_upgrade_opens_from_the_original_git_plus_the_changed_files(tmp_path):
+    """The tested copy never has .git: a repo's tests could plant hooks there, or change files on the way to the PR."""
     from openport import github
+    from openport.upgrade.apply import changed_files, make_pr_folder
 
     repo = tmp_path / "repo"
     shutil.copytree(AUTHKIT, repo)
     subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
     subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/authkit.git"], cwd=repo, check=True)
     copy = copy_repo(repo, tmp_path / "copy")
-    assert (copy / ".git").is_dir()  # comes along, so the upgrade can be committed from the copy
+    assert not (copy / ".git").exists()
     apply_bumps(copy, {"PyJWT": "2.14.0"})
-    assert diff(repo, copy).count("+++ ") == 1  # the bump; .git never shows up in the diff
-    plan = github.plan_pr(copy, "Upgrade vulnerable dependencies", tmp_path / "body.md", "me", branch=github.UPGRADE_BRANCH)
+    pr = make_pr_folder(repo, copy, changed_files(repo, copy), tmp_path / "pr")
+    assert changed_files(repo, copy) == ["requirements.txt"] and (pr / ".git").is_dir()
+    assert "PyJWT==2.14.0" in (pr / "requirements.txt").read_text() and changed_files(repo, pr) == ["requirements.txt"]
+    plan = github.plan_pr(pr, "Upgrade vulnerable dependencies", tmp_path / "body.md", "me", branch=github.UPGRADE_BRANCH)
     assert plan.fork == "me/authkit" and plan.commands[0] == ["git", "checkout", "-B", "openport/security-upgrades"]
     assert plan.commands[-1][:7] == ["gh", "pr", "create", "--repo", "me/authkit", "--head", "openport/security-upgrades"]
+    assert github._safe(["git", "add", "-A"])[1:5] == ["-c", f"core.hooksPath={github._no_hooks()}", "-c", "core.fsmonitor=false"]
+    assert github._safe(["gh", "pr", "create"]) == ["gh", "pr", "create"]
+
+
+def test_the_tests_never_run_in_the_upgrade_itself(tmp_path):
+    """Whatever a repo's tests write, in a scratch copy, can't reach the diff."""
+    seen = []
+
+    def tests(folder):
+        seen.append(folder.name)
+        (folder / "authkit" / "tokens.py").write_text("# rewritten by a malicious test\n")
+        return passing()
+
+    run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade()], run_tests=tests)
+    assert run.proven and seen == ["out.scratch", "out.scratch"] and not (tmp_path / "out.scratch").exists()
+    assert [line for line in run.diff.splitlines() if line.startswith("+++ ")] == ["+++ b/requirements.txt"]
+
+
+def test_read_only_files_are_removed_on_a_rerun(tmp_path):
+    import os
+    import stat
+
+    from openport.upgrade.apply import remove_tree
+
+    (tmp_path / "copy" / "objects").mkdir(parents=True)
+    locked = tmp_path / "copy" / "objects" / "pack"
+    locked.write_text("x")
+    os.chmod(locked, stat.S_IREAD)  # as Git for Windows leaves its objects
+    remove_tree(tmp_path / "copy")
+    assert not (tmp_path / "copy").exists()
+
+    # A container's symlink on a Windows mount fails unlink but goes as a folder: the fallback tries that next.
+    from openport.upgrade.apply import _remove_stubborn
+
+    (tmp_path / "lib64").mkdir()
+    _remove_stubborn(os.unlink, str(tmp_path / "lib64"), OSError("Access is denied"))
+    assert not (tmp_path / "lib64").exists()
 
 
 CUTOFF = datetime(2026, 10, 17, tzinfo=timezone.utc)
@@ -109,8 +150,8 @@ def test_lockfiles_are_bumped_by_their_package_manager_with_the_age_cutoff(tmp_p
 
     (tmp_path / "package.json").write_bytes(b'{\r\n    "name": "app",\r\n    "dependencies": {"jsonwebtoken": "^8.5.1"}\r\n}\r\n')
     uv, npm = bump_steps(tmp_path, {"uv.lock": {"requests": "2.33.0"}, "package-lock.json": {"jsonwebtoken": "9.0.0", "semver": "5.7.2"}}, CUTOFF)
-    assert uv.image.startswith("python:") and uv.command.endswith(
-        "uv lock --exclude-newer 2026-10-17T00:00:00Z --upgrade-package requests==2.33.0")
+    assert uv.image.startswith("python:") and uv.command.endswith(  # then a plain lock, so uv.lock doesn't keep the cutoff
+        "uv lock --exclude-newer 2026-10-17T00:00:00Z --upgrade-package requests==2.33.0 && uv lock")
     assert npm.image.startswith("node:") and npm.packages == ["jsonwebtoken", "semver"]
     lock_only = "npm install --package-lock-only --ignore-scripts --no-audit --no-fund --before=2026-10-17T00:00:00Z"
     assert npm.command == f"{lock_only} jsonwebtoken@9.0.0 && {lock_only}"  # direct: installed; transitive: an override
@@ -119,16 +160,38 @@ def test_lockfiles_are_bumped_by_their_package_manager_with_the_age_cutoff(tmp_p
 
 
 def test_tests_run_the_projects_own_way(tmp_path):
-    from openport.upgrade.testrun import NODE_TESTS, PYTHON_TESTS, UV_TESTS, summarize, test_setup
+    from openport.upgrade.testrun import NO_NODE_TESTS, NODE_TESTS, PYTHON_TESTS, UV_TESTS, summarize, test_setups
 
-    assert test_setup(tmp_path, {"PyPI"}) == ("python:3.12.11-slim", PYTHON_TESTS)
+    assert test_setups(tmp_path, {"PyPI"}) == [("pytest", "python:3.12.11-slim", PYTHON_TESTS)]
     (tmp_path / "uv.lock").write_text("")
-    assert test_setup(tmp_path, {"PyPI"})[1] == UV_TESTS
+    assert test_setups(tmp_path, {"PyPI"})[0][2] == UV_TESTS and "--locked" in UV_TESTS  # stale locks fail, as in CI
+    assert test_setups(tmp_path, {"npm"}) == [("npm test", "node:22.23.4-slim", NO_NODE_TESTS)]  # no test script: no proof
     (tmp_path / "package.json").write_text('{"scripts": {"test": "node --test"}}')
-    assert test_setup(tmp_path, {"npm"}) == ("node:22.23.4-slim", NODE_TESTS)
+    assert [name for name, _, _ in test_setups(tmp_path, {"npm", "PyPI"})] == ["npm test", "pytest"]  # both, when both move
+    assert test_setups(tmp_path, {"npm"})[0][2] == NODE_TESTS
     assert summarize("ℹ tests 5\nℹ pass 4\nℹ fail 1\nℹ duration_ms 52") == "1 failed, 4 passed"  # node --test
     assert summarize("# pass 5\n# fail 0") == "5 passed"
     assert summarize("....\n4 failed, 1 passed in 0.21s\n") == "4 failed, 1 passed in 0.21s"
+
+
+def test_every_suite_must_pass(tmp_path):
+    from openport.upgrade.testrun import run_suites
+
+    results = {"npm": TestRun(True, 0, "5 passed", "ok", 2.0), "py": TestRun(False, 1, "1 failed", "boom", 3.0)}
+    combined = run_suites(tmp_path, [("npm test", "node", "npm"), ("pytest", "python", "py")],
+                          run_tests=lambda folder, *, image, command: results[command])
+    assert not combined.ok and combined.summary == "npm test: 5 passed; pytest: 1 failed" and combined.seconds == 5.0
+    single = run_suites(tmp_path, [("pytest", "python", "npm")], run_tests=lambda folder, *, image, command: results[command])
+    assert single.ok and single.summary == "5 passed"
+
+
+def test_a_snippet_shallower_than_the_search_keeps_its_place():
+    """Super adds an `except` after a `try` body it copied with 8 spaces; the file uses 4."""
+    from openport.upgrade.apply import _replace_reindented
+
+    text = "def f():\n    try:\n        run()\n    finally:\n        done()\n"
+    new = _replace_reindented(text, "            run()", "            run()\n        except ValueError:\n            pass")
+    assert new == "def f():\n    try:\n        run()\n    except ValueError:\n        pass\n    finally:\n        done()\n"
 
 
 def test_a_lockfile_bump_that_fails_leaves_those_packages_out(tmp_path):
@@ -184,7 +247,10 @@ def test_tests_run_in_a_container_with_only_the_copy_mounted(tmp_path):
     assert (result.ok, result.exit_code, result.summary) == (False, 1, "4 failed, 1 passed in 0.21s")
     args = calls[0]
     assert args[:3] == ["docker", "run", "--rm"] and f"{tmp_path.resolve()}:/repo" in args and args[-3:-1] == ["sh", "-c"]
-    assert docker_command(tmp_path, "img", "make test")[-4:] == ["img", "sh", "-c", "make test"]
+    *_, image, shell, flag, script = docker_command(tmp_path, "img", "make test")
+    assert (image, shell, flag) == ("img", "sh", "-c") and script.startswith("make test; status=$?; ")
+    # The installs are removed inside the container (Windows can't delete their Linux symlinks), and the exit status kept.
+    assert "rm -rf /repo/node_modules /repo/.venv" in script and script.endswith("exit $status")
 
 
 def test_research_keeps_relevant_pages_once():

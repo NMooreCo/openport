@@ -282,7 +282,9 @@ def tune_spec(
     config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = config.RUNS_DIR / f"tune-{spec.target}-{stamp}.json"
     plan_path = config.RUNS_DIR / f"plan-{spec.target}.json"
-    earlier = sorted(config.RUNS_DIR.glob(f"tune-{spec.target}-*.json"))
+    from ..report import tune_reports  # here, not at the top: report imports this package's variant module
+
+    earlier = tune_reports(spec.target)
     if site_ids and earlier:
         previous_plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else None
         carry_forward(report, plan, json.loads(earlier[-1].read_text(encoding="utf-8")), previous_plan, earlier[-1].name)

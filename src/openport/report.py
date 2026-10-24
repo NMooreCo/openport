@@ -1,6 +1,7 @@
 """The PR description: what moved where, how it was tested, what it costs, and what to check before merging."""
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -43,8 +44,14 @@ def load_summary(ported: Path) -> list[dict]:
     return yaml.safe_load((ported / SUMMARY_FILE).read_text(encoding="utf-8"))["call_sites"]
 
 
+def tune_reports(target: str) -> list[Path]:
+    """This target's tuning reports, oldest first. Only exact names count: `supportdesk` isn't `supportdesk-ts`."""
+    name = re.compile(rf"tune-{re.escape(target)}-\d{{8}}-\d{{6}}\.json")
+    return sorted(p for p in config.RUNS_DIR.glob(f"tune-{target}-*.json") if name.fullmatch(p.name))
+
+
 def latest_tune_report(target: str) -> Path | None:
-    reports = sorted(config.RUNS_DIR.glob(f"tune-{target}-*.json"))
+    reports = tune_reports(target)
     return reports[-1] if reports else None
 
 

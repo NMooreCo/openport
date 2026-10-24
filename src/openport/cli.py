@@ -620,10 +620,11 @@ def upgrade(
 def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, out, min_age: int, open_pr: bool, upstream: bool) -> None:
     from .github import UPGRADE_BRANCH
     from .upgrade import report as upgrade_report
+    from .upgrade.apply import changed_files, make_pr_folder
     from .upgrade.fix import make_fixer
     from .upgrade.research import research_upgrade
     from .upgrade.run import upgrade_repo
-    from .upgrade.testrun import run_tests, test_setup
+    from .upgrade.testrun import run_suites, test_setups
 
     if shutil.which("docker") is None:
         _fail("--apply runs the repo's tests in a Docker container; install Docker first.")
@@ -657,8 +658,10 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
 
     def tests(folder: Path):
-        image, command = test_setup(folder, ecosystems)
-        return run_tests(folder, image=test_image or image, command=test_command or command)
+        setups = test_setups(folder, ecosystems)
+        if test_image or test_command:  # your own suite instead of the detected ones
+            setups = [("tests", test_image or setups[0][1], test_command or setups[0][2])]
+        return run_suites(folder, setups)
 
     run = upgrade_repo(root, out_dir, plans=plans, min_age_days=min_age, rounds=rounds, researcher=researcher, fixer=fixer,
                        on_event=event, run_tests=tests)
@@ -671,8 +674,9 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     body_path.write_text(upgrade_report.render(run, min_age), encoding="utf-8")
     verdict = "[green]Proven: the tests pass before and after the upgrade.[/green]" if run.proven else "[red]Not proven: see the test results.[/red]"
     console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
-    if run.proven:
-        _open_or_show_pr(out_dir.resolve(), upgrade_report.TITLE, body_path.resolve(), open_pr, upstream, UPGRADE_BRANCH)
+    if run.proven:  # the PR comes from the original's .git plus the changed files, never from the tested copy
+        pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir), out_dir.with_name(out_dir.name + ".pr"))
+        _open_or_show_pr(pr_folder.resolve(), upgrade_report.TITLE, body_path.resolve(), open_pr, upstream, UPGRADE_BRANCH)
     elif open_pr:
         _fail("Not opening a PR: the tests don't prove this upgrade.")
 

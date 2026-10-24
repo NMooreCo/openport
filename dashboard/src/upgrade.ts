@@ -41,6 +41,7 @@ export interface UpgradeState {
   stages: Record<UpgradeStage, StageState>;
   deps?: { count: number; files: string[] };
   packages?: Package[];
+  bumped?: string[]; // the packages actually upgraded, once the bump is done
   before?: TestResult;
   afterBump?: TestResult;
   research: Source[];
@@ -50,7 +51,7 @@ export interface UpgradeState {
   error?: string;
 }
 
-export const UPGRADE_EVENT_TYPES = ["stage", "note", "deps", "advisories", "tests", "research", "fix", "upgrade_pr", "done", "failed"];
+export const UPGRADE_EVENT_TYPES = ["stage", "note", "deps", "advisories", "bumped", "tests", "research", "fix", "upgrade_pr", "done", "failed"];
 
 export function initialUpgrade(id: string): UpgradeState {
   return { id, status: "queued", stages: pendingStages(UPGRADE_STAGES), research: [], fixes: [], notes: [] };
@@ -68,6 +69,8 @@ export function reduceUpgrade(state: UpgradeState, event: RunEvent): UpgradeStat
       return { ...state, deps: { count: event.count, files: event.files } };
     case "advisories":
       return { ...state, packages: event.packages };
+    case "bumped":
+      return { ...state, bumped: event.packages };
     case "tests":
       return event.step === "before" ? { ...state, before: testResult(event) } : { ...state, afterBump: testResult(event) };
     case "research":
@@ -89,8 +92,9 @@ export function reduceUpgrade(state: UpgradeState, event: RunEvent): UpgradeStat
 
 export const useUpgrade = (runId: string | null) => useEvents(runId, initialUpgrade, reduceUpgrade, UPGRADE_EVENT_TYPES);
 
-/** The packages this run upgrades: a safe version was chosen and OpenPort can bump the pin itself. */
-export const upgraded = (state: UpgradeState) => (state.packages ?? []).filter((p) => p.target && p.bumpable);
+/** The packages this run upgrades: those actually bumped once that's done, else the ones it means to bump. */
+export const upgraded = (state: UpgradeState) =>
+  (state.packages ?? []).filter((p) => (state.bumped ? state.bumped.includes(p.name) : p.target && p.bumpable));
 
 /** The latest test result: after the last fix that re-ran them, else after the bump. */
 export function finalTests(state: UpgradeState): TestResult | undefined {

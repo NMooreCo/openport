@@ -57,8 +57,12 @@ class EvalProxy:
                 token = CURRENT_CASE.set(unquote(match[1]))
                 try:
                     response = proxy.forward(body)
-                except APIStatusError as error:  # Token Factory's own error, passed through as is
-                    return self._reply(error.status_code, error.body if isinstance(error.body, dict) else {"error": {"message": str(error)}})
+                except APIStatusError as error:  # Token Factory's own error body, as it came: the Python SDK unwraps "error"
+                    try:
+                        payload = error.response.json()
+                    except ValueError:
+                        payload = None
+                    return self._reply(error.status_code, payload if isinstance(payload, dict) else {"error": {"message": str(error)}})
                 except Exception as error:  # noqa: BLE001 (the app sees an API error, as it would in production)
                     return self._reply(500, {"error": {"message": f"{type(error).__name__}: {error}"}})
                 finally:

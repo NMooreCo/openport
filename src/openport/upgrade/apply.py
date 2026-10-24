@@ -9,14 +9,16 @@ import difflib
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..scan.findings import is_test_path
 
 SKIP_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "runs"}  # installs, caches, OpenPort's output
-# .git comes along, so a proven upgrade can be committed and opened as a PR from the copy.
-COPY_IGNORE = shutil.ignore_patterns(*SKIP_DIRS)
+# Copies never carry .git: a container runs the repo's code in them, and it could plant hooks there.
+# A PR is built from the original's .git instead (make_pr_folder).
+COPY_IGNORE = shutil.ignore_patterns(".git", *SKIP_DIRS)
 _PIN = re.compile(r"^(\s*)([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(\s*==\s*)([^\s;#]+)(.*)$")
 
 
@@ -27,11 +29,54 @@ class Edit:
     replace: str
 
 
+def _remove_stubborn(function, target, error) -> None:
+    """rmtree's fallback: make a read-only file (Git for Windows' objects) writable and retry, or remove a symlink
+    a Linux container left on a Windows mount (uv's .venv/lib64), which Windows can't read but removes as a folder."""
+    def writable_then_retry():
+        os.chmod(target, stat.S_IWRITE)
+        function(target)
+
+    for attempt in (writable_then_retry, lambda: os.rmdir(target), lambda: os.unlink(target)):
+        try:
+            return attempt()
+        except OSError:
+            continue
+    raise error
+
+
+def remove_tree(path: Path) -> None:
+    shutil.rmtree(path, onexc=_remove_stubborn)
+
+
 def copy_repo(root: Path, out: Path) -> Path:
     if out.exists():
-        shutil.rmtree(out)
+        remove_tree(out)
     shutil.copytree(root, out, ignore=COPY_IGNORE)
     return out
+
+
+def _repo_files(root: Path):
+    for path in sorted(Path(root).rglob("*")):
+        relative = path.relative_to(root)
+        if path.is_file() and ".git" not in relative.parts and not SKIP_DIRS & set(relative.parts) and path.suffix not in (".pyc", ".pyo"):
+            yield relative
+
+
+def changed_files(root: Path, folder: Path) -> list[str]:
+    """The repo's files that differ in the copy. Only the original's files count: bumps and fixes edit files
+    that exist, and anything new in the copy was made by an install or a test run (node_modules, .venv)."""
+    return [r.as_posix() for r in _repo_files(root) if (folder / r).is_file() and (folder / r).read_bytes() != (root / r).read_bytes()]
+
+
+def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Path:
+    """A checkout to open the PR from: the original repo, its .git included, with only `files` taken from the
+    upgraded copy. No container ever saw it, so nothing a repo's tests did can reach the commit or its hooks."""
+    if dest.exists():
+        remove_tree(dest)
+    shutil.copytree(root, dest, ignore=shutil.ignore_patterns(*SKIP_DIRS))
+    for name in files:
+        shutil.copy2(folder / name, dest / name)
+    return dest
 
 
 def _read(path: Path) -> str:
@@ -49,6 +94,17 @@ def _margin(lines: list[str]) -> str:
 
 def _dedent(lines: list[str], margin: str) -> list[str]:
     return [line[len(margin):] if line.startswith(margin) else line.lstrip() for line in lines]
+
+
+def _reindent(line: str, margin: str, target: str) -> str:
+    """Move `line` from under `margin` to under `target`, keeping its indentation relative to the margin."""
+    if not line.strip():
+        return ""
+    if line.startswith(margin):
+        return target + line[len(margin):]
+    indent = line[: len(line) - len(line.lstrip())]
+    shallower = len(margin) - len(indent)  # left of the snippet, like an `except` after a `try` body
+    return target[: max(len(target) - shallower, 0)] + line.lstrip()
 
 
 def _replace_reindented(text: str, search: str, replace: str) -> str | None:
@@ -73,7 +129,7 @@ def _replace_reindented(text: str, search: str, replace: str) -> str | None:
     i, margin = found[0]
     block = lines[i:i + len(want)]
     newline = "\r\n" if block[0].endswith("\r\n") else "\n"
-    new = [margin + line if line.strip() else "" for line in _dedent(replace.strip("\r\n").splitlines(), _margin(want))]
+    new = [_reindent(line, _margin(want), margin) for line in replace.strip("\r\n").splitlines()]
     ending = newline if new and block[-1].endswith("\n") else ""
     return "".join(lines[:i]) + newline.join(new) + ending + "".join(lines[i + len(want):])
 
@@ -135,22 +191,10 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
 
 
 def diff(root: Path, folder: Path) -> str:
-    """A unified diff of the repo's files that the upgrade changed in the copy.
-
-    Only the original's files count: bumps and fixes edit files that exist, and anything new in the copy
-    was made by an install or a test run (node_modules, .venv).
-    """
+    """A unified diff of the repo's files that the upgrade changed in the copy (see changed_files)."""
     chunks: list[str] = []
-    for original in sorted(Path(root).rglob("*")):
-        relative = original.relative_to(root)
-        if not original.is_file() or ".git" in relative.parts or SKIP_DIRS & set(relative.parts) or original.suffix in (".pyc", ".pyo"):
-            continue
-        path = folder / relative
-        if not path.is_file():
-            continue
-        new = path.read_text(encoding="utf-8", errors="replace")
-        old = original.read_text(encoding="utf-8", errors="replace")
-        if old != new:
-            name = relative.as_posix()
-            chunks += difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}")
+    for name in changed_files(root, folder):
+        old = (Path(root) / name).read_text(encoding="utf-8", errors="replace")
+        new = (Path(folder) / name).read_text(encoding="utf-8", errors="replace")
+        chunks += difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}")
     return "".join(chunks)

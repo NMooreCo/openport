@@ -4,13 +4,27 @@ The PR is opened inside your fork (fork branch -> fork default branch), so the u
 maintainers aren't notified. Pass `upstream=True` to propose it to the original repo instead.
 """
 
+import functools
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 BRANCH = "openport/nemotron"
 UPGRADE_BRANCH = "openport/security-upgrades"
+
+
+@functools.cache
+def _no_hooks() -> str:
+    return tempfile.mkdtemp(prefix="openport-no-hooks-")
+
+
+def _safe(command: list[str]) -> list[str]:
+    """Git with no hooks and no fsmonitor: a repo's own config can't make OpenPort run its commands."""
+    if command[:1] != ["git"]:
+        return command
+    return ["git", "-c", f"core.hooksPath={_no_hooks()}", "-c", "core.fsmonitor=false", *command[1:]]
 
 
 @dataclass
@@ -22,7 +36,7 @@ class PrPlan:
 
 
 def _run(command: list[str], cwd: Path | None = None) -> str:
-    return subprocess.run(command, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(_safe(command), cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def origin_repo(ported: Path) -> str:
