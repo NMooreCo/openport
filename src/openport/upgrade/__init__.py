@@ -6,5 +6,6 @@ covers reading lockfiles; advisory lookup, version selection, code fixes and the
 
 from .lockfiles import Dependency, read_lockfiles
 from .osv import Advisory, find_advisories
+from .select import Target, choose_target, fix_floor
 
-__all__ = ["Advisory", "Dependency", "find_advisories", "read_lockfiles"]
+__all__ = ["Advisory", "Dependency", "Target", "choose_target", "find_advisories", "fix_floor", "read_lockfiles"]

@@ -1,10 +1,13 @@
 """Tests for Phase 2 `openport upgrade`: reading installed versions from lockfiles."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from openport.upgrade import lockfiles, osv
 from openport.upgrade.lockfiles import Dependency, read_lockfiles
-from openport.upgrade.osv import find_advisories, osv_name, parse_vuln, query_body
+from openport.upgrade.osv import Advisory, find_advisories, osv_name, parse_vuln, query_body
+from openport.upgrade.select import choose_target, fix_floor
+from packaging.version import Version
 
 
 def names(deps):
@@ -134,3 +137,50 @@ def test_find_advisories_returns_only_vulnerable_deps():
     assert len(results) == 1
     dep, advisories = results[0]
     assert dep.name == "requests" and advisories[0].fixed_versions == ["2.31.0"]
+
+
+# --- safe-version selection --------------------------------------------------
+
+NOW = datetime(2026, 10, 24, tzinfo=timezone.utc)
+
+
+def days_ago(n):
+    return NOW - timedelta(days=n)
+
+
+def adv(*fixed):
+    return Advisory(id="GHSA", summary="", fixed_versions=list(fixed))
+
+
+def test_fix_floor_takes_max_of_each_advisorys_lowest_fix():
+    assert fix_floor([adv("2.31.0"), adv("2.20.0", "2.25.0")]) == Version("2.31.0")
+
+
+def test_fix_floor_none_when_an_advisory_has_no_fix():
+    assert fix_floor([adv("2.31.0"), adv()]) is None
+
+
+def test_choose_target_picks_earliest_old_enough_fix():
+    releases = {
+        "2.30.0": days_ago(90),  # below the fix floor
+        "2.31.0": days_ago(60),  # the earliest fix that is old enough
+        "2.32.0": days_ago(1),   # fixes, but too new to trust
+        "3.0.0": days_ago(100),
+    }
+    target = choose_target("2.20.0", [adv("2.31.0")], releases, min_age_days=7, now=NOW)
+    assert target is not None and target.version == "2.31.0" and target.age_days == 60
+
+
+def test_choose_target_none_when_only_fix_is_too_new():
+    target = choose_target("2.20.0", [adv("2.31.0")], {"2.31.0": days_ago(2)}, min_age_days=7, now=NOW)
+    assert target is None
+
+
+def test_choose_target_skips_prereleases():
+    releases = {"2.31.0rc1": days_ago(90), "2.31.0": days_ago(30)}
+    target = choose_target("2.20.0", [adv("2.31.0")], releases, min_age_days=7, now=NOW)
+    assert target.version == "2.31.0"
+
+
+def test_choose_target_none_when_no_fix_available():
+    assert choose_target("2.20.0", [adv()], {"9.9.9": days_ago(90)}, now=NOW) is None
