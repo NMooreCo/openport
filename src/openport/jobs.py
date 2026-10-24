@@ -109,7 +109,7 @@ class JobSettings:
     platform: str
     preset: str
     secrets: dict[str, str] = field(default_factory=dict)  # env var -> MysteryBox selector
-    registry_secret: str | None = None  # MysteryBox selector with REGISTRY_USERNAME / REGISTRY_PASSWORD
+    registry_secret: str | None = None  # MysteryBox selector with registry_username / registry_password keys
     timeout: str = "2h"
     subnet_id: str | None = None
     parent_id: str | None = None

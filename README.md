@@ -130,6 +130,8 @@ uv run openport serve            # http://127.0.0.1:8000
 
 For hosting, the dashboard only accepts its demo presets and public GitHub repos. It runs one pipeline at a time, reuses a recent result for the same repo, and never opens PRs (it shows the dry run). Upgrades run the repo's tests in Docker; on a server without Docker they stop after choosing safe versions.
 
+To host it on a **Nebius Serverless Endpoint**, `scripts/deploy_endpoint.sh` builds the image, pushes it to a Nebius container registry and starts the endpoint, with the API keys taken from a MysteryBox secret (never baked into the image). It prints the dashboard's URL.
+
 Testing a call imports the repo's code and runs it inside the server, next to the API keys. So the Docker image sets `OPENPORT_RUN_REPO_CODE=vetted`: a public deployment runs code only for its bundled demo apps and for OpenPort's eval packs, which pin the exact commit that was reviewed (preflight's is `7a00fa2`). Any other repo is scanned and ported untuned, and the launcher says so up front. Locally, OpenPort tests whatever repo you point it at.
 
 ## Repo layout
