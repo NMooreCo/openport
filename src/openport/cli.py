@@ -381,6 +381,44 @@ def _tune_on_jobs(target: Path, sites: str | None, tune_flags: list[str], image,
 
 
 @app.command()
+def distill(
+    target: Path = typer.Argument(..., help="Target app folder, or its openport.evals.yaml"),
+    site: str = typer.Option(..., "--site", help="Eval call-site ID to build a training set for"),
+    examples: int = typer.Option(200, help="How many new inputs to invent (fewer are kept: only answers that pass the call's checks)"),
+    teacher: str = typer.Option("ultra", help="Tier that writes the answers"),
+    tune_report: Path | None = typer.Option(None, "--tune", help="Tuning report whose best settings the teacher uses (default: the latest)"),
+    concurrency: int = typer.Option(8, help="Inputs to answer in parallel"),
+) -> None:
+    """Build a fine-tuning set for one call from Nemotron Ultra's answers to new inputs, keeping only answers that pass."""
+    from . import report as reports
+    from .distill import distill_site
+    from .evals.spec import load_spec
+
+    if teacher not in config.TIERS:
+        _fail(f"Unknown tier {teacher!r}")
+    try:
+        spec = load_spec(target)
+        report_path = tune_report or reports.latest_tune_report(spec.target)
+        result, path = distill_site(
+            target, site, examples=examples, teacher_tier=teacher, tune_report=reports.load_tune_report(report_path),
+            concurrency=concurrency, on_progress=lambda stage, count: console.print(f"  Super invented {count} new inputs"),
+        )
+    except (config.MissingKeyError, RuntimeError, FileNotFoundError, KeyError, ValueError) as error:
+        _fail(str(error))
+    console.print(f"Teacher: {result.teacher} ({_describe_variant(result.variant)}), using {report_path or 'no tuning report'}")
+    console.print(f"Kept {result.kept} of {result.invented} answers" + (f"; rejected: {', '.join(f'{r} x{n}' for r, n in result.rejected.items())}" if result.rejected else ""))
+    if result.cost_usd is not None:
+        console.print(f"Cost: ${result.cost_usd:.4f}")
+    console.print(f"Training set: {path}")
+
+
+def _describe_variant(variant: dict) -> str:
+    from .tune.variant import Variant
+
+    return Variant.from_dict(variant).describe()
+
+
+@app.command()
 def pr(
     ported: Path = typer.Argument(..., help="A ported copy, e.g. runs/ports/<name>"),
     tune_report: Path | None = typer.Option(None, "--tune", help="Tuning report (default: the latest one for this target)"),
