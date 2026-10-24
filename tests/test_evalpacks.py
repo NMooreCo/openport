@@ -74,6 +74,7 @@ def test_a_pinned_repo_is_fetched_at_exactly_that_commit(tmp_path, monkeypatch):
     assert fresh and root == tmp_path / "repos" / commit[:12] / "jsliapark__preflight" and root.is_dir()
     assert [args[3:] for args in calls] == [
         ["init", "--quiet"],
+        ["config", "core.longpaths", "true"],  # paths longer than Windows' 260 characters still check out
         ["remote", "add", "origin", "https://github.com/jsliapark/preflight.git"],  # so `openport pr` can find the repo
         ["fetch", "--depth", "1", "--quiet", "origin", commit],
         ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
@@ -81,6 +82,27 @@ def test_a_pinned_repo_is_fetched_at_exactly_that_commit(tmp_path, monkeypatch):
     assert workspace.fetch_repo(f"jsliapark/preflight@{commit}") == (root, False)  # reused, not fetched again
     assert workspace.is_remote(f"https://github.com/jsliapark/preflight@{commit}")
     assert not workspace.is_remote("jsliapark/preflight@main")  # only a full commit hash pins
+
+
+def test_a_clone_that_fails_halfway_is_never_reused(tmp_path, monkeypatch):
+    """git can leave a half-checked-out folder behind (a path too long for Windows): it mustn't pass for a clone."""
+    import subprocess
+
+    from openport import config, workspace
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
+
+    def failing_clone(args, check):
+        Path(args[-1]).mkdir(parents=True)  # what git leaves: the folder, without all the files
+        raise subprocess.CalledProcessError(128, args)
+
+    monkeypatch.setattr(workspace.subprocess, "run", failing_clone)
+    with pytest.raises(subprocess.CalledProcessError):
+        workspace.fetch_repo("acme/huge")
+    assert not (tmp_path / "repos" / "acme__huge").exists()
+    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check: Path(args[-1]).mkdir(parents=True))
+    root, fresh = workspace.fetch_repo("acme/huge")  # the next try clones afresh
+    assert fresh and root.is_dir() and not root.with_name("acme__huge.partial").exists()
 
 
 def test_preflight_pack_is_pinned_to_the_reviewed_commit():

@@ -179,3 +179,17 @@ def test_typescript_edge_cases(tmp_path):
 
     assert report.summary()["in_tests"] == 5
     assert report.summary()["call_sites"] == 5
+
+
+def test_only_files_that_could_hold_a_call_are_parsed(tmp_path):
+    """Most of a big repo has no `completions.create`-style pair, so it isn't parsed; a call split over lines still is."""
+    (tmp_path / "split.py").write_text(
+        "from openai import OpenAI\n\nclient = OpenAI()\n\n\ndef go():\n"
+        "    return client.chat.completions \\\n        .create(model='gpt-5', messages=[])\n")
+    (tmp_path / "split.ts").write_text(
+        "import OpenAI from 'openai';\nconst client = new OpenAI();\n"
+        "export async function go() {\n  return client.chat.completions\n    .create({ model: 'gpt-5', messages: [] });\n}\n")
+    (tmp_path / "broken.py").write_text("def oops(:\n    pass\n")  # can't parse, and has no call to find
+    report = scan_repo(tmp_path)
+    assert sorted(f.file for f in report.findings) == ["split.py", "split.ts"]
+    assert report.files_scanned == 3 and report.skipped == []

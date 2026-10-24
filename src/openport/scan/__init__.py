@@ -1,6 +1,8 @@
 """Scan a repo for OpenAI and Anthropic SDK calls, and say what each one needs to move to Token Factory."""
 
 import os
+import re
+import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -15,6 +17,9 @@ SKIP_DIRS = {
 }
 TS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 MAX_FILE_BYTES = 500_000  # skip bundles and minified files
+# Every call the scanners match ends in one of these pairs (findings.CALL_SUFFIXES), so a file without one has
+# nothing to find and isn't parsed: most of a large repo's files.
+MAYBE_A_CALL = re.compile(rb"(?:completions|responses|embeddings|ChatCompletion|messages)(?:\s|\\)*\??\.(?:\s|\\)*(?:create|parse|stream)\b")
 
 
 @dataclass
@@ -71,16 +76,25 @@ def scan_repo(root: Path) -> ScanReport:
     skipped: list[str] = []
     files = 0
     for path in sorted(_source_files(root)):
-        if path.stat().st_size > MAX_FILE_BYTES:
-            continue
         relative = path.relative_to(root).as_posix()
-        in_tests = is_test_path(relative)
+        try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                continue
+            data = path.read_bytes()
+        except OSError as error:  # e.g. a path too long for Windows
+            skipped.append(f"{relative}: {type(error).__name__}")
+            continue
         files += 1
+        if not MAYBE_A_CALL.search(data):
+            continue
+        in_tests = is_test_path(relative)
         try:
             if path.suffix == ".py":
-                findings += scan_python(path.read_text(encoding="utf-8", errors="replace"), relative, in_tests)
+                with warnings.catch_warnings():  # the repo's own code: its invalid escapes aren't OpenPort's to report
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    findings += scan_python(data.decode("utf-8", errors="replace"), relative, in_tests)
             else:
-                findings += scan_typescript(path.read_bytes(), relative, in_tests)
+                findings += scan_typescript(data, relative, in_tests)
         except (SyntaxError, ValueError) as error:
             skipped.append(f"{relative}: {type(error).__name__}")
     _assign_ids(findings)

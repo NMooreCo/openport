@@ -37,18 +37,20 @@ def fetch_repo(target: str) -> tuple[Path, bool]:
     if destination.exists():
         return destination, False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if commit is None:
-        subprocess.run(["git", "clone", "--depth", "1", "--quiet", url, str(destination)], check=True)
-        return destination, True
     partial = destination.with_name(destination.name + ".partial")  # a failed fetch never looks like a clone
     shutil.rmtree(partial, ignore_errors=True)
-    partial.mkdir()
-    for args in (
-        ["init", "--quiet"],
-        ["remote", "add", "origin", url],  # `openport pr` finds the GitHub repo from origin, as in a clone
-        ["fetch", "--depth", "1", "--quiet", "origin", commit],
-        ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
-    ):
-        subprocess.run(["git", "-C", str(partial), *args], check=True)
+    # core.longpaths: some repos have paths longer than Windows' 260 characters.
+    if commit is None:
+        subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--config", "core.longpaths=true", url, str(partial)], check=True)
+    else:
+        partial.mkdir()
+        for args in (
+            ["init", "--quiet"],
+            ["config", "core.longpaths", "true"],
+            ["remote", "add", "origin", url],  # `openport pr` finds the GitHub repo from origin, as in a clone
+            ["fetch", "--depth", "1", "--quiet", "origin", commit],
+            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+        ):
+            subprocess.run(["git", "-C", str(partial), *args], check=True)
     partial.rename(destination)
     return destination, True
