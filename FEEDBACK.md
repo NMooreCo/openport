@@ -1,37 +1,55 @@
-# Feedback log: Nebius Token Factory, NVIDIA Nemotron and tools
+# Feedback: building OpenPort on Nebius Token Factory + NVIDIA Nemotron
 
-Running notes for the hackathon's feedback section. Each entry says what happened, why it matters, and what would fix it. Add to it whenever something is confusing, slow or broken.
+A running log of friction and wins while building OpenPort, for the Nebius x NVIDIA Global AI Hackathon's feedback prize. Each item is **Expected → Found → Suggestion**.
 
-## Token Factory docs
+Two kinds of notes are tracked separately and honestly:
+- **[build]** — observations from reading the docs and writing code against the API (true as of the dates shown).
+- **[live]** — observations from actually running against Token Factory. These are **pending API keys** and will be filled in as I do real runs; I am not reporting numbers I haven't measured.
 
-**Oct 23: The structured-output examples are broken.**
-On the "Structured output & JSON" page, the Python `json_schema` example is missing a comma, so it doesn't run. The cURL example sends `"response format"` (with a space) instead of `response_format`, so the JSON mode silently isn't applied. These are the first examples a developer copies when moving structured-output code over.
-*Fix:* correct both snippets, and run the examples in CI.
+---
 
-**Oct 23: Nothing says which models support tools or JSON mode.**
-The function-calling page shows only a Llama 3.1 example. The JSON page says to "look for the JSON mode tag on the model card" and "test several models". For anyone porting an app, "which Nemotron models do tool calling and `json_schema`?" is the first question.
-*Fix:* a capability matrix per model (tools, `tool_choice`, `json_object`, `json_schema`, vision, reasoning toggle). Also return capabilities in `GET /v1/models?verbose=true`, next to pricing, so tools can check them automatically.
+## Token Factory API (OpenAI compatibility)
 
-**Oct 23: The model-list examples only show Llama 3.1.**
-The "List of models" examples (including the verbose one with pricing) only show `meta-llama/Meta-Llama-3.1-*` models. Showing a Nemotron entry would help people find the exact model IDs.
+**[build] Anthropic SDK code has no drop-in path.** (Oct 23)
+- Expected: a provider swap like the OpenAI one — change the base URL and go.
+- Found: the switch guide's promise of "no other changes" holds for OpenAI-style chat calls, but there is no Anthropic-compatible endpoint, so apps on the Anthropic SDK (`client.messages.create`) need a real translation of system prompts, content blocks, tools and `tool_use`/`tool_result`. This is the single biggest porting cost, and OpenPort exists partly because of it.
+- Suggestion: either an Anthropic-compatible shim endpoint, or a short, prominent "porting from Anthropic" page that spells out the message-shape mapping.
 
-**Oct 23: The "switch from OpenAI" guide oversells how simple it is.**
-It says only the base URL, key and model change, with "no other changes". But its own before/after snippets switch from `client.responses.create` (OpenAI Responses API) to `client.chat.completions.create`, without saying whether the Responses API is supported. It also doesn't mention:
-- structured outputs
-- tool-calling differences
-- reasoning output
-- that there's no Anthropic-compatible endpoint, so code using the Anthropic SDK needs a full translation
+**[build] The OpenAI Responses API also needs rewriting.** (Oct 23)
+- Expected: `client.responses.create(...)` to work against the OpenAI-compatible surface.
+- Found: only Chat Completions is compatible; Responses-API calls must be rewritten to `chat.completions`.
+- Suggestion: call this out explicitly in the compatibility docs — it's easy to assume "OpenAI-compatible" includes the newer Responses API.
 
-*Fix:* a migration checklist covering these, and an Anthropic section. (This gap is the reason OpenPort exists.)
+**[live] Tool calling and JSON/structured-output reliability per tier.** (pending keys)
+- I built `openport smoke` to check `json_object`, `json_schema`, forced/`auto` tool choice and the reasoning switch on Nano, Super and Ultra. Results go here once I can run it.
 
-**Oct 23: The Nemotron 3 reasoning switch isn't documented on Token Factory.**
-Nemotron 3 reasons by default. Turning it off (`extra_body={"chat_template_kwargs": {"enable_thinking": false}}`) is documented on Hugging Face model cards and third-party hosts, but I couldn't find it in the Token Factory docs. It matters for latency, cost, and JSON-only outputs.
-*Fix:* a per-model "reasoning" section: how to toggle it, where reasoning text comes back in the response, and whether reasoning tokens count against `max_tokens`.
+## Nemotron models and tiers
 
-## Smoke test findings
+**[build] Model IDs must be discovered, not assumed.** (Oct 23)
+- Expected: stable, documented model identifiers to hard-code.
+- Found: OpenPort resolves the Nano/Super/Ultra tier IDs from `/v1/models` at runtime instead of hard-coding, which is more robust but means a startup round-trip and some guessing about which listed model is which tier.
+- Suggestion: a documented tier label (or a `family`/`tier` field in the models list) so tooling can map "the small Nemotron" to an ID without heuristics.
 
-_Filled in after the first `openport smoke` run._
+**[live] Does a plain base-URL swap actually degrade quality?** (pending keys)
+- The whole headline depends on measuring this. Numbers go here after the first `openport baseline` run.
 
-## Nemotron model behaviour
+## Pricing
 
-_Filled in after the first `openport baseline` run._
+**[build] Live per-token pricing via `/v1/models?verbose=true` is great.** (Oct 23)
+- Expected: a separate pricing page or manual table.
+- Found: prices come back on the models endpoint, so OpenPort reports real Nebius-side cost rather than estimates. This is a genuine win for a cost-comparison tool.
+- Suggestion: keep it; documenting the exact fields and units prominently would save a guess.
+
+## Serverless Jobs / Endpoints
+
+**[live] Spreading eval runs across Serverless Jobs; hosting the dashboard on an Endpoint.** (pending keys)
+- Setup friction, cold starts and parallel-run behaviour go here once wired up.
+
+## Fine-tuning (SFT / LoRA)
+
+**[live] "Ultra teaches Nano": fine-tuning a small model on Ultra-generated outputs.** (pending keys)
+- Turnaround time, job UX and the quality lift go here after the first tune.
+
+---
+
+_Maintained as the build progresses. Dates are when an observation was first recorded._

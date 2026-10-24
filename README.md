@@ -10,7 +10,7 @@
 
 Built for the [Nebius x NVIDIA Global AI Hackathon](https://nebiusglobalaihackathon.devpost.com/) (Coding and Agentic Engineering track).
 
-> **Status:** in progress. The full plan is in [PLAN.md](PLAN.md).
+> **Status:** in progress. The full plan is in [PLAN.md](PLAN.md), and build notes on Token Factory and Nemotron are in [FEEDBACK.md](FEEDBACK.md).
 
 ## Quickstart
 
