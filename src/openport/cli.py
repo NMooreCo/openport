@@ -430,8 +430,11 @@ def finetune(
     job: str | None = typer.Option(None, "--job", help="Follow an existing job instead of starting one"),
 ) -> None:
     """Fine-tune a smaller model on Token Factory from a distilled training set (LoRA), and download the adapter."""
+    from openai import APIError
+
     from . import finetune as ft
 
+    tune = None
     try:
         if job:
             saved = config.RUNS_DIR / "finetunes" / f"{job}.json"
@@ -458,6 +461,8 @@ def finetune(
         ft.save(tune)
     except (config.MissingKeyError, ValueError, RuntimeError, TimeoutError) as error:
         _fail(str(error))
+    except APIError as error:
+        _fail(f"Token Factory: {error}" + (f"\nThe job carries on; follow it again with: openport finetune --job {tune.job_id}" if tune else ""))
     if tune.status != "succeeded":
         _fail(f"Fine-tuning {tune.status}: {tune.error or 'see the events above'}")
     console.print(f"[green]Done.[/green] Model: {tune.fine_tuned_model or '(see the job)'}; trained on {tune.trained_tokens or '?'} tokens")

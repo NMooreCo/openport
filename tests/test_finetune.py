@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import InternalServerError
 
 from openport import config
 from openport import finetune as ft
@@ -93,3 +95,39 @@ def test_follow_until_done_then_download_the_final_checkpoint(tmp_path):
     assert [Path(p).name for p in tune.adapter_files] == ["f1.safetensors", "f2.safetensors"]  # the last checkpoint only
     assert Path(tune.adapter_files[0]).read_bytes() == b"weights f1"
     assert json.loads(ft.save(tune).read_text())["status"] == "succeeded"
+
+
+def server_error():
+    response = httpx.Response(500, request=httpx.Request("GET", "https://api.tokenfactory.nebius.com/v1/fine_tuning/jobs/ftjob-1/events"))
+    return InternalServerError("Error code: 500", response=response, body={"detail": {"message": "Internal Server Error"}})
+
+
+def flaky_events(client, failures):
+    """The events list fails `failures` times in a row first, as Token Factory's did mid-training."""
+    events = client._events
+
+    def list_events(job_id, limit):
+        if failures:
+            failures.pop()
+            raise server_error()
+        return events(job_id, limit)
+
+    client.fine_tuning.jobs.list_events = list_events
+
+
+def test_follow_rides_out_server_errors(tmp_path):
+    client = FakeFineTuning(["running", "running", "running", "succeeded"])
+    flaky_events(client, [1, 1])
+    seen, naps = [], []
+    tune = ft.follow(ft.start(dataset(tmp_path), client=client), client=client, sleep=naps.append,
+                     on_status=lambda status, messages: seen.append(status))
+    assert tune.status == "succeeded" and seen == ["running", "succeeded"] and len(naps) == 3
+
+
+def test_follow_gives_up_after_too_many_server_errors_in_a_row(tmp_path):
+    client = FakeFineTuning(["running"])
+    flaky_events(client, [1] * 5)
+    naps = []
+    with pytest.raises(InternalServerError):
+        ft.follow(ft.start(dataset(tmp_path), client=client), client=client, sleep=naps.append, max_failures=3)
+    assert len(naps) == 2

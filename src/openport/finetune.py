@@ -14,12 +14,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from openai import OpenAI
+from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 
 from . import config, tokenfactory
 
 DEFAULT_BASE = "meta-llama/Llama-3.1-8B-Instruct"
 TERMINAL = {"succeeded", "failed", "cancelled"}
+# Token Factory's job endpoints can fail for a while (a 500 on the events list) while the job carries on.
+TRANSIENT = (InternalServerError, APIConnectionError, RateLimitError)
 # LoRA wants a higher learning rate than the full fine-tuning default (1e-5).
 LORA_HYPERPARAMETERS = {"lora": True, "lora_r": 16, "lora_alpha": 32, "lora_dropout": 0.05, "n_epochs": 3, "learning_rate": 1e-4, "batch_size": 8}
 
@@ -90,27 +92,37 @@ def start(dataset: Path, *, base: str = DEFAULT_BASE, suffix: str = "openport", 
 
 
 def follow(tune: FineTune, *, client: OpenAI | None = None, poll_seconds: float = 30, sleep: Callable[[float], None] = time.sleep,
-           on_status: Callable[[str, list[str]], None] | None = None, deadline_seconds: float = 6 * 3600) -> FineTune:
-    """Poll the job until it finishes, passing new event messages to `on_status`."""
+           on_status: Callable[[str, list[str]], None] | None = None, deadline_seconds: float = 6 * 3600,
+           max_failures: int = 20) -> FineTune:
+    """Poll the job until it finishes, passing new event messages to `on_status`. A server error is retried at
+    the next poll, up to `max_failures` in a row."""
     client = client or tokenfactory.client()
     seen: set[str] = set()
     started = time.monotonic()
+    failures = 0
     while True:
-        job = client.fine_tuning.jobs.retrieve(tune.job_id)
-        tune.status = job.status
-        tune.trained_tokens = getattr(job, "trained_tokens", None)
-        tune.fine_tuned_model = getattr(job, "fine_tuned_model", None)
-        error = getattr(job, "error", None)
-        tune.error = getattr(error, "message", None) or (error.get("message") if isinstance(error, dict) else None)
-        events = list(client.fine_tuning.jobs.list_events(tune.job_id, limit=50))
-        fresh = [e.message for e in reversed(events) if e.id not in seen]
-        seen.update(e.id for e in events)
-        if on_status:
-            on_status(job.status, fresh)
-        if job.status in TERMINAL:
-            return tune
+        try:
+            job = client.fine_tuning.jobs.retrieve(tune.job_id)
+            events = list(client.fine_tuning.jobs.list_events(tune.job_id, limit=50))
+        except TRANSIENT:
+            failures += 1
+            if failures >= max_failures:
+                raise
+        else:
+            failures = 0
+            tune.status = job.status
+            tune.trained_tokens = getattr(job, "trained_tokens", None)
+            tune.fine_tuned_model = getattr(job, "fine_tuned_model", None)
+            error = getattr(job, "error", None)
+            tune.error = getattr(error, "message", None) or (error.get("message") if isinstance(error, dict) else None)
+            fresh = [e.message for e in reversed(events) if e.id not in seen]
+            seen.update(e.id for e in events)
+            if on_status:
+                on_status(job.status, fresh)
+            if job.status in TERMINAL:
+                return tune
         if time.monotonic() - started > deadline_seconds:
-            raise TimeoutError(f"fine-tuning job {tune.job_id} still {job.status} after {deadline_seconds / 3600:.0f}h")
+            raise TimeoutError(f"fine-tuning job {tune.job_id} still {tune.status} after {deadline_seconds / 3600:.0f}h")
         sleep(poll_seconds)
 
 
