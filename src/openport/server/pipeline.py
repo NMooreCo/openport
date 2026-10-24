@@ -42,12 +42,13 @@ class Run:
     status: str = "queued"  # queued | running | done | error
     created: float = field(default_factory=time.time)
     events: list[dict] = field(default_factory=list)
+    kind: str = "port"  # port | upgrade
 
     def emit(self, kind: str, **data) -> None:
         self.events.append({"seq": len(self.events), "type": kind, "time": round(time.time(), 3), **data})
 
     def summary(self) -> dict:
-        return {"id": self.id, "target": self.target, "label": self.label, "status": self.status, "created": self.created}
+        return {"id": self.id, "kind": self.kind, "target": self.target, "label": self.label, "status": self.status, "created": self.created}
 
 
 def eval_pack_for(target: str) -> Path | None:
@@ -60,9 +61,9 @@ def eval_pack_for(target: str) -> Path | None:
     return None
 
 
-def resolve_target(target: str) -> tuple[str, str, Path | None]:
+def resolve_target(target: str, presets: list[dict] | None = None) -> tuple[str, str, Path | None]:
     """(normalized target, label, local path for presets). Only presets and public GitHub repos are accepted."""
-    preset = next((p for p in PRESETS if target in (p["id"], p.get("repo"))), None)
+    preset = next((p for p in (PRESETS if presets is None else presets) if target in (p["id"], p.get("repo"))), None)
     if preset and preset.get("path"):
         return preset["id"], preset["label"], EXAMPLES / preset["path"]
     if preset:

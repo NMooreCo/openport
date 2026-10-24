@@ -1,22 +1,5 @@
-import { attemptsFor, pct, researchFor, tierName, tunedFor, type Finding, type RunState, type Source } from "../run";
-
-// Links come from web search results, so only plain web URLs are rendered as links.
-const isWebUrl = (url: string) => /^https?:\/\//i.test(url);
-
-function SourceLinks({ sources }: { sources: Source[] }) {
-  return (
-    <>
-      {sources.filter((s) => isWebUrl(s.url)).map((s, i) => (
-        <span key={s.url}>
-          {i > 0 && ", "}
-          <a href={s.url} target="_blank" rel="noreferrer noopener" className="break-words underline decoration-sky-500/40 hover:text-white">
-            {s.title}
-          </a>
-        </span>
-      ))}
-    </>
-  );
-}
+import { attemptsFor, pct, researchFor, tierName, tunedFor, type Finding, type RunState } from "../run";
+import { SourceLinks } from "./SourceLinks";
 
 const PORTABILITY = {
   auto: { label: "swap as-is", className: "bg-emerald-500/10 text-emerald-300" },

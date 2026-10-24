@@ -3,6 +3,29 @@ import { useEffect, useState } from "react";
 export const STAGES = ["fetch", "scan", "capture", "tune", "port", "pr"] as const;
 export type Stage = (typeof STAGES)[number];
 export type StageState = "pending" | "active" | "done" | "skipped";
+export const STAGE_LABELS: Record<Stage, string> = {
+  fetch: "Fetch", scan: "Find calls", capture: "Capture evals", tune: "Test & tune", port: "Rewrite", pr: "Pull request",
+};
+
+export const pendingStages = <S extends string>(order: readonly S[]) =>
+  Object.fromEntries(order.map((stage) => [stage, "pending"])) as Record<S, StageState>;
+
+/** The pipeline moved on to `stage`: the active stage is done, and stages it jumped over were skipped. */
+export function enterStage<S extends string>(order: readonly S[], stages: Record<S, StageState>, stage: S): Record<S, StageState> {
+  const next = { ...stages };
+  for (const s of order) if (next[s] === "active") next[s] = "done";
+  // Stages the pipeline jumped over (e.g. tuning without an eval spec) are skipped, not pending.
+  for (const s of order.slice(0, order.indexOf(stage))) if (next[s] === "pending") next[s] = "skipped";
+  next[stage] = "active";
+  return next;
+}
+
+/** The run ended: the active stage is done, and stages it never reached were skipped. */
+export function finishStages<S extends string>(order: readonly S[], stages: Record<S, StageState>): Record<S, StageState> {
+  const next = { ...stages };
+  for (const s of order) next[s] = next[s] === "pending" ? "skipped" : next[s] === "active" ? "done" : next[s];
+  return next;
+}
 
 export interface Finding {
   id: string;
@@ -105,34 +128,18 @@ export interface RunState {
   error?: string;
 }
 
-type RunEvent = { type: string; [key: string]: any };
+export type RunEvent = { type: string; [key: string]: any };
 
 export const EVENT_TYPES = ["stage", "note", "scan", "models", "captured", "research", "attempt", "tuned", "cost", "ported", "pr", "done", "failed"];
 
 export function initialState(id: string): RunState {
-  return {
-    id,
-    status: "queued",
-    stages: { fetch: "pending", scan: "pending", capture: "pending", tune: "pending", port: "pending", pr: "pending" },
-    sites: [],
-    research: [],
-    attempts: [],
-    tuned: [],
-    notes: [],
-  };
+  return { id, status: "queued", stages: pendingStages(STAGES), sites: [], research: [], attempts: [], tuned: [], notes: [] };
 }
 
 export function reduce(state: RunState, event: RunEvent): RunState {
   switch (event.type) {
-    case "stage": {
-      const stages = { ...state.stages };
-      for (const stage of STAGES) if (stages[stage] === "active") stages[stage] = "done";
-      // Stages the pipeline jumped over (e.g. tuning without an eval spec) are skipped, not pending.
-      const index = STAGES.indexOf(event.stage);
-      for (const stage of STAGES.slice(0, index)) if (stages[stage] === "pending") stages[stage] = "skipped";
-      stages[event.stage as Stage] = "active";
-      return { ...state, status: "running", stages };
-    }
+    case "stage":
+      return { ...state, status: "running", stages: enterStage(STAGES, state.stages, event.stage) };
     case "note":
       return { ...state, notes: [...state.notes, event.message] };
     case "scan":
@@ -156,11 +163,8 @@ export function reduce(state: RunState, event: RunEvent): RunState {
       return { ...state, ported: { sites: event.sites, changed: event.changed, added: event.added, diff: event.diff } };
     case "pr":
       return { ...state, pr: { body: event.body, rows: event.rows } };
-    case "done": {
-      const stages = { ...state.stages };
-      for (const stage of STAGES) stages[stage] = stages[stage] === "pending" ? "skipped" : stages[stage] === "active" ? "done" : stages[stage];
-      return { ...state, status: "done", stages };
-    }
+    case "done":
+      return { ...state, status: "done", stages: finishStages(STAGES, state.stages) };
     case "failed":
       return { ...state, status: "failed", error: event.message };
     default:
@@ -168,25 +172,27 @@ export function reduce(state: RunState, event: RunEvent): RunState {
   }
 }
 
-/** Follow a run's live event stream. */
-export function useRun(runId: string | null): RunState | null {
-  const [state, setState] = useState<RunState | null>(null);
+/** Follow a run's live event stream, folding each event into the state. */
+export function useEvents<T>(runId: string | null, init: (id: string) => T, reducer: (state: T, event: RunEvent) => T, types: string[]): T | null {
+  const [state, setState] = useState<T | null>(null);
   useEffect(() => {
     if (!runId) return;
-    let current = initialState(runId);
+    let current = init(runId);
     setState(current);
     const source = new EventSource(`/api/runs/${runId}/events`);
     const onEvent = (message: MessageEvent) => {
       const event = JSON.parse(message.data) as RunEvent;
-      current = reduce(current, event);
+      current = reducer(current, event);
       setState(current);
       if (event.type === "done" || event.type === "failed") source.close();
     };
-    for (const type of EVENT_TYPES) source.addEventListener(type, onEvent);
+    for (const type of types) source.addEventListener(type, onEvent);
     return () => source.close();
   }, [runId]);
   return state;
 }
+
+export const useRun = (runId: string | null) => useEvents(runId, initialState, reduce, EVENT_TYPES);
 
 /** Tuning attempts for a scanned call site (matched on file and function). */
 export function attemptsFor(state: RunState, site: Finding): Attempt[] {

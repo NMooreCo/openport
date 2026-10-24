@@ -663,7 +663,7 @@ def serve(
     host: str = typer.Option("127.0.0.1", help="Interface to listen on"),
     port: int = typer.Option(8000, help="Port to listen on"),
 ) -> None:
-    """Run the dashboard: start a port on a repo and watch scan, tuning, port and PR live."""
+    """Run the dashboard: port a repo to Nemotron or upgrade its vulnerable dependencies, and watch each step live."""
     import uvicorn
 
     uvicorn.run("openport.server:app", host=host, port=port)

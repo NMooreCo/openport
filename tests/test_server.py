@@ -153,6 +153,41 @@ def server_pack(tmp_path, monkeypatch):
     sys.modules.pop("miniapp", None)
 
 
+AUTHKIT = __import__("pathlib").Path(__file__).parents[1] / "examples" / "authkit"
+
+
+@pytest.fixture
+def upgrade_server(tmp_path, monkeypatch):
+    """The upgrade pipeline on the AuthKit example, with OSV, the test container and Super scripted."""
+    from datetime import datetime, timezone
+
+    from openport.server import upgrades
+    from openport.upgrade import Upgrade
+    from openport.upgrade.apply import Edit
+    from openport.upgrade.lockfiles import Dependency
+    from openport.upgrade.osv import Advisory
+    from openport.upgrade.select import Target
+    from openport.upgrade.testrun import TestRun
+
+    plan = [Upgrade(Dependency("PyJWT", "1.7.1", "PyPI", "requirements.txt"),
+                    [Advisory("GHSA-ffqj-6fqr-9h24", "Key confusion", ["CVE-2022-29217"])],
+                    Target("2.14.0", datetime(2026, 9, 11, tzinfo=timezone.utc), 43, ["CVE-2022-29217"], []), "upgrade")]
+    results = iter([TestRun(True, 0, "5 passed", "", 1.0), TestRun(False, 1, "4 failed, 1 passed", "AttributeError", 1.0),
+                    TestRun(True, 0, "5 passed", "", 1.0)])
+    fix = lambda *args: ([Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", [])
+    monkeypatch.setattr(upgrades, "plan_upgrades", lambda deps: plan)
+    monkeypatch.setattr("openport.upgrade.testrun.run_tests", lambda folder: next(results))
+    monkeypatch.setattr("openport.upgrade.fix.make_fixer", lambda: fix)
+    monkeypatch.setattr(upgrades.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(upgrades, "PRESETS", [{"id": "authkit", "label": "AuthKit", "detail": "demo", "path": "authkit"}])
+    monkeypatch.setattr(pipeline, "EXAMPLES", AUTHKIT.parent)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    runs.clear()
+    yield TestClient(app)
+    runs.clear()
+
+
 def wait_for(client, run_id, timeout=30):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -197,6 +232,33 @@ def test_pipeline_end_to_end(server):
     assert stream.count("event: attempt") == 2 and "event: done" in stream
     again = server.post("/api/runs", json={"target": "mini"}).json()
     assert again["reused"] and again["id"] == started["id"]
+
+
+def test_upgrade_pipeline_proves_the_upgrade(upgrade_server):
+    assert [p["id"] for p in upgrade_server.get("/api/upgrade-presets").json()] == ["authkit"]
+    started = upgrade_server.post("/api/upgrades", json={"target": "authkit"}).json()
+    assert started["kind"] == "upgrade"
+    run = wait_for(upgrade_server, started["id"])
+    assert run["status"] == "done", run["events"][-1]
+    events = run["events"]
+    assert [e["stage"] for e in events if e["type"] == "stage"] == ["fetch", "find", "test", "fix", "pr"]
+    package = next(e for e in events if e["type"] == "advisories")["packages"][0]
+    assert (package["name"], package["target"], package["fixed"]) == ("PyJWT", "2.14.0", ["CVE-2022-29217"])
+    assert [(e["step"], e["ok"]) for e in events if e["type"] == "tests"] == [("before", True), ("after_bump", False)]
+    fix = next(e for e in events if e["type"] == "fix")
+    assert fix["files"] == ["authkit/tokens.py"] and fix["tests"]["ok"]
+    pr = next(e for e in events if e["type"] == "upgrade_pr")
+    assert pr["proven"] and "+PyJWT==2.14.0" in pr["diff"] and "| Before the upgrade | ✅ 5 passed |" in pr["body"]
+
+
+def test_upgrade_without_docker_is_a_dry_run(upgrade_server, monkeypatch):
+    from openport.server import upgrades
+
+    monkeypatch.setattr(upgrades.shutil, "which", lambda name: None)
+    run = wait_for(upgrade_server, upgrade_server.post("/api/upgrades", json={"target": "authkit"}).json()["id"])
+    assert run["status"] == "done"
+    assert [e["stage"] for e in run["events"] if e["type"] == "stage"] == ["fetch", "find"]
+    assert any("Dry run" in e.get("message", "") for e in run["events"])
 
 
 def test_pipeline_uses_an_eval_pack_for_a_repo_without_a_spec(server_pack):

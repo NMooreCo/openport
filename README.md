@@ -84,7 +84,7 @@ The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vu
 1. `openport upgrade` reads the repo's lockfiles and asks [OSV.dev](https://osv.dev) which installed versions are vulnerable.
 2. For each package it picks the release that fixes the most advisories while being **at least a week old**, so a brand-new malicious release can't be auto-selected. Advisories with no fix yet are reported, not ignored.
 3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container.
-4. If the upgrade breaks them, Tavily reads the changelog and advisory, and Nemotron Super fixes the application code (never the tests) until they pass.
+4. If the upgrade breaks them, Tavily reads the package's own changelog and the advisory, and Nemotron Super fixes the application code (never the tests) until they pass.
 5. It writes the diff and a PR description with the advisories, the version chosen and why, the code changes with their sources, and the test results.
 
 ```bash
@@ -96,14 +96,14 @@ On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. Th
 
 ## Dashboard
 
-Watch a whole run live: calls found, each tuning attempt, the code changes and the PR description.
+Watch a whole run live. A port shows the calls found, each tuning attempt, the code changes and the PR description. An upgrade shows the advisories, the version chosen for each package, the tests before and after, each of Super's fixes with its sources, and the PR.
 
 ```bash
 cd dashboard && npm install && npm run build && cd ..
 uv run openport serve            # http://127.0.0.1:8000
 ```
 
-For hosting, the dashboard only accepts its demo presets and public GitHub repos. It runs one pipeline at a time, reuses a recent result for the same repo, and never opens PRs (it shows the dry run).
+For hosting, the dashboard only accepts its demo presets and public GitHub repos. It runs one pipeline at a time, reuses a recent result for the same repo, and never opens PRs (it shows the dry run). Upgrades run the repo's tests in Docker; on a server without Docker they stop after choosing safe versions.
 
 ## Repo layout
 
@@ -131,6 +131,7 @@ For hosting, the dashboard only accepts its demo presets and public GitHub repos
 | Rewriting prompts to fix failures (the tuning engineer) | Ultra | [`tune/engineer.py`](src/openport/tune/engineer.py) |
 | Grading free-text outputs (the LLM judge) | Ultra | [`evals/runner.py`](src/openport/evals/runner.py) |
 | Labelling generated eval cases | Ultra | [`capture/generate.py`](src/openport/capture/generate.py) |
+| Fixing the code a dependency upgrade broke | Super | [`upgrade/fix.py`](src/openport/upgrade/fix.py) |
 
 **Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
 

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import pipeline
+from . import pipeline, upgrades
 from .pipeline import Run, resolve_target, run_pipeline
 
 STATIC = Path(__file__).parent / "static"
@@ -36,24 +36,43 @@ def presets() -> list[dict]:
     return [{k: v for k, v in p.items() if k != "path"} for p in pipeline.PRESETS]
 
 
+@app.get("/api/upgrade-presets")
+def upgrade_presets() -> list[dict]:
+    return [{k: v for k, v in p.items() if k != "path"} for p in upgrades.PRESETS]
+
+
+def _launch(kind: str, target: str, label: str, local: Path | None, runner) -> dict:
+    recent = [
+        r for r in runs.values()
+        if r.kind == kind and r.target == target
+        and (r.status in ("queued", "running") or (r.status == "done" and time.time() - r.created < pipeline.REUSE_SECONDS))
+    ]
+    if recent:  # same target, recently: show that run instead of spending credits again
+        return {**recent[-1].summary(), "reused": True}
+    if sum(r.status in ("queued", "running") for r in runs.values()) >= MAX_QUEUED:
+        raise HTTPException(429, "OpenPort is busy with other runs. Try again in a few minutes.")
+    run = Run(id=uuid.uuid4().hex[:12], target=target, label=label, kind=kind)
+    runs[run.id] = run
+    threading.Thread(target=runner, args=(run, target, local), daemon=True).start()
+    return {**run.summary(), "reused": False}
+
+
 @app.post("/api/runs")
 def start_run(body: StartRun) -> dict:
     try:
         target, label, local = resolve_target(body.target)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    recent = [
-        r for r in runs.values()
-        if r.target == target and (r.status in ("queued", "running") or (r.status == "done" and time.time() - r.created < pipeline.REUSE_SECONDS))
-    ]
-    if recent:  # same target, recently: show that run instead of spending credits again
-        return {**recent[-1].summary(), "reused": True}
-    if sum(r.status in ("queued", "running") for r in runs.values()) >= MAX_QUEUED:
-        raise HTTPException(429, "OpenPort is busy with other runs. Try again in a few minutes.")
-    run = Run(id=uuid.uuid4().hex[:12], target=target, label=label)
-    runs[run.id] = run
-    threading.Thread(target=run_pipeline, args=(run, target, local), daemon=True).start()
-    return {**run.summary(), "reused": False}
+    return _launch("port", target, label, local, run_pipeline)
+
+
+@app.post("/api/upgrades")
+def start_upgrade(body: StartRun) -> dict:
+    try:
+        target, label, local = upgrades.resolve_target(body.target)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return _launch("upgrade", target, label, local, upgrades.run_pipeline)
 
 
 @app.get("/api/runs/{run_id}")

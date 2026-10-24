@@ -1,6 +1,6 @@
 import { pct, usd, type RunState } from "../run";
 
-function Tile({ label, value, sub, tone = "text-white" }: { label: string; value: string; sub?: string; tone?: string }) {
+export function Tile({ label, value, sub, tone = "text-white" }: { label: string; value: string; sub?: string; tone?: string }) {
   return (
     <div className="rounded-xl border border-line bg-panel px-4 py-3">
       <p className="text-xs text-muted">{label}</p>
