@@ -481,7 +481,7 @@ def pr(
 ) -> None:
     """Write the PR description for a port. With --open, push the branch to your fork and open the PR."""
     from . import pricing, report
-    from .github import execute, github_login, plan_pr
+    from .github import BRANCH
 
     if not (ported / report.SUMMARY_FILE).exists():
         _fail(f"{ported} has no {report.SUMMARY_FILE}; run `openport port` first")
@@ -507,25 +507,31 @@ def pr(
     console.print(f"Tuning report: {tune_path or 'none (the PR says the calls are untuned)'}")
     if missing:
         console.print(f"[yellow]No price for {', '.join(sorted(set(missing)))}: pass --price MODEL=IN/OUT, or set TAVILY_API_KEY and NEBIUS_API_KEY[/yellow]")
+    _open_or_show_pr(ported, report.TITLE, body_path, open_pr, upstream, BRANCH)
+
+
+def _open_or_show_pr(folder: Path, title: str, body_path: Path, open_pr: bool, upstream: bool, branch: str) -> None:
+    """With --open, commit the folder on `branch`, push it to your fork and open the PR; else show the commands."""
+    from .github import execute, github_login, plan_pr
 
     try:
         login = github_login()
     except (OSError, subprocess.CalledProcessError):
         login = "<your GitHub login>"
     try:
-        plan = plan_pr(ported, report.TITLE, body_path, login, upstream)
+        plan = plan_pr(folder, title, body_path, login, upstream, branch)
     except (ValueError, subprocess.CalledProcessError) as error:
         if open_pr:
-            _fail(f"Can't open a PR from {ported}: {error}")
-        console.print(f"[yellow]Can't open a PR from {ported} yet: {error}[/yellow]")
+            _fail(f"Can't open a PR from {folder}: {error}")
+        console.print(f"[yellow]Can't open a PR from {folder} yet: {error}[/yellow]")
         return
     if not open_pr:
         where = f"your fork {plan.fork}" if plan.base_repo == plan.fork else f"{plan.base_repo} (upstream)"
-        console.print(f"Dry run. With --open, OpenPort would open the PR in {where} by running, in {ported}:")
+        console.print(f"Dry run. With --open, OpenPort would open the PR in {where} by running, in {folder}:")
         for command in plan.commands:
             console.print("  " + " ".join(f'"{part}"' if " " in part else part for part in command))
         return
-    url = execute(plan, ported)
+    url = execute(plan, folder)
     console.print(f"Opened {url}")
 
 
@@ -571,10 +577,14 @@ def upgrade(
     test_image: str | None = typer.Option(None, help="With --apply: container image for the tests (default: Python 3.12)"),
     test_command: str | None = typer.Option(None, help="With --apply: shell command that installs and runs the tests"),
     out: Path | None = typer.Option(None, help="With --apply: where to write the upgraded copy (default: runs/upgrades/<name>)"),
+    open_pr: bool = typer.Option(False, "--open", help="With --apply: if the tests prove the upgrade, push it to your fork and open the PR there"),
+    upstream: bool = typer.Option(False, help="With --open: propose the PR to the original repo instead of your fork"),
 ) -> None:
     """Find vulnerable dependencies and the safe version that fixes each (OSV.dev); with --apply, upgrade and prove it."""
     from .upgrade import plan_upgrades, read_lockfiles
 
+    if open_pr and not apply:
+        _fail("--open needs --apply: a PR is opened only for an upgrade the tests prove")
     root = _target_root(target)
     deps = read_lockfiles(root)
     if not deps:
@@ -604,10 +614,11 @@ def upgrade(
     if not apply:
         console.print("Dry run. With --apply, OpenPort upgrades a copy, runs the tests before and after, and fixes what breaks.")
         return
-    _apply_upgrades(root, plans, rounds, test_image, test_command, out, min_age)
+    _apply_upgrades(root, plans, rounds, test_image, test_command, out, min_age, open_pr, upstream)
 
 
-def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, out, min_age: int) -> None:
+def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, out, min_age: int, open_pr: bool, upstream: bool) -> None:
+    from .github import UPGRADE_BRANCH
     from .upgrade import report as upgrade_report
     from .upgrade.fix import make_fixer
     from .upgrade.research import research_upgrade
@@ -656,6 +667,10 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     body_path.write_text(upgrade_report.render(run, min_age), encoding="utf-8")
     verdict = "[green]Proven: the tests pass before and after the upgrade.[/green]" if run.proven else "[red]Not proven: see the test results.[/red]"
     console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
+    if run.proven:
+        _open_or_show_pr(out_dir.resolve(), upgrade_report.TITLE, body_path.resolve(), open_pr, upstream, UPGRADE_BRANCH)
+    elif open_pr:
+        _fail("Not opening a PR: the tests don't prove this upgrade.")
 
 
 @app.command()

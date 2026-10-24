@@ -1,6 +1,7 @@
 """Tests for `openport upgrade --apply`: bumping pins, exact edits, tests in a container, Super's fixes, the PR."""
 
 import json
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +83,22 @@ def test_edits_and_bumps_keep_each_files_line_endings(tmp_path):
     assert (tmp_path / "lf.py").read_bytes() == b"x = 1\ny = 3\n"  # not turned into \r\n on Windows
     assert apply_bumps(tmp_path, {"PyJWT": "2.14.0"}) == ["requirements.txt"]
     assert (tmp_path / "requirements.txt").read_bytes() == b"PyJWT==2.14.0\r\nrequests==2.31.0\r\n"
+
+
+def test_a_proven_upgrade_can_be_opened_as_a_pr_from_the_copy(tmp_path):
+    from openport import github
+
+    repo = tmp_path / "repo"
+    shutil.copytree(AUTHKIT, repo)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/authkit.git"], cwd=repo, check=True)
+    copy = copy_repo(repo, tmp_path / "copy")
+    assert (copy / ".git").is_dir()  # comes along, so the upgrade can be committed from the copy
+    apply_bumps(copy, {"PyJWT": "2.14.0"})
+    assert diff(repo, copy).count("+++ ") == 1  # the bump; .git never shows up in the diff
+    plan = github.plan_pr(copy, "Upgrade vulnerable dependencies", tmp_path / "body.md", "me", branch=github.UPGRADE_BRANCH)
+    assert plan.fork == "me/authkit" and plan.commands[0] == ["git", "checkout", "-B", "openport/security-upgrades"]
+    assert plan.commands[-1][:7] == ["gh", "pr", "create", "--repo", "me/authkit", "--head", "openport/security-upgrades"]
 
 
 def test_tests_run_in_a_container_with_only_the_copy_mounted(tmp_path):

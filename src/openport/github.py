@@ -1,4 +1,4 @@
-"""Open the port as a PR: commit on a branch, push to your fork, and open the PR there.
+"""Open a port or an upgrade as a PR: commit on a branch, push to your fork, and open the PR there.
 
 The PR is opened inside your fork (fork branch -> fork default branch), so the upstream
 maintainers aren't notified. Pass `upstream=True` to propose it to the original repo instead.
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BRANCH = "openport/nemotron"
+UPGRADE_BRANCH = "openport/security-upgrades"
 
 
 @dataclass
@@ -32,23 +33,23 @@ def origin_repo(ported: Path) -> str:
     return f"{match[1]}/{match[2]}"
 
 
-def plan_pr(ported: Path, title: str, body_file: Path, login: str, upstream: bool = False) -> PrPlan:
+def plan_pr(ported: Path, title: str, body_file: Path, login: str, upstream: bool = False, branch: str = BRANCH) -> PrPlan:
     if not (ported / ".git").exists():
-        raise ValueError(f"{ported} isn't a git repository; push it to GitHub first, then port the clone")
+        raise ValueError(f"{ported} isn't a git repository; push it to GitHub first, then run OpenPort on the clone")
     repo = origin_repo(ported)
     name = repo.split("/")[1]
     fork = repo if repo.split("/")[0] == login else f"{login}/{name}"
     base_repo = repo if upstream else fork
     commands = [
-        ["git", "checkout", "-B", BRANCH],
+        ["git", "checkout", "-B", branch],
         ["git", "add", "-A"],
         ["git", "commit", "-m", title],
     ]
     if fork != repo:
         commands.append(["gh", "repo", "fork", repo, "--clone=false", "--remote=false"])
     commands += [
-        ["git", "push", "--force", f"https://github.com/{fork}.git", BRANCH],
-        ["gh", "pr", "create", "--repo", base_repo, "--head", BRANCH if base_repo == fork else f"{login}:{BRANCH}",
+        ["git", "push", "--force", f"https://github.com/{fork}.git", branch],
+        ["gh", "pr", "create", "--repo", base_repo, "--head", branch if base_repo == fork else f"{login}:{branch}",
          "--title", title, "--body-file", str(body_file)],
     ]
     return PrPlan(repo, fork, base_repo, commands)

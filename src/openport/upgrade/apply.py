@@ -14,7 +14,8 @@ from pathlib import Path
 
 from ..scan.findings import is_test_path
 
-COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "runs")
+# .git comes along, so a proven upgrade can be committed and opened as a PR from the copy.
+COPY_IGNORE = shutil.ignore_patterns(".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "runs")
 _PIN = re.compile(r"^(\s*)([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(\s*==\s*)([^\s;#]+)(.*)$")
 
 
@@ -136,7 +137,7 @@ def diff(root: Path, folder: Path) -> str:
     """A unified diff of every file that differs between the original repo and the upgraded copy."""
     chunks: list[str] = []
     for path in sorted(folder.rglob("*")):
-        if not path.is_file() or "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo"):
+        if not path.is_file() or ".git" in path.parts or "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo"):
             continue
         relative = path.relative_to(folder)
         original = root / relative
