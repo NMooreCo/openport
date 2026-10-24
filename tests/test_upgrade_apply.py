@@ -145,10 +145,12 @@ def test_a_lockfile_bump_that_fails_leaves_those_packages_out(tmp_path):
     run = upgrade_repo(root, tmp_path / "out", plans=[jwt], run_tests=lambda folder: next(results), run_container=container)
     assert run.proven and run.changed == ["package-lock.json", "package.json"]
 
-    failing_npm = upgrade_repo(root, tmp_path / "out2", plans=[jwt], run_tests=lambda folder: passing(),
+    semver = upgrade("semver", "5.7.1", "5.7.2", source="package-lock.json")  # transitive: an override in package.json
+    failing_npm = upgrade_repo(root, tmp_path / "out2", plans=[jwt, semver], run_tests=lambda folder: passing(),
                                run_container=lambda *args: TestRun(False, 1, "ERESOLVE could not resolve", "", 1.0))
     assert failing_npm.upgraded == [] and failing_npm.after_bump is None
-    assert failing_npm.skipped == [(jwt, "package-lock.json couldn't be updated: ERESOLVE could not resolve")]
+    assert [why for _, why in failing_npm.skipped] == ["package-lock.json couldn't be updated: ERESOLVE could not resolve"] * 2
+    assert (tmp_path / "out2" / "package.json").read_bytes() == (root / "package.json").read_bytes()  # the override is undone
 
 
 def test_the_diff_shows_only_the_repos_own_files(tmp_path):

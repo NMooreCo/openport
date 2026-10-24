@@ -87,11 +87,15 @@ def upgrade_repo(
         if p.dep.source in LOCKFILES:
             locked.setdefault(p.dep.source, {})[p.dep.name] = p.target.version
     cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
+    package_json = out / "package.json"
+    original_package = package_json.read_bytes() if package_json.is_file() else None  # npm's step may add overrides
     for step in bump_steps(out, locked, cutoff):
         result = run_container(out, step.image, step.command)
         if result.ok:
             run.changed += [step.lockfile] + (["package.json"] if step.lockfile == "package-lock.json" else [])
             continue
+        if step.lockfile == "package-lock.json" and original_package is not None:
+            package_json.write_bytes(original_package)  # a failed bump leaves no half-made change behind
         failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
         run.upgraded = [p for p in run.upgraded if p not in failed]
         run.skipped += [(p, f"{step.lockfile} couldn't be updated: {result.summary or 'the package manager failed'}") for p in failed]

@@ -88,8 +88,12 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     run.emit("stage", stage="test")
     researcher = research_upgrade if os.getenv("TAVILY_API_KEY") else None
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
-    result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans,
-                          run_tests=lambda folder: run_tests(folder, *test_setup(folder, ecosystems)),
+
+    def tests(folder: Path):
+        image, command = test_setup(folder, ecosystems)
+        return run_tests(folder, image=image, command=command)
+
+    result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=tests,
                           researcher=researcher, fixer=make_fixer(), on_event=event)
     run.emit("stage", stage="pr")
     run.emit("upgrade_pr", body=report.render(result), diff=result.diff[:300_000], proven=result.proven)
