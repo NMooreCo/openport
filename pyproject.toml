@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-openport = "openport.cli:app"
+openport = "openport.cli:main"
 openport-job = "openport.jobs:main"
 
 [build-system]

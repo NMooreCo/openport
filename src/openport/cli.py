@@ -755,5 +755,17 @@ def port(
     console.print(f"Diff: {diff_path}")
 
 
-if __name__ == "__main__":
+def _needs_utf8_relaunch() -> bool:
+    return os.name == "nt" and not sys.flags.utf8_mode
+
+
+def main() -> None:
+    """The `openport` command. On Windows it runs in Python's UTF-8 mode, so the apps it evaluates read their
+    files the way they do in production: a bare open() there uses the legacy code page, which garbles prompts."""
+    if _needs_utf8_relaunch():
+        raise SystemExit(subprocess.call([sys.executable, "-X", "utf8", "-m", "openport.cli", *sys.argv[1:]]))
     app()
+
+
+if __name__ == "__main__":
+    main()
