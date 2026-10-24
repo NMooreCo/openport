@@ -46,6 +46,11 @@ Two kinds of notes are tracked separately and honestly:
 - That reads like a formatting problem, and the obvious fix (reasoning off) cost accuracy on this review task: 83% → 66% of the cases on Nano. On Super, keeping reasoning on and raising the budget to 4,096 (plus stricter instructions) passed. OpenPort's tuner now tells its engineer when a failing reply hit the token limit.
 - Suggestion: say this in the switch guide's first paragraph. "Raise `max_tokens` when you move a call over, or turn reasoning off" is the single most useful line for anyone porting. A separate reasoning budget, if one exists, deserves the same prominence.
 
+**[live] `usage` reports reasoning tokens for Super but not for Nano.** (Oct 24)
+- The same request with reasoning on: Super's `usage.completion_tokens_details.reasoning_tokens` says 173 of 178 completion tokens were reasoning; Nano returns `completion_tokens_details: null`, though its reply has a `reasoning_content` too.
+- Why it matters: anyone comparing costs with a closed model needs to know how much of the output was reasoning. OpenPort estimates Nano's split from the length of the reasoning text, which is a guess.
+- Suggestion: report the reasoning count for every model that reasons.
+
 **[live] Super's code edits are right, but its copied snippets can be mis-indented.** (Oct 24)
 - `openport upgrade --apply` has Nemotron Super repair code a dependency upgrade broke, as exact search-and-replace edits. Its diagnosis was right every time (PyJWT 2 returns `str` from `encode`; `decode` needs `algorithms=`), and it cited the PyJWT changelog Tavily found. But in one run it copied the line to replace with 8 spaces of indentation where the file has 4, and repeated the same snippet three rounds in a row, so no edit could apply and the upgrade wasn't proven.
 - OpenPort now matches snippets regardless of indentation (only when exactly one place matches) and re-indents the replacement. The same run then proved the upgrade in two rounds.
