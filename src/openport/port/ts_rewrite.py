@@ -4,6 +4,7 @@ The OpenAI Node SDK talks to Token Factory directly, so no runtime file is neede
 Token Factory's base URL and key, and each ported call gets its Nemotron model.
 """
 
+import json
 import posixpath
 import re
 from collections import defaultdict
@@ -227,18 +228,48 @@ def _set_number_property(f: _TsFile, call: Node, names: tuple[str, ...], value: 
             number = float(_text(current))
             new = max(number, value) if floor else value
             return [] if new == number else [Edit(current.start_byte, current.end_byte, f"{new:g}".encode())]
-    text = f"{names[0]}: {value:g}"
+    return _add_property(f, obj, f"{names[0]}: {value:g}")
+
+
+def _add_property(f: _TsFile, obj: Node, text: str, comment: str | None = None) -> list[Edit] | None:
+    """Add `text` as the object's last property, on its own line when the object spans lines. A `comment`
+    line goes above it, so it needs that layout: None when it can't be placed."""
     entries = [c for c in obj.named_children if c.type != "comment"]
     if not entries:
-        return [Edit(obj.start_byte + 1, obj.start_byte + 1, f" {text} ".encode())]
+        return None if comment else [Edit(obj.start_byte + 1, obj.start_byte + 1, f" {text} ".encode())]
     last = entries[-1]
     line_start = f.source.rfind(b"\n", 0, last.start_byte) + 1
     if f.source[line_start:last.start_byte].strip():
-        return [Edit(last.end_byte, last.end_byte, f", {text}".encode())]
+        return None if comment else [Edit(last.end_byte, last.end_byte, f", {text}".encode())]
     nl, indent = newline_style(f.source), f.source[line_start:last.start_byte]
     end = before_newline(f.source, last.end_byte)
     comma = [] if f.source[last.end_byte:end].lstrip().startswith(b",") else [Edit(last.end_byte, last.end_byte, b",")]
-    return comma + [Edit(end, end, nl + indent + text.encode() + b",")]
+    lead = nl + indent + f"// {comment}".encode() if comment else b""
+    return comma + [Edit(end, end, lead + nl + indent + text.encode() + b",")]
+
+
+def _ts_value(value) -> str:
+    """A JSON value written as a TypeScript literal: `{ enable_thinking: false }`."""
+    if isinstance(value, dict):
+        items = ", ".join(f"{k if re.fullmatch(r'[A-Za-z_$][\w$]*', k) else json.dumps(k)}: {_ts_value(v)}" for k, v in value.items())
+        return f"{{ {items} }}"
+    return json.dumps(value)
+
+
+def _set_extra_body(f: _TsFile, call: Node, extra_body: dict) -> list[Edit] | None:
+    """Write Token Factory-only request options (Nemotron's reasoning switch) into the call. The OpenAI Node SDK
+    sends unknown properties as they are; its types don't know them, hence the @ts-expect-error."""
+    args = call.child_by_field_name("arguments")
+    obj = args.named_children[0] if args is not None and args.named_children else None
+    if obj is None or obj.type != "object" or any(_object_value(obj, key) is not None for key in extra_body):
+        return None
+    edits: list[Edit] = []
+    for key, value in extra_body.items():
+        added = _add_property(f, obj, f"{key}: {_ts_value(value)}", "@ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the OpenAI types")
+        if added is None:
+            return None
+        edits += added
+    return edits
 
 
 def _arguments_text(f: _TsFile, binding: _TsBinding) -> bytes:
@@ -331,7 +362,11 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         elif not (value.type == "identifier" and _text(value) in constants):
             decision.notes.append(f"Model comes from `{_text(value)}`: set it to {decision.model}")
         if decision.extra_body:
-            decision.notes.append(f"Pass {decision.extra_body!r} in the request body by hand")
+            changed = _set_extra_body(f, call, decision.extra_body)
+            if changed is None:
+                decision.notes.append(f"Pass {decision.extra_body!r} in the request body by hand")
+            else:
+                edits[f.path] += changed
         for names, number, floor, label in (
             (("max_tokens", "max_completion_tokens"), decision.max_tokens, True, "allow at least {} output tokens"),
             (("temperature",), decision.temperature, False, "temperature {}"),
@@ -366,7 +401,8 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
                 if model is not None:
                     edits[path].append(Edit(node.start_byte, node.end_byte, f'"{model}"'.encode()))
 
-    output = {path: apply_edits(repo.file(path).source, file_edits) for path, file_edits in edits.items() if file_edits}
+    # Settings added after the same last property each add its missing comma: keep one.
+    output = {path: apply_edits(repo.file(path).source, list(dict.fromkeys(file_edits))) for path, file_edits in edits.items() if file_edits}
     return output | {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()}
 
 

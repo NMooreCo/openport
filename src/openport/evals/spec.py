@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from .node import is_node_site
+
 SPEC_FILE = "openport.evals.yaml"
 
 
@@ -31,6 +33,13 @@ class CallSite:
     # The module whose `client_attr` is swapped for Token Factory (default: `module`), for apps that share
     # one client from elsewhere.
     client_module: str = ""
+    # TypeScript/JavaScript: `module` is a file, `entry` (or `function`) its export, and `args` the input keys
+    # passed to it in order (default: the whole input as one argument). Python entries take keyword arguments.
+    args: list[str] = field(default_factory=list)
+
+    @property
+    def runs_on_node(self) -> bool:
+        return is_node_site(self.module)
 
     @property
     def entry_function(self) -> str:
@@ -81,7 +90,7 @@ def load_spec(target: Path) -> Spec:
             id=site["id"],
             title=site.get("title", site["id"]),
             file=site["file"],
-            module=site["module"],
+            module=site.get("module") or (site["file"] if is_node_site(site["file"]) else site["module"]),
             function=site["function"],
             client_attr=site.get("client_attr", "client"),
             sdk=site["sdk"],
@@ -92,6 +101,7 @@ def load_spec(target: Path) -> Spec:
             samples=max(1, int(site.get("samples", 1))),
             entry=site.get("entry", ""),
             client_module=site.get("client_module", ""),
+            args=list(site.get("args") or []),
         )
         for site in raw["call_sites"]
     ]

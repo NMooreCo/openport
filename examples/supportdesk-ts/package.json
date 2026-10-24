@@ -1,0 +1,17 @@
+{
+  "name": "supportdesk-ts",
+  "private": true,
+  "type": "module",
+  "description": "SupportDesk's OpenAI calls in TypeScript, for OpenPort's TypeScript path",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openai": "7.37.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

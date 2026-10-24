@@ -62,6 +62,14 @@ uv run openport tune examples/supportdesk
 uv run openport port examples/supportdesk --plan runs/plan-supportdesk.json
 ```
 
+TypeScript and JavaScript calls on the OpenAI SDK are tested the same way. The app runs unchanged under Node (TypeScript through its own `tsx`), and OpenPort points its OpenAI SDK at a local stand-in for the API that applies each tuning variant and forwards the request to Token Factory, so the app's process never holds a Token Factory key. `examples/supportdesk-ts` is SupportDesk's three OpenAI calls in TypeScript, tested on the Python app's labelled cases. The port writes the tuned changes into TypeScript too, including the reasoning switch.
+
+```bash
+cd examples/supportdesk-ts && npm install && cd ../..
+uv run openport tune examples/supportdesk-ts
+uv run openport port examples/supportdesk-ts --plan runs/plan-supportdesk-ts.json
+```
+
 With `TAVILY_API_KEY` set, before proposing a fix the tuner looks up NVIDIA's own guidance for the exact model it's tuning on (Nemotron 3 Nano, Super or Ultra, not a sibling like Nano Omni). Ultra cites the pages it relied on, and the PR links them next to the change.
 
 Tune every call at once on **Nebius Serverless Jobs**: each call site runs in its own container job, built from this repo's Dockerfile, and the results merge into one report and plan. API keys reach the jobs only as MysteryBox secrets. It needs the `nebius` CLI (Linux or macOS; on Windows, set `OPENPORT_NEBIUS_CLI` to run it through WSL).
@@ -133,6 +141,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `src/openport/server/` | Dashboard API: runs the pipeline and streams its progress as server-sent events |
 | `dashboard/` | Dashboard frontend (Vite, React, Tailwind); builds into `src/openport/server/static/` |
 | `examples/supportdesk/` | Demo target: a small support-desk app with five LLM calls on the OpenAI and Anthropic SDKs, plus hand-labelled eval sets |
+| `examples/supportdesk-ts/` | SupportDesk's three OpenAI calls in TypeScript (JSON mode, JSON schema, a tool-calling agent), tested on the same cases |
 | `examples/evalpacks/preflight/` | OpenPort's eval pack for [jsliapark/preflight](https://github.com/jsliapark/preflight), an AI PR reviewer that ships no evals: 119 hand-labelled cases, pinned to a reviewed commit |
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `tests/` | Offline tests (no API keys needed) |

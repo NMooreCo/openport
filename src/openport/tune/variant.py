@@ -13,7 +13,7 @@ from typing import Any
 
 from openai import LengthFinishReasonError
 
-from ..evals.runner import CURRENT_CASE
+from ..evals.context import CURRENT_CASE
 
 
 @dataclass

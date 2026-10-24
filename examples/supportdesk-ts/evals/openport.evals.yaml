@@ -1,0 +1,44 @@
+# OpenPort eval spec for SupportDesk in TypeScript: its three OpenAI calls, tested on the same hand-labelled
+# cases as the Python app's, so the two ports compare case for case. The app runs unchanged under Node;
+# OpenPort points its OpenAI SDK at a local proxy for the evals.
+target: supportdesk-ts
+source_root: ..
+
+call_sites:
+  - id: triage
+    title: Ticket triage
+    file: src/triage.ts
+    function: triageTicket
+    args: [ticket]
+    sdk: openai
+    original_model: gpt-5-mini
+    output: json_object
+    dataset: ../../supportdesk/evals/triage.jsonl
+    grader:
+      type: fields
+      fields: [category, priority]
+
+  - id: pii
+    title: PII extraction and redaction
+    file: src/pii.ts
+    function: extractPii
+    args: [ticket]
+    sdk: openai
+    original_model: gpt-5-mini
+    output: json_schema
+    dataset: ../../supportdesk/evals/pii.jsonl
+    grader:
+      type: pii
+
+  - id: refunds
+    title: Refund agent (tool calling)
+    file: src/refunds.ts
+    function: handleRefundRequest
+    args: [ticket, today]
+    sdk: openai
+    original_model: gpt-5
+    output: tools
+    dataset: ../../supportdesk/evals/refunds.jsonl
+    grader:
+      type: fields
+      fields: [action, amount]

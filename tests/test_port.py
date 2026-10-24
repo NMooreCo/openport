@@ -163,6 +163,28 @@ def test_typescript_tuned_changes(tmp_path):
     assert '    model: "nvidia/super-test",  // was "gpt-4o"\n    temperature: 0.2,\n  });' in llm
 
 
+SUPPORTDESK_TS = Path(__file__).parents[1] / "examples" / "supportdesk-ts"
+
+
+def test_typescript_reasoning_switch_and_settings_go_into_the_call(tmp_path):
+    """Tuned like SupportDesk's triage: reasoning off, a token floor and temperature, on a call ending in response_format."""
+    variant = {"reasoning": False, "max_tokens": 512, "temperature": 0.0, "system_addendum": "Reply with the JSON object only."}
+    plan = {"triage.triageTicket": {"model": "nano", "variant": variant, "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                                    "system_prompts": ["You are the triage system for Fernhill Supply Co."]}}
+    result, sites = port(SUPPORTDESK_TS, tmp_path / "out", **plan)
+    assert sites["triage.triageTicket"].notes == []
+    triage = (result.output / "src/triage.ts").read_text()
+    assert (
+        '    response_format: { type: "json_object" },\n'
+        "    // @ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the OpenAI types\n"
+        "    chat_template_kwargs: { enable_thinking: false },\n"
+        "    max_tokens: 512,\n"
+        "    temperature: 0,\n"
+        "  });"
+    ) in triage
+    assert triage.count("},,") == 0 and 'Respond with JSON only: {"category": "<category>", "priority": "<priority>"}\n\nReply with the JSON object only.`;' in triage
+
+
 PREFLIGHT_LIKE = {
     "core/__init__.py": "",
     "core/anthropic_client.py": '''import threading

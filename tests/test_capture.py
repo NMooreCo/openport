@@ -60,12 +60,30 @@ def test_grader_for():
 
 def test_runnable():
     assert draft.runnable(finding())[0] is True
-    assert draft.runnable(finding(language="typescript"))[0] is False
+    assert draft.runnable(finding(language="typescript"))[0] is True  # runs under Node, through OpenPort's proxy
+    assert draft.runnable(finding(language="typescript", sdk="anthropic"))[0] is False
     assert draft.runnable(finding(module=None))[0] is False
     assert draft.runnable(finding(function="<module>"))[0] is False
     assert draft.runnable(finding(function="Agent.run"))[0] is False
     assert draft.runnable(finding(output="embedding"))[0] is False
     assert draft.runnable(finding(receiver_kind="local", receiver="c"))[0] is False
+
+
+def test_typescript_sites_need_their_dependencies_and_an_export(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text(
+        "export async function classify(text: string, lang?: string) {}\n"
+        "export const summarize = async (doc: string) => doc;\n"
+        "async function hidden(x: string) {}\n"
+    )
+    ts = lambda name: finding(language="typescript", file="src/app.ts", function=name, module=None)  # noqa: E731
+    assert draft.runnable(ts("classify"), tmp_path) == (False, "the project's dependencies aren't installed (run npm install), so its code can't run")
+    (tmp_path / "node_modules").mkdir()
+    assert draft.runnable(ts("classify"), tmp_path)[0] is True and draft.param_names(tmp_path, ts("classify")) == ["text", "lang"]
+    assert draft.param_names(tmp_path, ts("summarize")) == ["doc"]
+    assert draft.runnable(ts("hidden"), tmp_path) == (False, "'hidden' isn't an exported function the harness can call")
+    site = draft.draft_site(ts("classify"), fields=["label"], args=["text", "lang"])
+    assert site["args"] == ["text", "lang"] and "module" not in site and site["file"] == "src/app.ts"
 
 
 def test_param_names(tmp_path):

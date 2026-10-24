@@ -1,0 +1,251 @@
+[
+  {
+    "order_id": "FH-100301",
+    "customer_name": "Aaron Blake",
+    "membership": "standard",
+    "delivered_on": "2026-10-10",
+    "items": [{"sku": "PK-45", "name": "Trailblazer 45L Pack", "price": 149.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100302",
+    "customer_name": "Bianca Torres",
+    "membership": "standard",
+    "delivered_on": "2026-09-01",
+    "items": [{"sku": "JK-ALP", "name": "Alpine Down Jacket", "price": 219.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100303",
+    "customer_name": "Carlos Mendes",
+    "membership": "summit",
+    "delivered_on": "2026-09-01",
+    "items": [{"sku": "JK-ALP", "name": "Alpine Down Jacket", "price": 219.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100304",
+    "customer_name": "Dana Kim",
+    "membership": "standard",
+    "delivered_on": "2026-10-12",
+    "items": [{"sku": "CH-PK", "name": "Packable Camp Chair", "price": 59.00, "clearance": true}],
+    "shipping_cost": 7.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100305",
+    "customer_name": "Eli Novak",
+    "membership": "standard",
+    "delivered_on": "2026-08-15",
+    "items": [{"sku": "HL-400", "name": "Beacon 400 Headlamp", "price": 39.00, "clearance": true}],
+    "shipping_cost": 4.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100306",
+    "customer_name": "Fatima Rahman",
+    "membership": "standard",
+    "delivered_on": "2026-10-14",
+    "items": [{"sku": "TN-BC4", "name": "Basecamp 4 Tent", "price": 449.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100307",
+    "customer_name": "Grace Liu",
+    "membership": "summit",
+    "delivered_on": "2026-10-01",
+    "items": [{"sku": "FT-TR", "name": "Trail Runners", "price": 129.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100308",
+    "customer_name": "Hugo Martin",
+    "membership": "standard",
+    "delivered_on": "2026-10-16",
+    "items": [{"sku": "CK-CER", "name": "Ceramic Cookset", "price": 89.00, "clearance": false}],
+    "shipping_cost": 9.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100309",
+    "customer_name": "Iris Okafor",
+    "membership": "standard",
+    "delivered_on": "2026-10-11",
+    "items": [{"sku": "JK-STM", "name": "Stormline Rain Shell", "price": 129.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 3,
+    "prior_refund_reasons": ["changed mind", "defect", "changed mind"]
+  },
+  {
+    "order_id": "FH-100310",
+    "customer_name": "Jonah Weiss",
+    "membership": "standard",
+    "delivered_on": "2026-08-20",
+    "items": [{"sku": "SB-E20", "name": "Ember 20 Sleeping Bag", "price": 179.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100312",
+    "customer_name": "Kara Singh",
+    "membership": "summit",
+    "delivered_on": "2026-09-25",
+    "items": [
+      {"sku": "TP-CF", "name": "Trekking Poles", "price": 119.00, "clearance": false},
+      {"sku": "WF-SQ", "name": "Squeeze Water Filter", "price": 49.00, "clearance": false}
+    ],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100313",
+    "customer_name": "Leo Brandt",
+    "membership": "standard",
+    "delivered_on": "2026-10-05",
+    "items": [{"sku": "LN-LUM", "name": "Lumen Lantern", "price": 45.00, "clearance": false}],
+    "shipping_cost": 6.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100330",
+    "customer_name": "Nora Quinn",
+    "membership": "standard",
+    "delivered_on": "2026-10-15",
+    "items": [{"sku": "HD-MER", "name": "Merino Hoodie", "price": 95.00, "clearance": false}],
+    "shipping_cost": 5.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100331",
+    "customer_name": "Owen Price",
+    "membership": "summit",
+    "delivered_on": "2026-08-25",
+    "items": [{"sku": "TN-RL2", "name": "Ridgeline 2 Tent", "price": 289.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100332",
+    "customer_name": "Paula Reyes",
+    "membership": "standard",
+    "delivered_on": "2026-09-28",
+    "items": [{"sku": "ST-CMP", "name": "Compact Camp Stove", "price": 69.00, "clearance": true}],
+    "shipping_cost": 4.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100333",
+    "customer_name": "Quentin Hale",
+    "membership": "standard",
+    "delivered_on": "2026-10-18",
+    "items": [{"sku": "BT-INS", "name": "Insulated Bottle", "price": 35.00, "clearance": false}],
+    "shipping_cost": 6.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100334",
+    "customer_name": "Rina Patel",
+    "membership": "standard",
+    "delivered_on": "2026-10-06",
+    "items": [{"sku": "SB-E20", "name": "Ember 20 Sleeping Bag", "price": 179.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100335",
+    "customer_name": "Sam Ortega",
+    "membership": "standard",
+    "delivered_on": "2026-09-01",
+    "items": [{"sku": "GT-TR", "name": "Trail Gaiters", "price": 60.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100336",
+    "customer_name": "Tara Nguyen",
+    "membership": "standard",
+    "delivered_on": "2026-10-10",
+    "items": [{"sku": "TN-BC4", "name": "Basecamp 4 Tent", "price": 449.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100337",
+    "customer_name": "Uma Brooks",
+    "membership": "standard",
+    "delivered_on": "2026-10-12",
+    "items": [
+      {"sku": "TP-CF", "name": "Trekking Poles", "price": 119.00, "clearance": false},
+      {"sku": "HL-400", "name": "Beacon 400 Headlamp", "price": 39.00, "clearance": false}
+    ],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 4,
+    "prior_refund_reasons": ["defect", "shipping damage", "defect", "defect"]
+  },
+  {
+    "order_id": "FH-100338",
+    "customer_name": "Victor Lang",
+    "membership": "standard",
+    "delivered_on": "2025-11-30",
+    "items": [{"sku": "JK-STM", "name": "Stormline Rain Shell", "price": 129.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100339",
+    "customer_name": "Wendy Cole",
+    "membership": "standard",
+    "delivered_on": "2025-09-15",
+    "items": [{"sku": "HL-400", "name": "Beacon 400 Headlamp", "price": 39.00, "clearance": false}],
+    "shipping_cost": 4.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100340",
+    "customer_name": "Xavier Dunn",
+    "membership": "summit",
+    "delivered_on": "2026-09-05",
+    "items": [{"sku": "WF-SQ", "name": "Squeeze Water Filter", "price": 49.00, "clearance": false}],
+    "shipping_cost": 0.00,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  },
+  {
+    "order_id": "FH-100341",
+    "customer_name": "Yara Haddad",
+    "membership": "standard",
+    "delivered_on": "2026-10-08",
+    "items": [
+      {"sku": "CH-PK", "name": "Packable Camp Chair", "price": 59.00, "clearance": true},
+      {"sku": "CK-CER", "name": "Ceramic Cookset", "price": 89.00, "clearance": false}
+    ],
+    "shipping_cost": 9.95,
+    "refunds_last_90_days": 0,
+    "prior_refund_reasons": []
+  }
+]

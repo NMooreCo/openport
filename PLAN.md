@@ -271,6 +271,14 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **Fine-tune:** the Llama 3.1 8B LoRA job (209 training examples distilled from Ultra) processed its datasets in a minute, then sat at "running" with 0 steps for over an hour (FEEDBACK.md).
 - 153 offline tests.
 
+**Sat 24 (evening): TypeScript end to end (built and checked offline; the credits ran out first).**
+- The eval harness runs TypeScript/JavaScript call sites on the OpenAI SDK: the app runs unchanged under Node (TypeScript through its own `tsx`, else Node's type stripping), and its SDK talks to a local stand-in for the OpenAI API that sends each request through the same swapped client as Python (model swap, the variant, metering, token-limit notes). The Node process gets no secrets from the environment.
+- `examples/supportdesk-ts`: SupportDesk's triage (JSON mode), PII (JSON schema) and refund agent (tool loop) in TypeScript, on `openai` 7.37.0, graded on the Python app's own 77 cases. Offline tests drive the real app, through `tsx` and the real SDK, against a fake Token Factory, tool loop included. It's a dashboard preset, and the Docker image now carries Node and the example's dependencies.
+- The TypeScript port now writes the reasoning switch into the call (`chat_template_kwargs`, with a `@ts-expect-error` because the OpenAI types don't know it); checked with `tsc`.
+- `openport capture` drafts TypeScript calls too, when they're in an exported function and the project's dependencies are installed (a fresh probly clone isn't, so it's still skipped with that reason).
+- Still to run live: `openport tune examples/supportdesk-ts` (needs credits).
+- 162 offline tests.
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).

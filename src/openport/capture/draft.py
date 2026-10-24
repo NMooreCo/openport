@@ -48,10 +48,10 @@ def grader_for(output: str, fields: list[str] | None) -> dict:
     return {"type": "fields", "fields": list(fields or [])}
 
 
-def runnable(finding: CallSiteFinding) -> tuple[bool, str]:
+def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, str]:
     """Whether the eval runner can import this call and swap its client. Returns (ok, reason-if-not)."""
     if finding.language != "python":
-        return False, "TypeScript call sites can't be run by the eval harness yet"
+        return _runnable_on_node(finding, root)
     if not finding.module:
         return False, "no import path for the call site"
     if finding.function in ("<module>", "") or "." in finding.function:
@@ -63,8 +63,49 @@ def runnable(finding: CallSiteFinding) -> tuple[bool, str]:
     return True, ""
 
 
+def _runnable_on_node(finding: CallSiteFinding, root: Path | None) -> tuple[bool, str]:
+    """TypeScript/JavaScript runs under Node with its OpenAI SDK pointed at OpenPort's proxy (evals/node.py)."""
+    if finding.sdk != "openai":
+        return False, "TypeScript call sites on the Anthropic SDK can't be run by the eval harness yet"
+    if finding.output not in RUNNABLE_OUTPUTS:
+        return False, f"output type {finding.output!r} isn't evaluable"
+    if root is not None and not (root / "node_modules").is_dir():
+        return False, "the project's dependencies aren't installed (run npm install), so its code can't run"
+    if root is not None and ts_exported_params(root, finding) is None:
+        return False, f"{finding.function!r} isn't an exported function the harness can call"
+    return True, ""
+
+
+def ts_exported_params(root: Path, finding: CallSiteFinding) -> list[str] | None:
+    """The parameter names of the exported function the call is in, or None if it isn't one."""
+    from ..scan.ts_scanner import _parser, _text, _walk
+
+    try:
+        source = (root / finding.file).read_bytes()
+    except OSError:
+        return None
+    tree = _parser(finding.file.endswith((".tsx", ".jsx"))).parse(source)
+    for node in _walk(tree.root_node):
+        if node.type != "export_statement":
+            continue
+        for declared in _walk(node):
+            name = declared.child_by_field_name("name")
+            value = declared.child_by_field_name("value") if declared.type == "variable_declarator" else declared
+            if _text(name) != finding.function or value is None or value.type not in (
+                "function_declaration", "generator_function_declaration", "function_expression", "arrow_function", "function",
+            ):
+                continue
+            params = value.child_by_field_name("parameters")
+            single = value.child_by_field_name("parameter")  # `x => ...`
+            names = [_text(p.child_by_field_name("pattern") or p) for p in (params.named_children if params else [])]
+            return [n for n in names if n.isidentifier()] or ([_text(single)] if single else [])
+    return None
+
+
 def param_names(root: Path, finding: CallSiteFinding) -> list[str]:
     """The parameter names of the call's enclosing function, read from source (not imported)."""
+    if finding.language != "python":
+        return ts_exported_params(root, finding) or []
     try:
         tree = ast.parse((root / finding.file).read_text(encoding="utf-8", errors="replace"))
     except (OSError, SyntaxError):
@@ -78,8 +119,21 @@ def param_names(root: Path, finding: CallSiteFinding) -> list[str]:
     return []
 
 
-def draft_site(finding: CallSiteFinding, *, fields: list[str] | None = None) -> dict:
+def draft_site(finding: CallSiteFinding, *, fields: list[str] | None = None, args: list[str] | None = None) -> dict:
     """A call_sites entry for openport.evals.yaml, matching the hand-written spec's shape."""
+    if finding.language != "python":  # runs under Node: the file's export, called with the input's fields in order
+        return {
+            "id": finding.id,
+            "title": humanize_title(finding),
+            "file": finding.file,
+            "function": finding.function,
+            "args": list(args or []),
+            "sdk": finding.sdk,
+            "original_model": finding.model or finding.model_expr or "unknown",
+            "output": finding.output,
+            "dataset": f"{finding.id}.jsonl",
+            "grader": grader_for(finding.output, fields),
+        }
     return {
         "id": finding.id,
         "title": humanize_title(finding),

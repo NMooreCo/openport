@@ -9,5 +9,5 @@ runs/
 **/__pycache__
 **/*.pyc
 .pytest_cache
-dashboard/node_modules
+**/node_modules
 src/openport/server/static

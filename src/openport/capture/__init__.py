@@ -85,7 +85,7 @@ def capture_repo(
     skipped: list[tuple[str, str]] = []
 
     for finding in report.portable(include_tests):
-        ok, reason = _draft.runnable(finding)
+        ok, reason = _draft.runnable(finding, root)
         if not ok:
             skipped.append((finding.id, reason))
             continue
@@ -100,7 +100,7 @@ def capture_repo(
 
             needs_label = finding.output != "text"
             labeller = None
-            if label == "original" and needs_label:
+            if label == "original" and needs_label and finding.language == "python":  # TypeScript is labelled by Ultra
                 key_env = "OPENAI_API_KEY" if finding.sdk == "openai" else "ANTHROPIC_API_KEY"
                 value = os.getenv(key_env)
                 if not value or value == "openport-placeholder":
@@ -124,7 +124,7 @@ def capture_repo(
             source = "generated"
 
         fields = infer_fields(cases) if finding.output != "text" else None
-        spec = _draft.draft_site(finding, fields=fields)
+        spec = _draft.draft_site(finding, fields=fields, args=_draft.param_names(root, finding) if finding.language != "python" else None)
         site = DraftedSite(finding, spec, cases, source, _notes(finding, spec, source))
         sites.append(site)
         if on_site is not None:

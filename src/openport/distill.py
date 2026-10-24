@@ -67,7 +67,7 @@ class _Recorder:
 def invent_inputs(spec: Spec, site: CallSite, n: int, client: OpenAI, model: str, exclude: set[str], meter: UsageMeter) -> list[dict]:
     """Ask Super for `n` new realistic inputs, in batches, dropping duplicates and anything in the eval set."""
     source = (spec.source_root / site.file).read_text(encoding="utf-8", errors="replace")
-    params = param_names(spec.source_root, SimpleNamespace(file=site.file, function=site.function))
+    params = param_names(spec.source_root, SimpleNamespace(file=site.file, function=site.function, language="python"))
     seen, inputs = set(exclude), []
     for _ in range(max(1, -(-n // BATCH)) * 2):  # allow some batches to come back short or repeated
         if len(inputs) >= n:
@@ -127,6 +127,8 @@ def distill_site(
         raise KeyError(f"No call site {site_id!r} in {spec.target}'s eval spec")
     if site.output in SKIPPED_OUTPUTS:
         raise ValueError(f"{site_id} is a tool-calling loop; distill supports single-response calls")
+    if site.runs_on_node:
+        raise ValueError(f"{site_id} runs under Node; distill records requests from Python call sites only")
 
     client = client or tokenfactory.client()
     models = tokenfactory.tiers()

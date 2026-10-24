@@ -8,7 +8,6 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -17,11 +16,10 @@ from pydantic import BaseModel
 
 from .. import tokenfactory
 from ..runtime.openport_llm import AnthropicOnNemotron, SwappedOpenAI, UsageMeter
+from .context import CURRENT_CASE
 from .graders import Judge, grade
+from .node import EvalProxy, run_node_case
 from .spec import CallSite, Spec
-
-# The case whose app call is running on this thread, so a client wrapper can tie a reply to its case.
-CURRENT_CASE: ContextVar[str | None] = ContextVar("openport_current_case", default=None)
 
 
 @dataclass
@@ -95,11 +93,11 @@ def _cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | Non
     return info.cost(prompt_tokens, completion_tokens) if info else None
 
 
-def _run_case(site: CallSite, function: Callable, case: dict, judge: Judge | None) -> CaseResult:
+def _run_case(site: CallSite, call: Callable[[dict], Any], case: dict, judge: Judge | None) -> CaseResult:
     start = time.perf_counter()
     token = CURRENT_CASE.set(case["id"])
     try:
-        output = _plain(function(**case["input"]))
+        output = _plain(call(case))
     except Exception as error:  # a crash is a failed case, not a failed run
         seconds = round(time.perf_counter() - start, 2)
         return CaseResult(case["id"], False, 0.0, [], None, f"{type(error).__name__}: {error}"[:300], seconds)
@@ -131,23 +129,35 @@ def run_site(
     `client_attr` names the module attribute the code gets its client from: a client object
     (`client`), or a factory function (`get_client()`), which is replaced by one returning the
     swapped client. With `model=None`, each call runs on the model its code names.
+
+    A TypeScript or JavaScript site runs under Node instead, its OpenAI SDK pointed at a local proxy
+    that sends each request through the same swapped client (see evals/node.py).
     """
-    prepare_imports(spec)
-    function = getattr(importlib.import_module(site.module), site.entry_function)
-    home = importlib.import_module(site.client_home)
     meter = UsageMeter()
-    factory = site.client_attr.endswith("()")
-    attr = site.client_attr.removesuffix("()")
-    original = getattr(home, attr)
     swapped = swapped_client(site, model, meter, client or tokenfactory.client(), extra_body)
-    setattr(home, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
-    try:
-        cases = cases if cases is not None else site.cases(limit)
-        cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            results = list(pool.map(lambda case: _run_case(site, function, case, judge), cases))
-    finally:
-        setattr(home, attr, original)
+    cases = cases if cases is not None else site.cases(limit)
+    cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
+    if site.runs_on_node:
+        if site.sdk != "openai":
+            raise ValueError(f"{site.id}: TypeScript and JavaScript call sites can be evaluated on the OpenAI SDK only")
+        with EvalProxy(swapped) as proxy, ThreadPoolExecutor(max_workers=concurrency) as pool:
+            def call(case: dict):
+                return run_node_case(spec.source_root, site.module, site.entry_function, site.args or None, case["input"], proxy.base_url(case["id"]))
+
+            results = list(pool.map(lambda case: _run_case(site, call, case, judge), cases))
+    else:
+        prepare_imports(spec)
+        function = getattr(importlib.import_module(site.module), site.entry_function)
+        home = importlib.import_module(site.client_home)
+        factory = site.client_attr.endswith("()")
+        attr = site.client_attr.removesuffix("()")
+        original = getattr(home, attr)
+        setattr(home, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
+        try:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                results = list(pool.map(lambda case: _run_case(site, lambda c: function(**c["input"]), case, judge), cases))
+        finally:
+            setattr(home, attr, original)
 
     used = meter.by_model
     prompt_tokens = sum(u.prompt_tokens for u in used.values())
