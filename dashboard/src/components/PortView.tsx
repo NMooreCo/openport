@@ -1,3 +1,4 @@
+import type { RunInfo } from "../App";
 import { STAGE_LABELS, STAGES, tierName, useRun } from "../run";
 import { CallCard } from "./CallCard";
 import { Metrics } from "./Metrics";
@@ -6,15 +7,15 @@ import { Shell } from "./Shell";
 import { Stages } from "./Stages";
 
 /** A port run: the calls found, each one's tuning on Nemotron, and the pull request. */
-export function PortView({ runId, label }: { runId: string; label: string }) {
-  const state = useRun(runId);
+export function PortView({ run, onRunLive }: { run: RunInfo; onRunLive: () => Promise<void> }) {
+  const state = useRun(run.id);
   if (!state) return null;
 
   const live = state.status === "running" || state.status === "queued";
   const changedFiles = state.ported ? state.ported.changed.length + state.ported.added.length : 0;
 
   return (
-    <Shell label={label} status={state.status} home="#" tagline="Prove it, then port it.">
+    <Shell run={run} status={state.status} home="#" tagline="Prove it, then port it." onRunLive={onRunLive}>
       <Stages order={STAGES} labels={STAGE_LABELS} stages={state.stages} failed={state.status === "failed"} />
       {state.error && (
         <div role="alert" className="rounded-lg border border-fail/40 bg-fail/10 p-3 text-sm text-red-200">{state.error}</div>

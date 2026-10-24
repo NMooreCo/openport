@@ -23,6 +23,7 @@ NAME=${NAME:-openport-dashboard}
 PLATFORM=${PLATFORM:-cpu-d3}
 PRESET=${PRESET:-4vcpu-16gb}
 TAG=${TAG:-$(git rev-parse --short HEAD)}
+BUDGET=${BUDGET:-2}  # USD a day that visitors' live runs may spend on Token Factory; recorded demo runs are free
 
 # 1. A container registry named "openport", made on the first run.
 REGISTRY_ID=$(nebius registry list --format json | jq -r '.items[]? | select(.metadata.name == "openport") | .metadata.id' | head -1)
@@ -39,7 +40,7 @@ echo "Image: $IMAGE   (also what openport tune --jobs takes as --job-image)"
 
 # 3. The endpoint: the dashboard on port 8000, open to anyone with the URL.
 nebius ai endpoint create --name "$NAME" --image "$IMAGE" --container-port 8000 \
-  --platform "$PLATFORM" --preset "$PRESET" --subnet-id "$SUBNET_ID" \
+  --platform "$PLATFORM" --preset "$PRESET" --subnet-id "$SUBNET_ID" --env "OPENPORT_DAILY_BUDGET_USD=$BUDGET" \
   --env-secret "NEBIUS_API_KEY=$SECRET" --env-secret "TAVILY_API_KEY=$SECRET"
 ENDPOINT_ID=$(nebius ai endpoint get-by-name --name "$NAME" --format jsonpath='{.metadata.id}')
 echo "Endpoint: $ENDPOINT_ID"

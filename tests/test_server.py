@@ -189,7 +189,7 @@ def upgrade_server(tmp_path, monkeypatch):
     fix = lambda *args: ([Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", [])
     monkeypatch.setattr(upgrades, "plan_upgrades", lambda deps: plan)
     monkeypatch.setattr("openport.upgrade.testrun.run_tests", lambda folder, *, image, command: next(results))  # the real signature
-    monkeypatch.setattr("openport.upgrade.fix.make_fixer", lambda: fix)
+    monkeypatch.setattr("openport.upgrade.fix.make_fixer", lambda *, meter=None: fix)
     monkeypatch.setattr(upgrades.shutil, "which", lambda name: "/usr/bin/docker")
     monkeypatch.setattr(upgrades, "PRESETS", [{"id": "authkit", "label": "AuthKit", "detail": "demo", "path": "authkit"}])
     monkeypatch.setattr(pipeline, "EXAMPLES", AUTHKIT.parent)
@@ -246,6 +246,53 @@ def test_pipeline_end_to_end(server):
     assert again["reused"] and again["id"] == started["id"]
 
 
+def _recorded(target="mini", kind="port") -> "pipeline.Run":
+    events = [{"seq": i, "type": kind_, "time": 100.0 + 10 * i, **data} for i, (kind_, data) in
+              enumerate([("stage", {"stage": "fetch"}), ("cost", {"evals_usd": 0.4, "helper_usd": 0.3}), ("done", {})])]
+    return pipeline.Run(id="rec" + "0" * 9, target=target, label="Mini", status="done", created=100.0, events=events, kind=kind, recorded=True)
+
+
+def test_a_recorded_run_is_shown_until_someone_asks_for_a_live_one(server, monkeypatch):
+    import openport.server as srv
+
+    recorded = _recorded()
+    runs[recorded.id] = recorded
+    shown = server.post("/api/runs", json={"target": "mini"}).json()
+    assert (shown["id"], shown["reused"], shown["recorded"]) == (recorded.id, True, True)
+
+    monkeypatch.setattr(srv, "REPLAY_SPEED", 1000)  # the replay keeps the recorded timing, sped up
+    stream = server.get(f"/api/runs/{recorded.id}/events").text
+    assert stream.count("event: ") == 3 and "event: done" in stream
+
+    live = server.post("/api/runs", json={"target": "mini", "live": True}).json()
+    assert live["id"] != recorded.id and not live["reused"] and not live["recorded"]
+    assert wait_for(server, live["id"])["status"] == "done"
+
+
+def test_live_runs_stop_at_the_daily_budget(server, monkeypatch):
+    monkeypatch.setattr(pipeline, "DAILY_BUDGET_USD", 0.5)
+    spent = pipeline.Run(id="spent0000001", target="other", label="x", status="done",
+                         events=[{"seq": 0, "type": "cost", "time": 0, "evals_usd": 0.4, "helper_usd": 0.2}])
+    runs[spent.id] = spent
+    assert server.get("/api/info").json()["daily_budget_usd"] == 0.5
+    response = server.post("/api/runs", json={"target": "mini"})
+    assert response.status_code == 429 and "budget for today ($0.5) is used up" in response.json()["detail"]
+    runs[_recorded().id] = _recorded()  # a recorded run costs nothing, so it's still shown
+    assert server.post("/api/runs", json={"target": "mini"}).json()["recorded"]
+
+
+def test_finished_runs_load_from_disk(tmp_path):
+    def save(name, **fields):
+        (tmp_path / name).write_text(json.dumps({"id": name[:-5], "kind": "upgrade", "target": "authkit", "label": "AuthKit",
+                                                 "status": "done", "created": 1.0, "events": [], **fields}))
+
+    save("a.json")
+    save("b.json", status="running")  # never finished: not a result to show
+    (tmp_path / "c.json").write_text("{not json")
+    [run] = pipeline.load_runs(tmp_path, recorded=True)
+    assert (run.id, run.kind, run.recorded, run.cost_usd) == ("a", "upgrade", True, 0)
+
+
 def test_upgrade_pipeline_proves_the_upgrade(upgrade_server):
     assert [p["id"] for p in upgrade_server.get("/api/upgrade-presets").json()] == ["authkit"]
     started = upgrade_server.post("/api/upgrades", json={"target": "authkit"}).json()
@@ -261,6 +308,8 @@ def test_upgrade_pipeline_proves_the_upgrade(upgrade_server):
     assert fix["files"] == ["authkit/tokens.py"] and fix["tests"]["ok"]
     pr = next(e for e in events if e["type"] == "upgrade_pr")
     assert pr["proven"] and "+PyJWT==2.14.0" in pr["diff"] and "| Before the upgrade | ✅ 5 passed |" in pr["body"]
+    assert next(e for e in events if e["type"] == "bumped")["packages"] == ["PyJWT"]
+    assert next(e for e in events if e["type"] == "cost") == {**next(e for e in events if e["type"] == "cost"), "evals_usd": 0.0, "helper_usd": 0.0}
 
 
 def test_upgrade_without_docker_is_a_dry_run(upgrade_server, monkeypatch):
@@ -290,7 +339,7 @@ def test_a_public_server_runs_only_vetted_repo_code(server_pack, monkeypatch):
     client, _ = server_pack
     assert [p["tested"] for p in client.get("/api/presets").json()] == [True, True]  # locally, any repo's code may run
     monkeypatch.setattr(pipeline, "VETTED_ONLY", True)
-    assert client.get("/api/info").json() == {"vetted_only": True}
+    assert client.get("/api/info").json()["vetted_only"] is True
     assert [p["tested"] for p in client.get("/api/presets").json()] == [True, False]  # the launcher says so up front
 
     def stages(target):

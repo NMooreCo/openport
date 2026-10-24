@@ -132,6 +132,8 @@ For hosting, the dashboard only accepts its demo presets and public GitHub repos
 
 To host it on a **Nebius Serverless Endpoint**, `scripts/deploy_endpoint.sh` builds the image, pushes it to a Nebius container registry and starts the endpoint, with the API keys taken from a MysteryBox secret (never baked into the image). It prints the dashboard's URL.
 
+A public dashboard shouldn't run up the key's bill, so the demos replay recorded runs (`examples/recorded`, labelled as recorded and dated) and "Run it live" starts a fresh one. Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (2 in the image).
+
 Testing a call imports the repo's code and runs it inside the server, next to the API keys. So the Docker image sets `OPENPORT_RUN_REPO_CODE=vetted`: a public deployment runs code only for its bundled demo apps and for OpenPort's eval packs, which pin the exact commit that was reviewed (preflight's is `7a00fa2`). Any other repo is scanned and ported untuned, and the launcher says so up front. Locally, OpenPort tests whatever repo you point it at.
 
 ## Repo layout

@@ -8,7 +8,8 @@ import os
 import shutil
 from pathlib import Path
 
-from .. import config
+from .. import config, tokenfactory
+from ..runtime.openport_llm import UsageMeter
 from ..upgrade import Upgrade, plan_upgrades, read_lockfiles
 from ..upgrade.run import BUMPABLE_SOURCES
 from ..workspace import fetch_repo
@@ -90,14 +91,26 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     run.emit("stage", stage="test")
     researcher = research_upgrade if os.getenv("TAVILY_API_KEY") else None
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
+    meter = UsageMeter()  # Super's fixes: what this run spends on Token Factory
 
     def tests(folder: Path):
         return run_suites(folder, test_setups(folder, ecosystems), run_tests=run_tests)
 
-    result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=tests,
-                          researcher=researcher, fixer=make_fixer(), on_event=event)
+    try:
+        result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=tests,
+                              researcher=researcher, fixer=make_fixer(meter=meter), on_event=event)
+    finally:
+        run.emit("cost", evals_usd=0.0, helper_usd=_cost(meter))
     run.emit("stage", stage="pr")
     run.emit("upgrade_pr", body=report.render(result), diff=result.diff[:300_000], proven=result.proven)
+
+
+def _cost(meter: UsageMeter) -> float:
+    total = 0.0
+    for model, usage in meter.by_model.items():
+        info = tokenfactory.model_info(model)
+        total += (info.cost(usage.prompt_tokens, usage.completion_tokens) or 0) if info else 0
+    return total
 
 
 def resolve_target(target: str) -> tuple[str, str, Path | None]:

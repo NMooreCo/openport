@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import type { RunInfo } from "../App";
 import type { Source } from "../run";
 import {
   UPGRADE_STAGE_LABELS, UPGRADE_STAGES, advisoryUrl, finalTests, shortSummary, upgraded, useUpgrade,
@@ -181,8 +182,8 @@ function Tests({ state }: { state: UpgradeState }) {
 }
 
 /** An upgrade run: the vulnerable packages, the versions chosen, the test proof and the pull request. */
-export function UpgradeView({ runId, label }: { runId: string; label: string }) {
-  const state = useUpgrade(runId);
+export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive: () => Promise<void> }) {
+  const state = useUpgrade(run.id);
   if (!state) return null;
 
   const live = state.status === "running" || state.status === "queued";
@@ -190,7 +191,7 @@ export function UpgradeView({ runId, label }: { runId: string; label: string }) 
   const files = state.pr ? state.pr.diff.split("\n").filter((line) => line.startsWith("+++ ")).length : 0;
 
   return (
-    <Shell label={label} status={state.status} home="#upgrade" tagline="Prove it, then patch it.">
+    <Shell run={run} status={state.status} home="#upgrade" tagline="Prove it, then patch it." onRunLive={onRunLive}>
       <Stages order={UPGRADE_STAGES} labels={UPGRADE_STAGE_LABELS} stages={state.stages} failed={state.status === "failed"} />
       {state.error && (
         <div role="alert" className="rounded-lg border border-fail/40 bg-fail/10 p-3 text-sm text-red-200">{state.error}</div>

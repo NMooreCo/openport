@@ -33,6 +33,9 @@ CAPTURE_CASES = int(os.getenv("OPENPORT_CAPTURE_CASES", "6"))  # cases per call 
 # Testing a call imports the repo's code and runs it, in this process, next to the API keys. A public server sets
 # "vetted": then only the bundled demo apps and repos with an OpenPort eval pack (pinned to a reviewed commit) run.
 VETTED_ONLY = os.getenv("OPENPORT_RUN_REPO_CODE", "any") == "vetted"
+# A public server caps what live runs spend on Token Factory per UTC day; recorded runs of the demos cost nothing.
+DAILY_BUDGET_USD = float(os.environ["OPENPORT_DAILY_BUDGET_USD"]) if os.getenv("OPENPORT_DAILY_BUDGET_USD") else None
+RECORDED = Path(os.getenv("OPENPORT_RECORDED", EXAMPLES / "recorded"))  # recorded runs shipped with the server
 
 # Tuning swaps SDK clients inside imported modules, which is process-wide: one pipeline at a time.
 PIPELINE_LOCK = threading.Lock()
@@ -47,12 +50,34 @@ class Run:
     created: float = field(default_factory=time.time)
     events: list[dict] = field(default_factory=list)
     kind: str = "port"  # port | upgrade
+    recorded: bool = False  # shipped with the server (OPENPORT_RECORDED): replayed, never rerun unless asked
 
     def emit(self, kind: str, **data) -> None:
         self.events.append({"seq": len(self.events), "type": kind, "time": round(time.time(), 3), **data})
 
+    @property
+    def cost_usd(self) -> float:
+        """What the run spent on Token Factory, from its own events."""
+        return sum((e.get("evals_usd") or 0) + (e.get("helper_usd") or 0) for e in self.events if e["type"] in ("cost", "captured"))
+
     def summary(self) -> dict:
-        return {"id": self.id, "kind": self.kind, "target": self.target, "label": self.label, "status": self.status, "created": self.created}
+        return {"id": self.id, "kind": self.kind, "target": self.target, "label": self.label, "status": self.status,
+                "created": self.created, "recorded": self.recorded}
+
+
+def load_runs(folder: Path, recorded: bool = False) -> list[Run]:
+    """Finished runs saved as JSON (by _save, or shipped as recorded demos), skipping anything unreadable."""
+    loaded = []
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            run = Run(id=data["id"], target=data["target"], label=data["label"], status=data["status"], created=data["created"],
+                      events=data["events"], kind=data.get("kind", "port"), recorded=recorded)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if run.status in ("done", "error"):
+            loaded.append(run)
+    return loaded
 
 
 @dataclass
