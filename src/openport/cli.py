@@ -256,26 +256,13 @@ def pr(
     tune_path = tune_report or report.latest_tune_report(folder.split("__")[-1])
     tune = report.load_tune_report(tune_path)
     manual = {p.model: p for p in map(pricing.parse_manual, price or [])}
-    cached = pricing._load_cache()
     missing: list[str] = []
 
     def price_of(model: str):
-        if model in manual:
-            return manual[model]
-        if model.startswith("nvidia/") or "nemotron" in model.lower():
-            try:
-                return pricing.token_factory_price(model)
-            except config.MissingKeyError:
-                missing.append(model)
-                return None
-        if model in cached:
-            return cached[model]
-        if pricing.available():
-            found = pricing.closed_model_price(model)
-            if found:
-                return found
-        missing.append(model)
-        return None
+        found = pricing.price_for(model, manual)
+        if found is None:
+            missing.append(model)
+        return found
 
     rows = report.build_rows(report.load_summary(ported), tune, price_of)
     body = report.render(name, rows, tune)
@@ -306,6 +293,50 @@ def pr(
         return
     url = execute(plan, ported)
     console.print(f"Opened {url}")
+
+
+@app.command()
+def check(
+    target: Path = typer.Argument(Path("."), help="The repo to check (it needs an openport.evals.yaml)"),
+    min_pass_rate: float | None = typer.Option(None, "--min", help="Pass rate every call must reach (default: from openport.yaml, else 0.9)"),
+    sites: str | None = typer.Option(None, help="Comma-separated eval call-site IDs (default: all)"),
+    concurrency: int = typer.Option(8, help="Cases to run in parallel"),
+    judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
+) -> None:
+    """Quality gate: run each LLM call's evals on the model its code names now. Exits 1 if any call falls short."""
+    from .check import run_gate
+
+    try:
+        results = run_gate(target, min_pass_rate=min_pass_rate, sites=sites.split(",") if sites else None, concurrency=concurrency, use_judge=judge)
+    except (config.MissingKeyError, RuntimeError, FileNotFoundError, KeyError) as error:
+        _fail(str(error))
+
+    table = Table(title="OpenPort quality gate")
+    for column in ("Call site", "Model", "Pass rate", "Needs", "Result"):
+        table.add_column(column)
+    for result in results:
+        site = result.site
+        verdict = "[green]pass[/green]" if result.ok else "[red]FAIL[/red]"
+        table.add_row(site.title, site.model, f"{site.pass_rate:.0%} ({site.passed}/{len(site.cases)})", f"{result.required:.0%}", verdict)
+    console.print(table)
+    for result in results:
+        if not result.ok:
+            failed = [c for c in result.site.cases if not c.passed]
+            for case in failed[:5]:
+                console.print(f"[red]  {case.case_id}: {case.error or '; '.join(case.failures)}[/red]")
+    if not all(r.ok for r in results):
+        raise typer.Exit(1)
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Interface to listen on"),
+    port: int = typer.Option(8000, help="Port to listen on"),
+) -> None:
+    """Run the dashboard: start a port on a repo and watch scan, tuning, port and PR live."""
+    import uvicorn
+
+    uvicorn.run("openport.server:app", host=host, port=port)
 
 
 def _target_root(target: str) -> Path:

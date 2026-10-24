@@ -140,3 +140,18 @@ def token_factory_price(model: str) -> Price | None:
 
 def available() -> bool:
     return bool(os.getenv("TAVILY_API_KEY")) and bool(os.getenv("NEBIUS_API_KEY"))
+
+
+def price_for(model: str, manual: dict[str, Price] | None = None) -> Price | None:
+    """A manual price, else Token Factory's for Nemotron models, else the cached or Tavily-found closed-model price."""
+    if manual and model in manual:
+        return manual[model]
+    if model.startswith("nvidia/") or "nemotron" in model.lower():
+        try:
+            return token_factory_price(model)
+        except config.MissingKeyError:
+            return None
+    cached = _load_cache()
+    if model in cached:
+        return cached[model]
+    return closed_model_price(model) if available() else None

@@ -1,0 +1,165 @@
+"""The dashboard's pipeline: fetch, scan, tune, port and write the PR, reporting each step as an event."""
+
+import json
+import os
+import re
+import threading
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from .. import config, pricing, report, tokenfactory
+from ..port import build_plan, load_assignments, port_repo
+from ..port import find_eval_spec
+from ..scan import scan_repo
+from ..tune import tune_spec
+from ..workspace import fetch_repo
+
+EXAMPLES = Path(os.getenv("OPENPORT_EXAMPLES", Path(__file__).resolve().parents[3] / "examples"))
+PRESETS = [
+    {"id": "supportdesk", "label": "SupportDesk", "detail": "Demo app: 5 calls on OpenAI + Anthropic, 54 labelled test cases", "path": "supportdesk"},
+    {"id": "preflight", "label": "jsliapark/preflight", "detail": "AI PR reviewer: 4 Claude Opus calls", "repo": "jsliapark/preflight"},
+    {"id": "probly", "label": "PragmaticMachineLearning/probly", "detail": "Spreadsheet assistant: 4 GPT-4o calls, tools and vision", "repo": "PragmaticMachineLearning/probly"},
+]
+GITHUB_REPO = re.compile(r"^(?:https?://github\.com/)?([A-Za-z0-9][\w.-]*/[A-Za-z0-9_][\w.-]*?)(?:\.git)?/?$")
+REUSE_SECONDS = int(os.getenv("OPENPORT_REUSE_SECONDS", "1800"))  # rerunning a target this soon reuses the result
+
+# Tuning swaps SDK clients inside imported modules, which is process-wide: one pipeline at a time.
+PIPELINE_LOCK = threading.Lock()
+
+
+@dataclass
+class Run:
+    id: str
+    target: str
+    label: str
+    status: str = "queued"  # queued | running | done | error
+    created: float = field(default_factory=time.time)
+    events: list[dict] = field(default_factory=list)
+
+    def emit(self, kind: str, **data) -> None:
+        self.events.append({"seq": len(self.events), "type": kind, "time": round(time.time(), 3), **data})
+
+    def summary(self) -> dict:
+        return {"id": self.id, "target": self.target, "label": self.label, "status": self.status, "created": self.created}
+
+
+def resolve_target(target: str) -> tuple[str, str, Path | None]:
+    """(normalized target, label, local path for presets). Only presets and public GitHub repos are accepted."""
+    preset = next((p for p in PRESETS if target in (p["id"], p.get("repo"))), None)
+    if preset and preset.get("path"):
+        return preset["id"], preset["label"], EXAMPLES / preset["path"]
+    if preset:
+        return preset["repo"], preset["label"], None
+    match = GITHUB_REPO.match(target.strip())
+    if match is None:
+        raise ValueError("Use a demo preset or a public GitHub repo as owner/name")
+    return match[1], match[1], None
+
+
+def _attempt_event(site_id: str, title: str, file: str, function: str, attempt, target: float) -> dict:
+    return {
+        "site": site_id,
+        "title": title,
+        "file": file,
+        "function": function,
+        "tier": attempt.tier,
+        "model": attempt.model,
+        "round": attempt.round,
+        "variant": attempt.variant.describe(),
+        "addendum": attempt.variant.system_addendum,
+        "rationale": attempt.variant.rationale,
+        "tune_pass": attempt.tune_pass,
+        "holdout_pass": attempt.holdout_pass,
+        "pass_rate": attempt.pass_rate,
+        "passed": attempt.passed,
+        "total": attempt.total,
+        "cost_usd": attempt.cost_usd,
+        "meets": attempt.meets(target),
+    }
+
+
+def run_pipeline(run: Run, target: str, local: Path | None, target_rate: float = 0.9) -> None:
+    with PIPELINE_LOCK:
+        run.status = "running"
+        try:
+            _pipeline(run, target, local, target_rate)
+            run.status = "done"
+            run.emit("done")
+        except Exception as error:  # surface every failure to the dashboard
+            run.status = "error"
+            run.emit("failed", message=f"{type(error).__name__}: {error}")
+        _save(run)
+
+
+def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> None:
+    run.emit("stage", stage="fetch")
+    if local is not None:
+        root = local
+    else:
+        root, fresh = fetch_repo(target)
+        run.emit("note", message=f"{'Cloned' if fresh else 'Reused a clone of'} github.com/{target}. Its code is parsed, never run.")
+    name = root.resolve().name
+
+    run.emit("stage", stage="scan")
+    scan = scan_repo(root)
+    sites = scan.portable()
+    run.emit(
+        "scan",
+        files=scan.files_scanned,
+        summary=scan.summary(),
+        sites=[{**asdict(f), "portability": f.portability, "notes": f.notes} for f in sites],
+    )
+    if not sites:
+        run.emit("note", message="No OpenAI or Anthropic SDK calls found, so there's nothing to port.")
+        return
+
+    models = tokenfactory.tiers()
+    run.emit("models", models=models)
+
+    spec_path = find_eval_spec(root)
+    assignments, tune_data = {}, None
+    if spec_path:
+        run.emit("stage", stage="tune")
+        results, totals, report_path, plan_path = tune_spec(
+            root / spec_path,
+            target=target_rate,
+            on_attempt=lambda site, attempt: run.emit(
+                "attempt", **_attempt_event(site.id, site.title, site.file, site.function, attempt, target_rate)
+            ),
+        )
+        for r in results:
+            run.emit(
+                "tuned",
+                site=r.site_id,
+                file=r.file,
+                function=r.function,
+                chosen=None if r.chosen is None else _attempt_event(r.site_id, r.title, r.file, r.function, r.chosen, target_rate),
+                plain=r.baseline.pass_rate if r.baseline else None,
+            )
+        run.emit("cost", evals_usd=sum(r.cost_usd for r in results), helper_usd=totals["helper_cost_usd"])
+        assignments = load_assignments(plan_path)
+        tune_data = report.load_tune_report(report_path)
+    else:
+        run.emit("note", message="This repo has no eval spec yet, so each call moves to Nemotron Super untuned.")
+
+    run.emit("stage", stage="port")
+    plan = build_plan(scan.findings, models, "super", assignments)
+    result = port_repo(root, scan, plan, config.RUNS_DIR / "ports" / name, min_pass_rate=target_rate)
+    run.emit(
+        "ported",
+        sites=[asdict(s) for s in result.sites],
+        changed=result.changed,
+        added=result.added,
+        diff=result.diff[:300_000],
+    )
+
+    run.emit("stage", stage="pr")
+    rows = report.build_rows(report.load_summary(result.output), tune_data, pricing.price_for)
+    run.emit("pr", body=report.render(target, rows, tune_data), rows=[asdict(r) for r in rows])
+
+
+def _save(run: Run) -> None:
+    folder = config.RUNS_DIR / "dashboard"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{run.id}.json").write_text(json.dumps({**run.summary(), "events": run.events}, default=str), encoding="utf-8")

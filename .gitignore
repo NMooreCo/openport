@@ -13,8 +13,9 @@ build/
 # OpenPort run output (smoke tests, baselines, tuning runs)
 runs/
 
-# Node (dashboard)
+# Node (dashboard) and its build, which lands inside the Python package
 node_modules/
+src/openport/server/static/
 
 # OS / editor
 .DS_Store

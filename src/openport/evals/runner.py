@@ -73,9 +73,10 @@ def prepare_imports(spec: Spec) -> None:
         sys.path.insert(0, root)
 
 
-def swapped_client(site: CallSite, model: str, meter: UsageMeter, client: OpenAI, extra_body: dict | None = None):
+def swapped_client(site: CallSite, model: str | None, meter: UsageMeter, client: OpenAI, extra_body: dict | None = None):
+    """A Token Factory client shaped like the site's SDK. With `model=None`, each call keeps the model it names."""
     if site.sdk == "openai":
-        return SwappedOpenAI(model, client=client, meter=meter, extra_body=extra_body)
+        return SwappedOpenAI(model or (lambda named: named), client=client, meter=meter, extra_body=extra_body)
     if site.sdk == "anthropic":
         return AnthropicOnNemotron(model, client=client, meter=meter, extra_body=extra_body)
     raise ValueError(f"Unsupported SDK {site.sdk!r} for call site {site.id}")
@@ -108,7 +109,7 @@ def run_site(
     spec: Spec,
     site: CallSite,
     tier: str,
-    model: str,
+    model: str | None,
     *,
     concurrency: int = 8,
     limit: int | None = None,
@@ -117,32 +118,41 @@ def run_site(
     client: OpenAI | None = None,
     cases: list[dict] | None = None,
 ) -> SiteResult:
-    """Point the call site's SDK client at `model`, run every case, and put the original client back."""
+    """Point the call site's SDK client at `model`, run every case, and put the original client back.
+
+    `client_attr` names the module attribute the code gets its client from: a client object
+    (`client`), or a factory function (`get_client()`), which is replaced by one returning the
+    swapped client. With `model=None`, each call runs on the model its code names.
+    """
     prepare_imports(spec)
     module = importlib.import_module(site.module)
     function = getattr(module, site.function)
     meter = UsageMeter()
-    original = getattr(module, site.client_attr)
-    setattr(module, site.client_attr, swapped_client(site, model, meter, client or tokenfactory.client(), extra_body))
+    factory = site.client_attr.endswith("()")
+    attr = site.client_attr.removesuffix("()")
+    original = getattr(module, attr)
+    swapped = swapped_client(site, model, meter, client or tokenfactory.client(), extra_body)
+    setattr(module, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
     try:
         cases = cases if cases is not None else site.cases(limit)
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             results = list(pool.map(lambda case: _run_case(site, function, case, judge), cases))
     finally:
-        setattr(module, site.client_attr, original)
+        setattr(module, attr, original)
 
-    usage = meter.by_model.get(model)
-    prompt_tokens = usage.prompt_tokens if usage else 0
-    completion_tokens = usage.completion_tokens if usage else 0
+    used = meter.by_model
+    prompt_tokens = sum(u.prompt_tokens for u in used.values())
+    completion_tokens = sum(u.completion_tokens for u in used.values())
+    costs = [_cost(m, u.prompt_tokens, u.completion_tokens) for m, u in used.items()]
     return SiteResult(
         site_id=site.id,
         title=site.title,
         tier=tier,
-        model=model,
+        model=model or ", ".join(used) or "as written",
         cases=results,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        cost_usd=_cost(model, prompt_tokens, completion_tokens),
+        cost_usd=None if any(c is None for c in costs) else sum(costs),
     )
 
 

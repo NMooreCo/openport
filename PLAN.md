@@ -195,6 +195,19 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **`openport pr`:** a dry run by default; it writes the description and shows the git/gh commands. `--open` pushes to your fork and opens the PR there (`--upstream` to propose it to the original repo).
 - 39 offline tests.
 
+**Sat 24: quality gate and dashboard (built; checked offline with a fake Token Factory):**
+- **`openport check`:** runs a repo's evals on the models its code names now; exits 1 below the bar.
+  - The port records the eval spec and the bar in `openport.yaml` and adds `.github/workflows/openport.yml` (needs a `NEBIUS_API_KEY` secret).
+  - Evals can now swap factory clients (`client_attr: get_client()`).
+- **Dashboard backend** (`openport serve`): FastAPI runs fetch → scan → tune → port → PR as a job and streams events over SSE.
+  - Safety: only presets and `owner/name` repos are accepted, one pipeline runs at a time, a recent run of the same target is reused, and it never opens PRs.
+- **Dashboard frontend** (Vite + React + Tailwind):
+  - launcher with presets, a stage tracker, and headline tiles (plain swap vs. after OpenPort, held-out, OpenPort's own cost, cost per 1k calls)
+  - a card per call with its tuning ladder, a diff viewer, and the rendered PR (sanitized)
+  - checked at phone width, no overflow
+- 44 Python tests.
+- **Biggest gap for real repos:** no eval spec means no tuning. Next: `openport capture`, a starter eval set per call: import logs, seed from the repo's own test data (preflight's labelled diffs), or have Super write inputs and the original model or Ultra label them, flagged for human review.
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.

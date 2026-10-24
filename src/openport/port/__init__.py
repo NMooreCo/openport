@@ -13,8 +13,10 @@ from pathlib import Path
 import yaml
 
 from .. import __version__, config
+from ..check import DEFAULT_MIN_PASS_RATE, install_command, workflow
+from ..evals.spec import SPEC_FILE
 from ..runtime import openport_llm
-from ..scan import ScanReport
+from ..scan import SKIP_DIRS, ScanReport
 from .plan import SiteDecision, build_plan, load_assignments
 from .python_rewrite import port_python
 from .ts_rewrite import port_typescript
@@ -23,6 +25,7 @@ COPY_IGNORE = shutil.ignore_patterns(
     "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".pytest_cache", ".mypy_cache"
 )
 SUMMARY_FILE = "openport.yaml"
+WORKFLOW_FILE = ".github/workflows/openport.yml"
 
 
 @dataclass
@@ -65,7 +68,15 @@ def _prepare_output(source: Path, output: Path) -> None:
     shutil.copytree(source, output, ignore=COPY_IGNORE)
 
 
-def _summary(outcomes: list[SiteOutcome]) -> bytes:
+def find_eval_spec(root: Path) -> str | None:
+    for path in sorted(root.rglob(SPEC_FILE)):
+        relative = path.relative_to(root)
+        if not any(part in SKIP_DIRS or part.startswith(".") for part in relative.parts[:-1]):
+            return relative.as_posix()
+    return None
+
+
+def _summary(outcomes: list[SiteOutcome], gate: dict | None) -> bytes:
     sites = []
     for o in outcomes:
         entry = {"id": o.id, "file": o.file, "line": o.line, "status": o.status}
@@ -77,7 +88,11 @@ def _summary(outcomes: list[SiteOutcome]) -> bytes:
             entry["check"] = o.notes
         sites.append(entry)
     header = "# Written by OpenPort: which model each LLM call uses after the port, and what it used before.\n"
-    body = yaml.safe_dump({"openport": __version__, "call_sites": sites}, sort_keys=False, allow_unicode=True, width=120)
+    document = {"openport": __version__}
+    if gate:
+        document["gate"] = gate  # read by `openport check` and the GitHub Action
+    document["call_sites"] = sites
+    body = yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=120)
     return (header + body).encode()
 
 
@@ -90,7 +105,9 @@ def _diff(source: Path, output: Path, paths: list[str]) -> str:
     return "".join(line if line.endswith("\n") else line + "\n" for line in chunks)
 
 
-def port_repo(source: Path, report: ScanReport, plan: dict[str, SiteDecision], output: Path) -> PortResult:
+def port_repo(
+    source: Path, report: ScanReport, plan: dict[str, SiteDecision], output: Path, min_pass_rate: float = DEFAULT_MIN_PASS_RATE
+) -> PortResult:
     source, output = source.resolve(), output.resolve()
     _prepare_output(source, output)
 
@@ -113,7 +130,14 @@ def port_repo(source: Path, report: ScanReport, plan: dict[str, SiteDecision], o
         )
         for s in sites
     ]
-    files[SUMMARY_FILE] = _summary(outcomes)
+    # The quality gate: if the repo has an eval spec and Python calls were ported, CI re-runs it on every PR.
+    gate = None
+    evals = find_eval_spec(output)
+    if evals and any(o.status == "ported" and s.language == "python" for o, s in zip(outcomes, sites)):
+        gate = {"evals": evals, "min_pass_rate": min_pass_rate}
+        if not (output / WORKFLOW_FILE).exists():
+            files[WORKFLOW_FILE] = workflow(install_command(output), config.OPENPORT_SOURCE).encode()
+    files[SUMMARY_FILE] = _summary(outcomes, gate)
     for path, content in files.items():
         (output / path).parent.mkdir(parents=True, exist_ok=True)
         (output / path).write_bytes(content)

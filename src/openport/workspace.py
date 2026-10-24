@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import config
 
-_GITHUB = re.compile(r"^(?:https?://github\.com/|git@github\.com:)?([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+_GITHUB = re.compile(r"^(?:https?://github\.com/|git@github\.com:)?([A-Za-z0-9][\w.-]*)/([A-Za-z0-9_][\w.-]*?)(?:\.git)?/?$")
 
 
 def is_remote(target: str) -> bool:

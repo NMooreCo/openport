@@ -64,12 +64,31 @@ uv run openport pr runs/ports/jsliapark__preflight          # dry run: writes ru
 uv run openport pr runs/ports/jsliapark__preflight --open   # opens the PR in your fork
 ```
 
+Keep it honest after merging. `openport port` adds a GitHub Action (when the repo has an eval spec) that runs this on every pull request and fails if any call drops below the bar recorded in `openport.yaml`. It needs a `NEBIUS_API_KEY` repository secret.
+
+```bash
+uv run openport check .
+```
+
+## Dashboard
+
+Watch a whole run live: calls found, each tuning attempt, the code changes and the PR description.
+
+```bash
+cd dashboard && npm install && npm run build && cd ..
+uv run openport serve            # http://127.0.0.1:8000
+```
+
+For hosting, the dashboard only accepts its demo presets and public GitHub repos. It runs one pipeline at a time, reuses a recent result for the same repo, and never opens PRs (it shows the dry run).
+
 ## Repo layout
 
 | Path | What it is |
 |---|---|
 | `src/openport/` | The OpenPort agent and CLI |
 | `src/openport/runtime/openport_llm.py` | A standalone module copied into ported apps. It points OpenAI SDK code at Token Factory and runs Anthropic SDK code on Nemotron. |
+| `src/openport/server/` | Dashboard API: runs the pipeline and streams its progress as server-sent events |
+| `dashboard/` | Dashboard frontend (Vite, React, Tailwind); builds into `src/openport/server/static/` |
 | `examples/supportdesk/` | Demo target: a small support-desk app with five LLM calls on the OpenAI and Anthropic SDKs, plus hand-labelled eval sets |
 | `tests/` | Offline tests (no API keys needed) |
 

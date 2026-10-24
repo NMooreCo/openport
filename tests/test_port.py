@@ -31,7 +31,7 @@ def test_supportdesk_port(tmp_path):
     assert all(s.status == "ported" for s in sites.values())
     assert sites["triage.triage_ticket"].now == "nvidia/nano-test"
     assert sites["policy.review_case"].now == "nvidia/ultra-test"
-    assert sorted(result.added) == ["openport.yaml", "supportdesk/openport_llm.py"]
+    assert sorted(result.added) == [".github/workflows/openport.yml", "openport.yaml", "supportdesk/openport_llm.py"]
 
     triage = (out / "supportdesk/triage.py").read_text()
     assert "from .openport_llm import token_factory_client" in triage
