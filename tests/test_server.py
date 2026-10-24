@@ -55,17 +55,30 @@ call_sites:
 }
 
 
-def fake_token_factory():
-    def script(request):
-        system = request["messages"][0]["content"]
-        if system.startswith("You tune LLM calls"):  # the engineer (Nemotron Ultra)
-            return completion(content=json.dumps({"reasoning": False, "system_addendum": "Output the JSON object and nothing else.", "max_tokens": None, "temperature": None, "rationale": "chatter around JSON"}))
-        answer = json.dumps({"label": LABELS[request["messages"][-1]["content"]]})
-        if "nothing else" in system:
-            return completion(content=answer)
-        return completion(content=f"Here is the label: {answer}")  # the plain swap wraps its JSON in chatter
+NOSPEC_APP = {"miniapp/__init__.py": "", "miniapp/classify.py": MINI_APP["miniapp/classify.py"]}
 
-    return FakeTokenFactory(script)
+TUNED = {"reasoning": False, "system_addendum": "Output the JSON object and nothing else.", "max_tokens": None, "temperature": None, "rationale": "chatter around JSON"}
+
+
+def _reply(request):
+    """One fake Token Factory reply, covering tuning, capture input generation and capture labelling."""
+    system = request["messages"][0]["content"]
+    user = request["messages"][-1]["content"]
+    if system.startswith("You write test inputs"):  # capture: Super invents inputs
+        return completion(content=json.dumps([{"text": text} for text in LABELS]))
+    if system.startswith("You produce the reference output"):  # capture: Ultra labels one input
+        text = next((t for t in LABELS if t in user), next(iter(LABELS)))
+        return completion(content=json.dumps({"label": LABELS[text]}))
+    if system.startswith("You tune LLM calls"):  # the engineer (Nemotron Ultra)
+        return completion(content=json.dumps(TUNED))
+    answer = json.dumps({"label": LABELS[user]})
+    if "nothing else" in system:
+        return completion(content=answer)
+    return completion(content=f"Here is the label: {answer}")  # the plain swap wraps its JSON in chatter
+
+
+def fake_token_factory():
+    return FakeTokenFactory(_reply)
 
 
 @pytest.fixture
@@ -76,6 +89,27 @@ def server(tmp_path, monkeypatch):
     fake = fake_token_factory()
     monkeypatch.setattr(pipeline, "EXAMPLES", tmp_path / "examples")
     monkeypatch.setattr(pipeline, "PRESETS", [{"id": "mini", "label": "Mini", "detail": "test app", "path": "mini"}])
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(tokenfactory, "client", lambda: fake)
+    monkeypatch.setattr(tokenfactory, "tiers", lambda: MODELS)
+    monkeypatch.setattr(tokenfactory, "catalog", lambda: {})
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    runs.clear()
+    yield TestClient(app)
+    runs.clear()
+    sys.modules.pop("miniapp.classify", None)
+    sys.modules.pop("miniapp", None)
+
+
+@pytest.fixture
+def server_nospec(tmp_path, monkeypatch):
+    for path, text in NOSPEC_APP.items():
+        (tmp_path / "examples/mini2" / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "examples/mini2" / path).write_text(text)
+    fake = fake_token_factory()
+    monkeypatch.setattr(pipeline, "EXAMPLES", tmp_path / "examples")
+    monkeypatch.setattr(pipeline, "PRESETS", [{"id": "mini2", "label": "Mini2", "detail": "no-spec app", "path": "mini2"}])
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(tokenfactory, "client", lambda: fake)
     monkeypatch.setattr(tokenfactory, "tiers", lambda: MODELS)
@@ -133,3 +167,22 @@ def test_pipeline_end_to_end(server):
     assert stream.count("event: attempt") == 2 and "event: done" in stream
     again = server.post("/api/runs", json={"target": "mini"}).json()
     assert again["reused"] and again["id"] == started["id"]
+
+
+def test_pipeline_captures_when_no_spec(server_nospec):
+    started = server_nospec.post("/api/runs", json={"target": "mini2"}).json()
+    run = wait_for(server_nospec, started["id"])
+    assert run["status"] == "done", run["events"][-1]
+    events = run["events"]
+
+    stages = [e["stage"] for e in events if e["type"] == "stage"]
+    assert stages == ["fetch", "scan", "capture", "tune", "port", "pr"]
+
+    captured = next(e for e in events if e["type"] == "captured")
+    assert captured["sites"][0] == {"site": "classify", "cases": 4, "grader": "fields"}
+    assert "not been reviewed" in captured["note"]
+
+    assert any(e["type"] == "attempt" for e in events)  # the generated spec is tuned
+    ported = next(e for e in events if e["type"] == "ported")
+    assert ported["sites"][0]["status"] == "ported"
+    assert next(e for e in events if e["type"] == "pr")["body"]

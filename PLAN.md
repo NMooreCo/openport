@@ -213,7 +213,9 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **Cases:** imported from a recorded-call log (`--logs ID=PATH`), or, with no logs, generated — Super invents realistic inputs and Ultra labels graded outputs (`--generate N`), flagged for review.
 - Calls the harness can't run yet (TypeScript, methods, clients it can't bind at import, non-evaluable outputs) are skipped and listed in `CAPTURE_NOTES.md`.
 - Verified on SupportDesk: with its logs it reproduces the hand-written spec's graders and datasets; the captured spec loads, imports every call and reads its cases. 62 offline tests.
-- This closes the "no eval spec means no tuning" gap: a real repo can now go scan -> capture -> tune. Next: wire capture into the dashboard pipeline, and a `--run-original` labeller for repos whose closed-model key is available.
+- This closes the "no eval spec means no tuning" gap: a real repo can now go scan -> capture -> tune.
+- **Wired into the dashboard pipeline:** when a pasted repo has no eval spec, the pipeline now runs a `capture` stage (bounded, `OPENPORT_CAPTURE_CASES`, default 6), emits a `captured` event flagged as unreviewed, and tunes on the generated spec instead of porting untuned. 63 offline tests.
+- Next: a `--run-original` labeller for repos whose closed-model key is available (label by running the app through the original model, not Ultra).
 
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
