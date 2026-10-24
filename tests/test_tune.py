@@ -40,7 +40,7 @@ class RecordingEngineer:
         self.proposal = proposal
         self.seen_case_ids: list[str] = []
 
-    def __call__(self, site, model, variant, sample, failures):
+    def __call__(self, site, model, variant, sample, failures, **extra):
         self.seen_case_ids += [case["id"] for case, _ in failures]
         assert sample["messages"][0]["role"] == "system"  # the engineer gets the app's real prompt
         return self.proposal
@@ -103,6 +103,29 @@ def test_engineer_learns_which_replies_hit_the_token_limit():
     result = tune_site(SPEC, TRIAGE, MODELS, client=FakeTokenFactory(script), engineer=engineer, tiers=("nano",))
     assert result.chosen.variant.max_tokens == 4096
     assert problems and all(p.startswith("the model's reply was cut off at the token limit (") and p.endswith(", reasoning on)") for p in problems)
+
+
+def test_engineer_sees_what_this_tier_already_tried():
+    """Seen live: the engineer switched reasoning off (83% -> 66%) and kept it off; the scores let it undo that."""
+    calls = []
+
+    def engineer(site, model, variant, sample, failures, **extra):
+        calls.append(extra.get("history"))
+        return Variant(reasoning=False) if len(calls) == 1 else Variant(max_tokens=4096)
+
+    tune_site(SPEC, TRIAGE, MODELS, client=triage_fake(lambda request: False), engineer=engineer, tiers=("nano",), rounds=3)
+    assert calls == [None, [("as written", 0.0), ("reasoning off", 0.0)]]
+
+
+def test_engineer_prompt_lists_the_attempts():
+    from openport.tune.engineer import make_engineer
+
+    fake = FakeTokenFactory(lambda request: completion(content=json.dumps({"reasoning": None, "system_addendum": "", "rationale": "undo"})))
+    make_engineer(client=fake, model="nvidia/ultra-test")(
+        TRIAGE, "nvidia/nano-test", Variant(reasoning=False), None, [], history=[("as written", 0.83), ("reasoning off", 0.66)],
+    )
+    prompt = fake.requests[0]["messages"][1]["content"]
+    assert "- as written: 83%\n- reasoning off: 66%\n" in prompt and "undo changes that made it worse" in prompt
 
 
 def test_retuning_some_calls_keeps_the_others():

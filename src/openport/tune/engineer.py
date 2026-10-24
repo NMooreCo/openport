@@ -106,15 +106,19 @@ def make_engineer(client: OpenAI | None = None, model: str | None = None, meter:
     model = model or tokenfactory.tiers()["ultra"]
 
     def engineer(site: CallSite, target_model: str, variant: Variant, sample: dict | None, failures,
-                 guidance: Guidance | None = None, systems: list[str] | None = None) -> Variant:
+                 guidance: Guidance | None = None, systems: list[str] | None = None,
+                 history: list[tuple[str, float]] | None = None) -> Variant:
         settings = {k: v for k, v in variant.to_dict().items() if k != "sources"}
         prompt = (
             f"Call site: {site.title} ({site.sdk} SDK, {site.output} output), moving off {site.original_model}.\n"
             f"Running on: {target_model}\n"
-            f"Current settings: {json.dumps(settings)}\n\n"
-            f"{describe_prompts(systems or [_system_prompt(sample)])}\n\n"
-            f"Failing cases:\n{describe_failures(failures)}"
+            f"Current settings: {json.dumps(settings)}\n"
         )
+        if history and len(history) > 1:  # what was tried on this model, so a change that hurt gets undone
+            prompt += "Tried so far on this model (share of tuning cases passed):\n" + "\n".join(
+                f"- {described}: {rate:.0%}" for described, rate in history
+            ) + "\nKeep what scored best and undo changes that made it worse. The failures below are from the latest attempt.\n"
+        prompt += f"\n{describe_prompts(systems or [_system_prompt(sample)])}\n\nFailing cases:\n{describe_failures(failures)}"
         if guidance is not None and guidance.sources:
             prompt += "\n\nGuidance from NVIDIA's documentation for this model (found with Tavily):\n" + "\n".join(
                 f"- {s['title']} ({s['url']}): {s['excerpt']}" for s in guidance.sources

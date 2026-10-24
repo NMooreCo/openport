@@ -174,6 +174,8 @@ def tune_site(
             extra = {} if guidance is None else {"guidance": guidance}
             if len(system_prompts) > 1:
                 extra["systems"] = list(system_prompts)  # the addendum goes into each prompt the call sends
+            if round_number:  # what this tier has tried, and how each scored
+                extra["history"] = [(a.variant.describe(), a.tune_pass) for a in attempts if a.tier == tier]
             variant = engineer(site, model, variant, wrapped.sample, _with_cutoffs(failures, wrapped.cutoffs), **extra)
     return finish(None)
 

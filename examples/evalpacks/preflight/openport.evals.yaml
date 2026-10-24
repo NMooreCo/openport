@@ -27,6 +27,9 @@ call_sites:
     output: json_in_text
     dataset: review.jsonl
     grader: {type: rules}
+    # A verdict on one diff can flip between runs, and with 13 held-out cases one flip moves the score 8 points:
+    # two samples per case steady the pass rate (seen live: the same settings scored 77% and 92% held-out).
+    samples: 2
 
   - id: standards
     title: Repo-standards review
