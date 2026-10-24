@@ -8,6 +8,7 @@ from typing import Callable
 from openai import OpenAI
 
 from .. import tokenfactory
+from ..citations import parse_citations, verified
 from ..evals.runner import CaseResult
 from ..evals.spec import CallSite
 from ..runtime.openport_llm import UsageMeter
@@ -30,10 +31,11 @@ Rules:
 - State the general rule rather than listing the examples you saw. If the failures show one kind of input being mishandled, cover the whole kind (for example "every currency", not the two currencies that failed), because the unseen cases will include ones that aren't in the failures.
 - Keep system_addendum under 120 words, plain and specific. Don't restate the whole prompt.
 - Change as little as you need to. Keep what already works.
-- If excerpts from NVIDIA's documentation are included, use them where they explain the failures, and list the URLs of the ones you relied on in sources. Treat general recommendations, like default sampling settings, as background rather than rules: change temperature or reasoning only when the failures point to it. Don't list pages you didn't use.
+- If excerpts from NVIDIA's documentation are included, use them where they explain the failures. Treat general recommendations, like default sampling settings, as background rather than rules: change temperature or reasoning only when the failures point to it.
+- Cite an excerpt in sources only if your change follows something it says, with that sentence copied word for word as the quote. Citations are checked against the excerpts, and an empty list is normal.
 
 Respond with JSON only:
-{"reasoning": true | false | null, "system_addendum": "...", "max_tokens": integer or null, "temperature": number or null, "rationale": "one sentence on what you're fixing", "sources": ["url", ...]}"""
+{"reasoning": true | false | null, "system_addendum": "...", "max_tokens": integer or null, "temperature": number or null, "rationale": "one sentence on what you're fixing", "sources": [{"url": "...", "quote": "the sentence you followed"}]}"""
 
 
 def _clip(value, limit: int = 600) -> str:
@@ -83,21 +85,19 @@ def parse_variant(text: str, fallback: Variant) -> Variant:
         return fallback
     max_tokens = data.get("max_tokens")
     temperature = data.get("temperature")
-    sources = data.get("sources")
     return Variant(
         reasoning=data.get("reasoning") if isinstance(data.get("reasoning"), bool) else None,
         system_addendum=str(data.get("system_addendum") or "").strip(),
         max_tokens=int(max_tokens) if isinstance(max_tokens, (int, float)) and max_tokens > 0 else None,
         temperature=float(temperature) if isinstance(temperature, (int, float)) else None,
         rationale=str(data.get("rationale") or "").strip(),
-        sources=[{"url": url} for url in sources if isinstance(url, str)] if isinstance(sources, list) else [],
+        sources=parse_citations(data.get("sources")),
     )
 
 
 def cite(variant: Variant, guidance: Guidance | None) -> Variant:
-    """Keep only citations of pages the engineer was actually given, with their titles."""
-    supplied = {s["url"]: s["title"] for s in (guidance.sources if guidance else [])}
-    variant.sources = [{"title": supplied[s["url"]], "url": s["url"]} for s in variant.sources if s.get("url") in supplied]
+    """Keep only citations whose quote is in an excerpt the engineer was given, with the page's title."""
+    variant.sources = verified(variant.sources, guidance.sources if guidance else [])
     return variant
 
 

@@ -146,16 +146,22 @@ def test_fixer_sees_failures_and_sources_and_cites_only_real_ones(tmp_path):
     files = source_files(copy, "authkit/tokens.py:16: AttributeError")
     assert list(files)[0] == "authkit/tokens.py" and not any(name.startswith("tests/") for name in files)
 
+    changelog = "https://pyjwt.readthedocs.io/changelog"
+    quote = "jwt.encode now returns a str rather than bytes"
     reply = {"edits": [{"file": "authkit/tokens.py", "search": 'return token.decode("utf-8")', "replace": "return token"}],
-             "rationale": "PyJWT 2 returns str", "sources": ["https://pyjwt.readthedocs.io/changelog", "https://invented.example"]}
+             "rationale": "PyJWT 2 returns str", "sources": [
+                 {"url": changelog, "quote": quote},
+                 {"url": changelog, "quote": "decode always verifies the audience claim"},  # the page doesn't say this
+                 {"url": "https://invented.example", "quote": quote},
+             ]}
     fake = FakeTokenFactory(lambda request: completion(content=f"Here:\n{json.dumps(reply)}"))
     fixer = make_fixer(client=fake, model="nvidia/super-test")
-    research = [{"title": "Changelog", "url": "https://pyjwt.readthedocs.io/changelog", "excerpt": "encode returns str"}]
+    research = [{"title": "Changelog", "url": changelog, "excerpt": f"v2.0.0: {quote}. decode requires algorithms."}]
     edits, rationale, cited = fixer([{"name": "PyJWT", "from": "1.7.1", "to": "2.14.0"}], research, "4 failed", files)
     assert edits[0].file == "authkit/tokens.py" and rationale == "PyJWT 2 returns str"
-    assert cited == ["https://pyjwt.readthedocs.io/changelog"]
+    assert cited == [{"title": "Changelog", "url": changelog, "quote": quote}]
     prompt = fake.requests[0]["messages"][1]["content"]
-    assert "PyJWT 1.7.1 -> 2.14.0" in prompt and "encode returns str" in prompt and "=== authkit/tokens.py ===" in prompt
+    assert "PyJWT 1.7.1 -> 2.14.0" in prompt and quote in prompt and "=== authkit/tokens.py ===" in prompt
     assert parse_fix("no json") == ([], "", [])
 
 
@@ -173,7 +179,8 @@ def test_upgrade_is_proven_end_to_end(tmp_path):
 
     def fixer(upgrades, research, output, files, notes):
         fix_calls.append((upgrades, research, output))
-        return [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", []
+        cited = [{"title": "PyJWT changelog", "url": "https://pyjwt.readthedocs.io/changelog", "quote": "jwt.encode now returns a str"}]
+        return [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", cited
 
     plans = [upgrade(), upgrade("uvicorn", "0.20.0", "0.30.0", source="uv.lock")]
     run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=plans, run_tests=lambda folder: next(results),
@@ -186,7 +193,8 @@ def test_upgrade_is_proven_end_to_end(tmp_path):
     body = render(run)
     assert "| `PyJWT` | 1.7.1 | **2.14.0** | 43 days ago | [CVE-2022-29217](https://nvd.nist.gov/vuln/detail/CVE-2022-29217) | - |" in body
     assert "| Before the upgrade | ✅ 5 passed |" in body and "| After the version bump | ❌ 4 failed, 1 passed |" in body
-    assert "`authkit/tokens.py`: PyJWT 2 returns str" in body and "Never auto-merged" in body
+    assert "`authkit/tokens.py`: PyJWT 2 returns str\n  - Based on [PyJWT changelog](https://pyjwt.readthedocs.io/changelog): “jwt.encode now returns a str”" in body
+    assert "Never auto-merged" in body
 
 
 def test_a_round_with_no_applied_edit_is_a_note_not_a_test_result(tmp_path):

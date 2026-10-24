@@ -1,5 +1,5 @@
 import { attemptsFor, pct, researchFor, tierName, tunedFor, type Finding, type RunState } from "../run";
-import { SourceLinks } from "./SourceLinks";
+import { Citations, SourceLinks } from "./SourceLinks";
 
 const PORTABILITY = {
   auto: { label: "swap as-is", className: "bg-emerald-500/10 text-emerald-300" },
@@ -100,12 +100,7 @@ export function CallCard({ site, state }: { site: Finding; state: RunState }) {
         <div className="mt-2 rounded-lg bg-ink/60 p-2.5 text-xs leading-relaxed text-slate-300">
           <span className="text-muted">Change: </span>{change.variant}
           {change.addendum && <p className="mt-1 italic text-slate-400">“{change.addendum}”</p>}
-          {change.sources && change.sources.length > 0 && (
-            <p className="mt-1 text-sky-300/90">
-              <span className="text-muted">Follows NVIDIA's guidance: </span>
-              <SourceLinks sources={change.sources} />
-            </p>
-          )}
+          <Citations label="Follows NVIDIA's guidance," sources={change.sources ?? []} />
         </div>
       )}
 

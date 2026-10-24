@@ -66,6 +66,7 @@ export interface Attempt {
 export interface Source {
   title: string;
   url: string;
+  quote?: string; // a change's citation: the sentence it followed, checked against the page
 }
 
 /** NVIDIA guidance Tavily found for a call before the engineer proposed a fix. */

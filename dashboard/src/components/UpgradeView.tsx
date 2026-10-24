@@ -7,7 +7,7 @@ import {
 import { Tile } from "./Metrics";
 import { ResultTabs } from "./ResultTabs";
 import { Shell } from "./Shell";
-import { SourceLinks } from "./SourceLinks";
+import { Citations, SourceLinks } from "./SourceLinks";
 import { Stages } from "./Stages";
 
 const STATUS: Record<string, { label: string; className: string }> = {
@@ -148,9 +148,7 @@ function FixStep({ fix, index }: { fix: FixRound; index: number }) {
   return (
     <Step title={title} result={fix.tests}>
       {fix.rationale && <p className="mt-1 text-xs leading-relaxed text-slate-300">{fix.rationale}</p>}
-      {fix.sources.length > 0 && (
-        <p className="mt-1 text-xs text-sky-300/90"><span className="text-muted">Based on: </span><SourceLinks sources={fix.sources} /></p>
-      )}
+      <Citations label="Based on" sources={fix.sources} />
       {fix.rejected.length > 0 && (
         <ul className="mt-1 space-y-0.5 text-xs text-amber-200/90">
           {fix.rejected.map((r, i) => <li key={i}>Rejected an edit to {r.file}: {r.reason}</li>)}

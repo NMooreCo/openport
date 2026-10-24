@@ -25,7 +25,7 @@ class FixRound:
     edits: list[Edit]
     rejected: list[tuple[Edit, str]]
     rationale: str
-    sources: list[str]
+    sources: list[dict]  # pages the fix followed, each with the sentence it quoted: {"title", "url", "quote"}
     tests: TestRun
 
 

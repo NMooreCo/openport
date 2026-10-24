@@ -73,19 +73,15 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
                                  "can't do. Run `openport upgrade --apply` locally.")
         return
 
-    titles: dict[str, str] = {}  # url -> title of the pages Tavily read, for the fixes' citations
-
     def event(kind, data):
         if kind in ("before", "after_bump"):
             run.emit("tests", step=kind, **_tests(data))
             if kind == "after_bump" and not data.ok:
                 run.emit("stage", stage="fix")  # the research and Super's edits come next
         elif kind == "research":
-            titles.update({s["url"]: s["title"] for s in data})
             run.emit("research", sources=[{"title": s["title"], "url": s["url"]} for s in data])
         elif kind == "round":
-            run.emit("fix", files=sorted({e.file for e in data.edits}), rationale=data.rationale,
-                     sources=[{"title": titles[url], "url": url} for url in data.sources if url in titles],
+            run.emit("fix", files=sorted({e.file for e in data.edits}), rationale=data.rationale, sources=data.sources,
                      rejected=[{"file": e.file, "reason": why} for e, why in data.rejected], tests=_tests(data.tests) if data.edits else None)
 
     run.emit("stage", stage="test")

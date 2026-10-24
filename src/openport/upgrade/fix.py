@@ -8,6 +8,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from .. import tokenfactory
+from ..citations import parse_citations, verified
 from ..runtime.openport_llm import UsageMeter
 from ..scan.findings import is_test_path
 from .apply import Edit
@@ -20,10 +21,10 @@ Rules:
 - Change application code only, never tests: the tests define correct behaviour.
 - Make the smallest change that works with the new version. Never pin the old version back or undo the security fix.
 - Each edit replaces one exact snippet: copy `search` from the file character for character, including indentation, and make it long enough to appear only once.
-- If excerpts from changelogs are included, use them to understand what changed, and list the URLs you relied on in sources.
+- If excerpts from changelogs are included, use them to understand what changed. Cite an excerpt in sources only if your fix follows something it says, with that sentence copied word for word as the quote. Citations are checked against the excerpts, and an empty list is normal.
 
 Respond with JSON only:
-{"edits": [{"file": "path/in/repo.py", "search": "exact text", "replace": "new text"}], "rationale": "one sentence on what broke and why the fix is right", "sources": ["url", ...]}"""
+{"edits": [{"file": "path/in/repo.py", "search": "exact text", "replace": "new text"}], "rationale": "one sentence on what broke and why the fix is right", "sources": [{"url": "...", "quote": "the sentence you followed"}]}"""
 
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".mjs")
 SOURCE_BUDGET = 40_000  # characters of source sent per request
@@ -45,7 +46,7 @@ def source_files(folder: Path, test_output: str) -> dict[str, str]:
     return chosen
 
 
-def parse_fix(text: str) -> tuple[list[Edit], str, list[str]]:
+def parse_fix(text: str) -> tuple[list[Edit], str, list[dict]]:
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     try:
         data = json.loads(match.group(0)) if match else {}
@@ -55,15 +56,14 @@ def parse_fix(text: str) -> tuple[list[Edit], str, list[str]]:
         Edit(str(e["file"]), str(e["search"]), str(e.get("replace", "")))
         for e in data.get("edits", []) if isinstance(e, dict) and e.get("file") and e.get("search")
     ]
-    sources = [s for s in data.get("sources", []) if isinstance(s, str)]
-    return edits, str(data.get("rationale") or "").strip(), sources
+    return edits, str(data.get("rationale") or "").strip(), parse_citations(data.get("sources"))
 
 
 def make_fixer(client: OpenAI | None = None, model: str | None = None, meter: UsageMeter | None = None):
     client = client or tokenfactory.client()
     model = model or tokenfactory.tiers()["super"]
 
-    def fix(upgrades: list[dict], research: list[dict], test_output: str, files: dict[str, str], notes: str = "") -> tuple[list[Edit], str, list[str]]:
+    def fix(upgrades: list[dict], research: list[dict], test_output: str, files: dict[str, str], notes: str = "") -> tuple[list[Edit], str, list[dict]]:
         prompt = "Upgrades:\n" + "\n".join(f"- {u['name']} {u['from']} -> {u['to']}" for u in upgrades)
         if research:
             prompt += "\n\nWhat changed (found with Tavily):\n" + "\n".join(f"- {s['title']} ({s['url']}): {s['excerpt']}" for s in research)
@@ -80,7 +80,6 @@ def make_fixer(client: OpenAI | None = None, model: str | None = None, meter: Us
         if meter is not None:
             meter.record(model, response.usage, time.perf_counter() - start)
         edits, rationale, cited = parse_fix(response.choices[0].message.content or "")
-        supplied = {s["url"] for s in research}
-        return edits, rationale, [url for url in cited if url in supplied]
+        return edits, rationale, verified(cited, research)  # only quotes that are really on the pages
 
     return fix

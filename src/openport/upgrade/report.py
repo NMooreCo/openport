@@ -42,12 +42,11 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
 
     applied = [fix for fix in run.rounds if fix.edits]
     if applied:
-        cited = {s["url"]: s["title"] for s in run.research}
         lines += ["", "### Code changes", "", "The upgrade broke the tests, so Nemotron Super changed the application code (never the tests):", ""]
         for fix in applied:
             files = ", ".join(sorted({f"`{e.file}`" for e in fix.edits}))
-            sources = ", ".join(f"[{cited[u]}]({u})" for u in fix.sources if u in cited)
-            lines.append(f"- {files}: {fix.rationale}" + (f" Based on: {sources}." if sources else ""))
+            based_on = "".join(f"\n  - Based on [{s['title']}]({s['url']}): “{s['quote']}”" for s in fix.sources)
+            lines.append(f"- {files}: {fix.rationale}{based_on}")
         rejected = [(edit, why) for fix in run.rounds for edit, why in fix.rejected]
         if rejected:
             lines.append(f"- {len(rejected)} proposed edit(s) weren't applied: " + "; ".join(f"`{e.file}` ({why})" for e, why in rejected) + ".")

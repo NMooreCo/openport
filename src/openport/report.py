@@ -76,7 +76,8 @@ def build_rows(sites: list[dict], tune_report: dict | None, price_of: Callable[[
                 row.after, row.held_out, row.tier = _rate(chosen), chosen["holdout_pass"], chosen["tier"]
                 row.cases = chosen.get("cases") or chosen["total"]  # distinct cases, however many samples each
                 variant = Variant.from_dict(chosen["variant"])
-                row.change, row.addendum, row.sources = variant.describe(), variant.system_addendum, variant.sources
+                row.change, row.addendum = variant.describe(), variant.system_addendum
+                row.sources = [s for s in variant.sources if s.get("quote")]  # only citations checked against the page
                 if chosen["total"]:
                     row.per_call_tokens = (chosen["prompt_tokens"] / chosen["total"], chosen["completion_tokens"] / chosen["total"])
         if row.per_call_tokens and row.was and row.now:
@@ -145,8 +146,7 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
               "- Each call names its Nemotron model, with a `# was ...` comment showing the old one."]
     for r in changes:
         detail = f": “{r.addendum}”" if r.addendum else ""
-        links = ", ".join(f"[{s['title']}]({s['url']})" for s in r.sources)
-        cited = f" Follows NVIDIA's guidance: {links}." if links else ""
+        cited = "".join(f"\n  - Follows NVIDIA's guidance, [{s['title']}]({s['url']}): “{s['quote']}”" for s in r.sources)
         lines.append(f"- `{r.id}` tuned for {r.tier} ({r.change}){detail}{cited}")
 
     checks = [(r.id, note) for r in ported for note in r.check]
@@ -164,8 +164,8 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
             "judge scores tone and helpfulness of free text.",
         ]
         if any(r.sources for r in ported):
-            lines.append("- Before proposing a fix, OpenPort looked up NVIDIA's own guidance for the target model with Tavily; "
-                         "changes that relied on it link the pages above.")
+            lines.append("- Before proposing a fix, OpenPort looked up NVIDIA's own guidance for the target model with Tavily. "
+                         "A change that followed it quotes the sentence above, checked word for word against the page.")
     else:
         lines.append("- Not tuned yet. Run `openport tune` with an eval spec to measure each call before and after.")
     lines += ["", "### Setup", "", "Set `NEBIUS_API_KEY` to a [Nebius Token Factory](https://tokenfactory.nebius.com) key.",

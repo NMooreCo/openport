@@ -64,9 +64,17 @@ def test_researcher_searches_nvidia_pages_once_per_model_and_topic():
     assert make_researcher(lambda query, domains: [])(TRIAGE, "nvidia/x", [failure()]) is None
 
 
-def test_engineer_gets_the_guidance_and_cites_only_what_it_was_given():
+QUOTE = "turn reasoning off with enable_thinking=False"
+
+
+def test_engineer_gets_the_guidance_and_cites_only_what_the_page_says():
     proposal = {"reasoning": False, "system_addendum": "Reply with the JSON object only.", "max_tokens": None, "temperature": None,
-                "rationale": "follow NVIDIA's advice", "sources": [CARD["url"], "https://example.com/made-up"]}
+                "rationale": "follow NVIDIA's advice", "sources": [
+                    {"url": CARD["url"], "quote": QUOTE},
+                    {"url": CARD["url"], "quote": "Always use temperature zero for JSON output"},  # the page doesn't say this
+                    {"url": "https://example.com/made-up", "quote": QUOTE},  # a page it wasn't given
+                    CARD["url"],  # no quote, so nothing to check
+                ]}
     fake = FakeTokenFactory(lambda request: completion(content=json.dumps(proposal)))
     engineer = make_engineer(client=fake, model="nvidia/ultra-test")
     guidance = Guidance("nvidia/nano-test", "json", "q", [CARD])
@@ -74,7 +82,7 @@ def test_engineer_gets_the_guidance_and_cites_only_what_it_was_given():
     variant = engineer(TRIAGE, "nvidia/nano-test", Variant(), {"messages": [{"role": "system", "content": "Classify."}]}, [failure()], guidance=guidance)
     prompt = fake.requests[0]["messages"][1]["content"]
     assert CARD["excerpt"] in prompt and CARD["url"] in prompt
-    assert variant.sources == [{"title": CARD["title"], "url": CARD["url"]}]  # the invented URL is dropped
+    assert variant.sources == [{"title": CARD["title"], "url": CARD["url"], "quote": QUOTE}]
 
     without = make_engineer(client=FakeTokenFactory(lambda request: completion(content=json.dumps(proposal))), model="nvidia/ultra-test")
     assert without(TRIAGE, "nvidia/nano-test", Variant(), None, [failure()]).sources == []  # nothing supplied, nothing cited
@@ -84,9 +92,9 @@ class GuidedEngineer:
     def __init__(self):
         self.guidance = []
 
-    def __call__(self, site, model, variant, sample, failures, guidance=None):
+    def __call__(self, site, model, variant, sample, failures, guidance=None, **extra):
         self.guidance.append(guidance)
-        sources = [{"title": s["title"], "url": s["url"]} for s in guidance.sources] if guidance else []
+        sources = [{"title": s["title"], "url": s["url"], "quote": QUOTE} for s in guidance.sources] if guidance else []
         return Variant(system_addendum="MAGIC RULE: reply with the JSON object only.", reasoning=False, sources=sources)
 
 
@@ -101,15 +109,39 @@ def test_tuning_records_research_and_carries_sources_into_the_plan():
     assert result.chosen.tier == "nano" and engineer.guidance[0].sources == [CARD]
     assert len(seen) == 1 and result.research == seen
     plan = export_plan(SPEC, [result], 0.9)["call_sites"]["triage.triage_ticket"]
-    assert plan["variant"]["sources"] == [{"title": CARD["title"], "url": CARD["url"]}]
+    assert plan["variant"]["sources"] == [{"title": CARD["title"], "url": CARD["url"], "quote": QUOTE}]
 
 
-def test_pr_links_the_guidance_a_change_followed():
+def test_pr_quotes_the_guidance_a_change_followed():
     row = report.Row(
         id="triage.triage_ticket", file="app/triage.py", line=10, status="ported", was="gpt-5-mini", now="nvidia/nano-test",
         plain=0.5, after=1.0, held_out=1.0, cases=10, tier="nano", change="reasoning off", addendum="JSON only.",
-        sources=[{"title": CARD["title"], "url": CARD["url"]}],
+        sources=[{"title": CARD["title"], "url": CARD["url"], "quote": QUOTE}],
     )
     body = report.render("app", [row], {"target_pass_rate": 0.9})
-    assert f"Follows NVIDIA's guidance: [{CARD['title']}]({CARD['url']})." in body
-    assert "looked up NVIDIA's own guidance" in body
+    assert f"  - Follows NVIDIA's guidance, [{CARD['title']}]({CARD['url']}): “{QUOTE}”" in body
+    assert "checked word for word against the page" in body
+
+
+def test_pr_leaves_out_citations_that_were_never_checked():
+    """Plans from before quotes were required cite pages without saying what they relied on: not shown."""
+    chosen = {"tier": "nano", "passed": 9, "total": 10, "holdout_pass": 1.0, "cases": 10, "prompt_tokens": 1000, "completion_tokens": 100,
+              "variant": {"reasoning": False, "sources": [{"title": CARD["title"], "url": CARD["url"]}]}}
+    tuning = {"file": "app/triage.py", "function": "triage_ticket", "attempts": [chosen], "chosen": chosen}
+    site = {"id": "triage.triage_ticket", "file": "app/triage.py", "line": 10, "status": "ported", "was": "gpt-5-mini", "model": "nvidia/nano-test"}
+    [row] = report.build_rows([site], {"results": [tuning]}, lambda model: None)
+    assert row.sources == [] and "Follows NVIDIA" not in report.render("app", [row], {"target_pass_rate": 0.9})
+
+
+def test_a_citation_counts_only_if_its_quote_is_on_the_page():
+    from openport.citations import parse_citations, verified
+
+    page = {"title": "Card", "url": "https://x/card", "excerpt": "For  structured output, turn “reasoning” off\nwith enable_thinking=False."}
+    citations = parse_citations([
+        {"url": "https://x/card", "quote": "turn \"Reasoning\" off with enable_thinking=False."},  # quotes, case and spacing differ
+        {"url": "https://x/card", "quote": "structured output"},  # too short to show what was followed
+        "https://x/card",
+        {"quote": "no url"},
+    ])
+    assert [c["quote"] for c in citations] == ["turn \"Reasoning\" off with enable_thinking=False.", "structured output", ""]
+    assert verified(citations, [page]) == [{"title": "Card", "url": "https://x/card", "quote": "turn \"Reasoning\" off with enable_thinking=False."}]

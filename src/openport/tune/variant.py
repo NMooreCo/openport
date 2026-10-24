@@ -23,7 +23,7 @@ class Variant:
     max_tokens: int | None = None  # a floor: raises the call's own limit, never lowers it
     temperature: float | None = None
     rationale: str = ""  # why the engineer proposed it
-    sources: list[dict] = field(default_factory=list)  # NVIDIA guidance the engineer relied on: {"title", "url"}
+    sources: list[dict] = field(default_factory=list)  # NVIDIA guidance the engineer followed: {"title", "url", "quote"}
 
     def is_plain(self) -> bool:
         return self.reasoning is None and not self.system_addendum and self.max_tokens is None and self.temperature is None
