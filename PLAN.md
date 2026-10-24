@@ -215,7 +215,7 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - Verified on SupportDesk: with its logs it reproduces the hand-written spec's graders and datasets; the captured spec loads, imports every call and reads its cases. 62 offline tests.
 - This closes the "no eval spec means no tuning" gap: a real repo can now go scan -> capture -> tune.
 - **Wired into the dashboard pipeline:** when a pasted repo has no eval spec, the pipeline now runs a `capture` stage (bounded, `OPENPORT_CAPTURE_CASES`, default 6), emits a `captured` event flagged as unreviewed, and tunes on the generated spec instead of porting untuned. 63 offline tests.
-- Next: a `--run-original` labeller for repos whose closed-model key is available (label by running the app through the original model, not Ultra).
+- **Labelling choice:** `--label-with ultra` (default) or `--label-with original`, which labels generated cases by running the app through its original closed model instead of Ultra (needs that provider's key; this one does execute the repo). 66 offline tests.
 
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.

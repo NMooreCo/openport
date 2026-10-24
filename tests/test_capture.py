@@ -163,6 +163,43 @@ def test_generate_cases_text_output_needs_no_label():
     assert len(fake.requests) == 1  # only the input generation call, no labelling
 
 
+def test_generate_cases_uses_custom_labeller_not_ultra():
+    fake = FakeTokenFactory(lambda request: completion('[{"text": "a"}, {"text": "b"}]'))
+    cases = generate.generate_cases(
+        "classify", "Classify", "classify", ["text"], "def classify(text): ...",
+        n=2, needs_label=True, labeller=lambda inp: {"label": inp["text"].upper()},
+        client=fake, super_model="super-x",
+    )
+    assert cases == [
+        {"id": "classify-01", "input": {"text": "a"}, "expected": {"label": "A"}},
+        {"id": "classify-02", "input": {"text": "b"}, "expected": {"label": "B"}},
+    ]
+    assert len(fake.requests) == 1  # input generation only; the labeller replaced the Ultra call
+
+
+def test_original_labeller_runs_the_function(tmp_path, monkeypatch):
+    (tmp_path / "labapp").mkdir()
+    (tmp_path / "labapp/__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "labapp/echo.py").write_text("def echo(x):\n    return {'v': x * 2}\n", encoding="utf-8")
+    monkeypatch.setattr("sys.path", list(__import__("sys").path))
+    label = generate.original_labeller(tmp_path, "labapp.echo", "echo")
+    try:
+        assert label({"x": 3}) == {"v": 6}
+    finally:
+        import sys as _sys
+        _sys.modules.pop("labapp.echo", None)
+        _sys.modules.pop("labapp", None)
+
+
+def test_capture_label_original_needs_provider_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    report = scan_repo(SUPPORTDESK)
+    with pytest.raises(Exception) as exc:
+        capture_repo(SUPPORTDESK, report, generate=1, label="original")
+    assert "OPENAI_API_KEY" in str(exc.value) or "ANTHROPIC_API_KEY" in str(exc.value)
+
+
 # --- end to end on SupportDesk ----------------------------------------------
 
 def test_capture_supportdesk_with_logs():

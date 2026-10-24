@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from .. import tokenfactory
+from .. import config, tokenfactory
 from ..runtime.openport_llm import UsageMeter
 from ..scan import ScanReport
 from ..scan.findings import CallSiteFinding
@@ -75,6 +75,7 @@ def capture_repo(
     *,
     logs: dict[str, Path] | None = None,
     generate: int = 0,
+    label: str = "ultra",
     include_tests: bool = False,
     on_site=None,
 ) -> CaptureResult:
@@ -95,7 +96,18 @@ def capture_repo(
             cases = load_log_cases(logs[finding.id], finding.id)
             source = "logs"
         elif generate:
-            from .generate import generate_cases
+            from .generate import generate_cases, original_labeller
+
+            needs_label = finding.output != "text"
+            labeller = None
+            if label == "original" and needs_label:
+                key_env = "OPENAI_API_KEY" if finding.sdk == "openai" else "ANTHROPIC_API_KEY"
+                value = os.getenv(key_env)
+                if not value or value == "openport-placeholder":
+                    raise config.MissingKeyError(
+                        f"--label-with original needs a real {key_env} to run {finding.id} through its original model."
+                    )
+                labeller = original_labeller(root, finding.module, finding.function)
 
             file_source = (root / finding.file).read_text(encoding="utf-8", errors="replace")
             cases = generate_cases(
@@ -105,7 +117,8 @@ def capture_repo(
                 _draft.param_names(root, finding),
                 file_source,
                 n=generate,
-                needs_label=finding.output != "text",
+                needs_label=needs_label,
+                labeller=labeller,
                 meter=meter,
             )
             source = "generated"

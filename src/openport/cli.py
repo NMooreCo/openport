@@ -189,13 +189,17 @@ def scan(
 def capture(
     target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
     logs: list[str] | None = typer.Option(None, "--logs", help="Recorded calls for a site: ID=PATH to a JSONL of {input, output} lines (repeatable)"),
-    generate: int = typer.Option(0, help="With no logs, have Super invent N inputs per call and Ultra label them (needs NEBIUS_API_KEY)"),
+    generate: int = typer.Option(0, help="With no logs, have Super invent N inputs per call and label them (needs NEBIUS_API_KEY)"),
+    label_with: str = typer.Option("ultra", "--label-with", help="Label generated cases with 'ultra' (Nemotron Ultra) or 'original' (run the app through its original model; needs that provider's key)"),
     out: Path | None = typer.Option(None, help="Where to write the eval spec (default: runs/captures/<name>)"),
     include_tests: bool = typer.Option(False, help="Also capture calls found in test files"),
 ) -> None:
     """Draft a starter eval spec from a repo: a call site, grader and dataset per LLM call, ready for `openport tune`."""
     from .capture import capture_repo, write_capture
     from .scan import scan_repo
+
+    if label_with not in ("ultra", "original"):
+        _fail("--label-with must be 'ultra' or 'original'")
 
     root = _target_root(target)
     report = scan_repo(root)
@@ -217,7 +221,7 @@ def capture(
         console.print(f"  {site.spec['id']:<26} {len(site.cases)} case(s) from {site.source}")
 
     try:
-        result = capture_repo(root, report, logs=log_map, generate=generate, include_tests=include_tests, on_site=progress)
+        result = capture_repo(root, report, logs=log_map, generate=generate, label=label_with, include_tests=include_tests, on_site=progress)
     except (config.MissingKeyError, RuntimeError) as error:
         _fail(str(error))
     if not result.sites and not result.skipped:
