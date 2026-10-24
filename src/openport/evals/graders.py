@@ -110,6 +110,20 @@ def text_rules(output: str, expected: dict, config: dict, case_input: dict, judg
     return _grade(checks)
 
 
+_OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, "==": lambda a, b: a == b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
+
+
+def rules(output: dict, expected: dict) -> Grade:
+    """Behavioural checks, written as `{"<field> <op>": value}`, e.g. `{"critical >=": 1, "title_length <=": 72}`."""
+    checks = []
+    for key, wanted in expected.items():
+        name, _, op = key.rpartition(" ")
+        actual = output.get(name)
+        ok = op in _OPS and actual is not None and _OPS[op](actual, wanted)
+        checks.append((ok, f"{name}: got {actual!r}, wanted {op} {wanted!r}"))
+    return _grade(checks)
+
+
 def grade(config: dict, output: Any, expected: dict, case_input: dict, judge: Judge | None = None) -> Grade:
     kind = config.get("type")
     if kind == "fields":
@@ -118,4 +132,6 @@ def grade(config: dict, output: Any, expected: dict, case_input: dict, judge: Ju
         return pii(output, expected, case_input.get("ticket", ""))
     if kind == "text_rules":
         return text_rules(output, expected, config, case_input, judge)
+    if kind == "rules":
+        return rules(output, expected)
     raise ValueError(f"Unknown grader type {kind!r}")

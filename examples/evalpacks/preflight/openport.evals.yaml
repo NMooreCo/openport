@@ -1,0 +1,67 @@
+# OpenPort eval pack for jsliapark/preflight, an AI PR reviewer whose four calls run on Claude Opus.
+#
+# The cases are hand-labelled diffs: classic vulnerabilities, logic bugs, standards breaks and clean code,
+# including the three diffs from preflight's own test_evals.py, and they're checked the way that file checks
+# them (CRITICAL comments or not, intent, PR title rules). Labels stay inside preflight's own prompt
+# rubrics. preflight_evals.py adapts plain-JSON inputs to preflight's types; `file` and `function` name the
+# real LLM call sites, which is what `openport port` edits.
+target: preflight
+source_root: repo:jsliapark/preflight
+extra_paths: ["."]
+
+call_sites:
+  - id: review
+    title: Security and correctness review passes
+    file: agents/review_agent.py
+    function: _run_pass
+    module: preflight_evals
+    entry: review
+    client_module: core.anthropic_client
+    client_attr: _client
+    sdk: anthropic
+    original_model: claude-opus-4-5
+    output: json_in_text
+    dataset: review.jsonl
+    grader: {type: rules}
+
+  - id: standards
+    title: Repo-standards review
+    file: agents/standards_agent.py
+    function: run_standards_pass
+    module: preflight_evals
+    entry: standards
+    client_module: core.anthropic_client
+    client_attr: _client
+    sdk: anthropic
+    original_model: claude-opus-4-5
+    output: json_in_text
+    dataset: standards.jsonl
+    grader: {type: rules}
+
+  - id: diff_analyzer
+    title: Change intent (feature, bugfix, refactor)
+    file: agents/diff_analyzer.py
+    function: analyze_diff
+    module: preflight_evals
+    entry: diff_intent
+    client_module: core.anthropic_client
+    client_attr: _client
+    sdk: anthropic
+    original_model: claude-opus-4-5
+    output: json_in_text
+    dataset: diff_analyzer.jsonl
+    grader: {type: fields, fields: [intent]}
+
+  - id: pr_description
+    title: PR description title
+    file: agents/pr_description.py
+    function: generate_pr_description
+    module: preflight_evals
+    entry: pr_title
+    client_module: core.anthropic_client
+    client_attr: _client
+    sdk: anthropic
+    original_model: claude-opus-4-5
+    output: json_in_text
+    dataset: pr_description.jsonl
+    grader: {type: rules}

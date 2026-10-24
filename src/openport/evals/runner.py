@@ -68,9 +68,9 @@ def prepare_imports(spec: Spec) -> None:
     # OpenPort swaps those clients out before any call, so placeholders are enough.
     os.environ.setdefault("OPENAI_API_KEY", "openport-placeholder")
     os.environ.setdefault("ANTHROPIC_API_KEY", "openport-placeholder")
-    root = str(spec.source_root)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    for path in [*spec.extra_paths, spec.source_root]:
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
 
 
 def swapped_client(site: CallSite, model: str | None, meter: UsageMeter, client: OpenAI, extra_body: dict | None = None):
@@ -125,21 +125,21 @@ def run_site(
     swapped client. With `model=None`, each call runs on the model its code names.
     """
     prepare_imports(spec)
-    module = importlib.import_module(site.module)
-    function = getattr(module, site.function)
+    function = getattr(importlib.import_module(site.module), site.entry_function)
+    home = importlib.import_module(site.client_home)
     meter = UsageMeter()
     factory = site.client_attr.endswith("()")
     attr = site.client_attr.removesuffix("()")
-    original = getattr(module, attr)
+    original = getattr(home, attr)
     swapped = swapped_client(site, model, meter, client or tokenfactory.client(), extra_body)
-    setattr(module, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
+    setattr(home, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
     try:
         cases = cases if cases is not None else site.cases(limit)
         cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             results = list(pool.map(lambda case: _run_case(site, function, case, judge), cases))
     finally:
-        setattr(module, attr, original)
+        setattr(home, attr, original)
 
     used = meter.by_model
     prompt_tokens = sum(u.prompt_tokens for u in used.values())

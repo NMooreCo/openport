@@ -141,8 +141,8 @@ def distill_site(
         on_progress("invented", len(inputs))
 
     prepare_imports(spec)
-    module = importlib.import_module(site.module)
-    function = getattr(module, site.function)
+    function = getattr(importlib.import_module(site.module), site.entry_function)
+    module = importlib.import_module(site.client_home)
     local = threading.local()
     recorder = _Recorder(VariantClient(client, variant), local)  # records the app's request before the variant
     factory = site.client_attr.endswith("()")

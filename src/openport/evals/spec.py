@@ -25,6 +25,20 @@ class CallSite:
     # Runs per case. Free text scored by a judge is noisy, so one run per case can fail a call on a single
     # unlucky draw; more samples give a steadier pass rate (every sample counts), not an easier bar.
     samples: int = 1
+    # The eval calls `entry` in `module` (default: `function`), which can be an adapter that turns plain JSON
+    # inputs into the app's own types. `file` and `function` stay the real LLM call site, which the port edits.
+    entry: str = ""
+    # The module whose `client_attr` is swapped for Token Factory (default: `module`), for apps that share
+    # one client from elsewhere.
+    client_module: str = ""
+
+    @property
+    def entry_function(self) -> str:
+        return self.entry or self.function
+
+    @property
+    def client_home(self) -> str:
+        return self.client_module or self.module
 
     def cases(self, limit: int | None = None) -> list[dict]:
         lines = self.dataset.read_text(encoding="utf-8").splitlines()
@@ -37,6 +51,17 @@ class Spec:
     target: str
     source_root: Path
     call_sites: list[CallSite]
+    extra_paths: list[Path] = field(default_factory=list)  # also importable during evals, e.g. an adapter module
+
+
+def _source_root(base: Path, value: str) -> Path:
+    """A path relative to the spec, or `repo:owner/name` for a GitHub repo OpenPort fetches (and reuses)."""
+    if value.startswith("repo:"):
+        from ..workspace import fetch_repo
+
+        root, _ = fetch_repo(value.removeprefix("repo:"))
+        return root.resolve()
+    return (base / value).resolve()
 
 
 def find_spec(target: Path) -> Path:
@@ -65,7 +90,14 @@ def load_spec(target: Path) -> Spec:
             dataset=base / site["dataset"],
             grader=site.get("grader", {}),
             samples=max(1, int(site.get("samples", 1))),
+            entry=site.get("entry", ""),
+            client_module=site.get("client_module", ""),
         )
         for site in raw["call_sites"]
     ]
-    return Spec(target=raw["target"], source_root=(base / raw.get("source_root", ".")).resolve(), call_sites=sites)
+    return Spec(
+        target=raw["target"],
+        source_root=_source_root(base, raw.get("source_root", ".")),
+        call_sites=sites,
+        extra_paths=[(base / p).resolve() for p in raw.get("extra_paths", [])],
+    )
