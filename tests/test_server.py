@@ -123,23 +123,35 @@ def server_nospec(tmp_path, monkeypatch):
     sys.modules.pop("miniapp", None)
 
 
+PINNED = "0123456789abcdef0123456789abcdef01234567"
+
+
 @pytest.fixture
 def server_pack(tmp_path, monkeypatch):
-    """A public repo with no eval spec, and an OpenPort eval pack for it."""
-    clone = tmp_path / "clones" / "owner__mini"
-    for path, text in NOSPEC_APP.items():
-        (clone / path).parent.mkdir(parents=True, exist_ok=True)
-        (clone / path).write_text(text)
-    pack = tmp_path / "examples" / "evalpacks" / "mini"
-    pack.mkdir(parents=True)
-    spec = MINI_APP["evals/openport.evals.yaml"].replace("source_root: ..", "source_root: repo:owner/mini")
-    (pack / "openport.evals.yaml").write_text(spec)
-    (pack / "classify.jsonl").write_text(MINI_APP["evals/classify.jsonl"])
+    """Public repos: owner/mini ships no eval spec and has an OpenPort eval pack pinned to a commit; owner/unpinned
+    has a pack that isn't pinned; owner/withspec ships its own spec. Yields the client and the repos fetched."""
+    clones = {"owner/mini": NOSPEC_APP, "owner/unpinned": NOSPEC_APP, "owner/withspec": MINI_APP}
+    for repo, files in clones.items():
+        for path, text in files.items():
+            (tmp_path / "clones" / repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / "clones" / repo / path).write_text(text)
+    for repo, source in (("mini", f"owner/mini@{PINNED}"), ("unpinned", "owner/unpinned")):
+        pack = tmp_path / "examples" / "evalpacks" / repo
+        pack.mkdir(parents=True)
+        (pack / "openport.evals.yaml").write_text(MINI_APP["evals/openport.evals.yaml"].replace("source_root: ..", f"source_root: repo:{source}"))
+        (pack / "classify.jsonl").write_text(MINI_APP["evals/classify.jsonl"])
+    fetched = []
+
+    def fetch(target):
+        fetched.append(target)
+        return tmp_path / "clones" / target.partition("@")[0], False
+
     fake = fake_token_factory()
     monkeypatch.setattr(pipeline, "EXAMPLES", tmp_path / "examples")
-    monkeypatch.setattr(pipeline, "PRESETS", [{"id": "mini3", "label": "owner/mini", "detail": "remote app", "repo": "owner/mini"}])
-    monkeypatch.setattr(pipeline, "fetch_repo", lambda target: (clone, False))
-    monkeypatch.setattr("openport.workspace.fetch_repo", lambda target: (clone, False))
+    monkeypatch.setattr(pipeline, "PRESETS", [{"id": "mini3", "label": "owner/mini", "detail": "remote app", "repo": "owner/mini"},
+                                              {"id": "loose", "label": "owner/unpinned", "detail": "remote app", "repo": "owner/unpinned"}])
+    monkeypatch.setattr(pipeline, "fetch_repo", fetch)
+    monkeypatch.setattr("openport.workspace.fetch_repo", fetch)
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(tokenfactory, "client", lambda: fake)
     monkeypatch.setattr(tokenfactory, "tiers", lambda: MODELS)
@@ -147,7 +159,7 @@ def server_pack(tmp_path, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setattr(sys, "path", list(sys.path))
     runs.clear()
-    yield TestClient(app)
+    yield TestClient(app), fetched
     runs.clear()
     sys.modules.pop("miniapp.classify", None)
     sys.modules.pop("miniapp", None)
@@ -262,13 +274,34 @@ def test_upgrade_without_docker_is_a_dry_run(upgrade_server, monkeypatch):
 
 
 def test_pipeline_uses_an_eval_pack_for_a_repo_without_a_spec(server_pack):
-    started = server_pack.post("/api/runs", json={"target": "mini3"}).json()
-    run = wait_for(server_pack, started["id"])
+    client, fetched = server_pack
+    started = client.post("/api/runs", json={"target": "mini3"}).json()
+    run = wait_for(client, started["id"])
     assert run["status"] == "done", run["events"][-1]
     events = run["events"]
     assert [e["stage"] for e in events if e["type"] == "stage"] == ["fetch", "scan", "tune", "port", "pr"]  # no capture
-    assert any("eval pack" in e.get("message", "") and "4 hand-labelled cases" in e["message"] for e in events if e["type"] == "note")
+    notes = [e["message"] for e in events if e["type"] == "note"]
+    assert any("eval pack" in note and "4 hand-labelled cases" in note for note in notes)
+    assert fetched[0] == f"owner/mini@{PINNED}" and any("at 0123456" in note for note in notes)  # the port is the commit tested
     assert next(e for e in events if e["type"] == "ported")["sites"][0]["status"] == "ported"
+
+
+def test_a_public_server_runs_only_vetted_repo_code(server_pack, monkeypatch):
+    client, _ = server_pack
+    assert [p["tested"] for p in client.get("/api/presets").json()] == [True, True]  # locally, any repo's code may run
+    monkeypatch.setattr(pipeline, "VETTED_ONLY", True)
+    assert client.get("/api/info").json() == {"vetted_only": True}
+    assert [p["tested"] for p in client.get("/api/presets").json()] == [True, False]  # the launcher says so up front
+
+    def stages(target):
+        run = wait_for(client, client.post("/api/runs", json={"target": target}).json()["id"])
+        assert run["status"] == "done", run["events"][-1]
+        return [e["stage"] for e in run["events"] if e["type"] == "stage"], [e["message"] for e in run["events"] if e["type"] == "note"]
+
+    assert stages("owner/mini")[0] == ["fetch", "scan", "tune", "port", "pr"]  # an eval pack pinned to a reviewed commit
+    for repo in ("owner/withspec", "owner/unpinned"):  # the repo's own spec, or a pack that follows the branch
+        ran, notes = stages(repo)
+        assert ran == ["fetch", "scan", "port", "pr"] and any("this public demo" in note for note in notes), repo
 
 
 def test_pipeline_captures_when_no_spec(server_nospec):

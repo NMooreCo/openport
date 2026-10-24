@@ -25,5 +25,8 @@ COPY --from=dashboard /app/src/openport/server/static/ src/openport/server/stati
 RUN uv sync --frozen --no-dev --no-editable
 COPY examples/ examples/
 ENV PATH="/app/.venv/bin:$PATH" OPENPORT_RUNS_DIR=/app/runs OPENPORT_EXAMPLES=/app/examples
+# A public dashboard runs repo code only for its demo apps and pinned eval packs: testing a call imports the
+# repo into this process, next to the API keys. Set it to "any" for a private deployment you trust with any repo.
+ENV OPENPORT_RUN_REPO_CODE=vetted
 EXPOSE 8000
 CMD ["openport", "serve", "--host", "0.0.0.0", "--port", "8000"]

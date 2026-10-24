@@ -674,7 +674,7 @@ def _target_root(target: str) -> Path:
 
     if is_remote(target):
         root, fresh = fetch_repo(target)
-        console.print(f"{'Cloned' if fresh else 'Using the earlier clone of'} {target} in {root} (the code is parsed, never run)")
+        console.print(f"{'Cloned' if fresh else 'Using the earlier clone of'} {target} in {root}")
         return root
     root = Path(target)
     if not root.is_dir():

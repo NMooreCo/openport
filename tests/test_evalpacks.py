@@ -63,6 +63,32 @@ def test_repo_source_root_fetches_the_repo(tmp_path, monkeypatch):
     assert load_spec(tmp_path).source_root == tmp_path.resolve() and fetched == ["owner/name"]
 
 
+def test_a_pinned_repo_is_fetched_at_exactly_that_commit(tmp_path, monkeypatch):
+    from openport import config, workspace
+
+    commit = "7a00fa2928acea9fcddce9661417e2bd6e6c1403"
+    calls = []
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check: calls.append(args))
+    root, fresh = workspace.fetch_repo(f"jsliapark/preflight@{commit}")
+    assert fresh and root == tmp_path / "repos" / commit[:12] / "jsliapark__preflight" and root.is_dir()
+    assert [args[3:] for args in calls] == [
+        ["init", "--quiet"],
+        ["fetch", "--depth", "1", "--quiet", "https://github.com/jsliapark/preflight.git", commit],
+        ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+    ]
+    assert workspace.fetch_repo(f"jsliapark/preflight@{commit}") == (root, False)  # reused, not fetched again
+    assert workspace.is_remote(f"https://github.com/jsliapark/preflight@{commit}")
+    assert not workspace.is_remote("jsliapark/preflight@main")  # only a full commit hash pins
+
+
+def test_preflight_pack_is_pinned_to_the_reviewed_commit():
+    from openport.server.pipeline import eval_pack_for
+
+    pack = eval_pack_for("jsliapark/preflight")
+    assert pack.folder == PREFLIGHT_PACK and pack.commit == "7a00fa2928acea9fcddce9661417e2bd6e6c1403"
+
+
 def test_preflight_pack_labels():
     cases = {path.stem: [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] for path in PREFLIGHT_PACK.glob("*.jsonl")}
     assert {k: len(v) for k, v in cases.items()} == {"review": 42, "standards": 25, "diff_analyzer": 26, "pr_description": 26}
@@ -78,6 +104,7 @@ def test_preflight_pack_labels():
 @pytest.mark.skipif(not PREFLIGHT_CLONE.exists(), reason="needs the preflight clone (openport scan jsliapark/preflight)")
 def test_preflight_pack_diffs_parse_with_preflights_parser(monkeypatch):
     monkeypatch.setattr(sys, "path", [str(PREFLIGHT_CLONE), *sys.path])
+    monkeypatch.setattr("openport.workspace.fetch_repo", lambda target: (PREFLIGHT_CLONE, False))  # offline: the local clone
     from core.diff_parser import parse_diff
 
     for site in load_spec(PREFLIGHT_PACK).call_sites:

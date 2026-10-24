@@ -4,6 +4,7 @@ interface Preset {
   id: string;
   label: string;
   detail: string;
+  tested?: boolean; // false on a public server that won't run this repo's code
 }
 
 export type Mode = "port" | "upgrade";
@@ -36,7 +37,12 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [vettedOnly, setVettedOnly] = useState(false);
   const copy = MODES[mode];
+
+  useEffect(() => {
+    fetch("/api/info").then((r) => r.json()).then((data) => setVettedOnly(Boolean(data.vetted_only))).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const onHash = () => setMode(modeFromHash());
@@ -114,6 +120,12 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
         </button>
       </form>
       {error && <p className="mt-3 text-sm text-fail">{error}</p>}
+      {vettedOnly && mode === "port" && (
+        <p className="mt-3 text-xs leading-relaxed text-muted">
+          Testing a call runs the repo's code, so this public demo tests and tunes only the examples below that have eval
+          sets. Any other repo is scanned and ported untuned; run OpenPort locally to test it.
+        </p>
+      )}
 
       <div className="mt-10">
         <p className="text-xs font-medium uppercase tracking-wider text-muted">Or try one</p>
@@ -127,6 +139,9 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
             >
               <span className="block font-mono text-sm text-white">{preset.label}</span>
               <span className="mt-1 block text-xs leading-relaxed text-muted">{preset.detail}</span>
+              {preset.tested === false && (
+                <span className="mt-2 inline-block rounded-md bg-line px-2 py-0.5 text-xs text-slate-300">No eval set here: scan and port only</span>
+              )}
             </button>
           ))}
         </div>

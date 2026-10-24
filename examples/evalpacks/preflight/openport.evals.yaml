@@ -5,8 +5,12 @@
 # them (CRITICAL comments or not, intent, PR title rules). Labels stay inside preflight's own prompt
 # rubrics. preflight_evals.py adapts plain-JSON inputs to preflight's types; `file` and `function` name the
 # real LLM call sites, which is what `openport port` edits.
+#
+# The evals import and run preflight's code, so they're pinned to the commit that was reviewed (its eval path
+# only reads its prompt files and calls the Anthropic client, which OpenPort swaps). Port the same commit:
+#   openport port jsliapark/preflight@7a00fa2928acea9fcddce9661417e2bd6e6c1403 --plan runs/plan-preflight.json
 target: preflight
-source_root: repo:jsliapark/preflight
+source_root: repo:jsliapark/preflight@7a00fa2928acea9fcddce9661417e2bd6e6c1403
 extra_paths: ["."]
 
 call_sites:

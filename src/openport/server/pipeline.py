@@ -29,6 +29,9 @@ GITHUB_REPO = re.compile(r"^(?:https?://github\.com/)?([A-Za-z0-9][\w.-]*/[A-Za-
 REUSE_SECONDS = int(os.getenv("OPENPORT_REUSE_SECONDS", "1800"))  # rerunning a target this soon reuses the result
 AUTO_CAPTURE = os.getenv("OPENPORT_AUTO_CAPTURE", "1") != "0"  # with no eval spec, generate a starter one
 CAPTURE_CASES = int(os.getenv("OPENPORT_CAPTURE_CASES", "6"))  # cases per call when capturing
+# Testing a call imports the repo's code and runs it, in this process, next to the API keys. A public server sets
+# "vetted": then only the bundled demo apps and repos with an OpenPort eval pack (pinned to a reviewed commit) run.
+VETTED_ONLY = os.getenv("OPENPORT_RUN_REPO_CODE", "any") == "vetted"
 
 # Tuning swaps SDK clients inside imported modules, which is process-wide: one pipeline at a time.
 PIPELINE_LOCK = threading.Lock()
@@ -51,14 +54,32 @@ class Run:
         return {"id": self.id, "kind": self.kind, "target": self.target, "label": self.label, "status": self.status, "created": self.created}
 
 
-def eval_pack_for(target: str) -> Path | None:
-    """OpenPort's own eval spec for a public repo that ships none (examples/evalpacks/*, matched on `source_root`)."""
+@dataclass
+class EvalPack:
+    folder: Path
+    source: str  # the repo it tests, as `source_root` names it: owner/name, or owner/name@<commit> when pinned
+
+    @property
+    def commit(self) -> str | None:
+        return self.source.partition("@")[2] or None
+
+
+def eval_pack_for(target: str) -> EvalPack | None:
+    """OpenPort's own eval spec for a public repo (examples/evalpacks/*, matched on `source_root`)."""
     packs = EXAMPLES / "evalpacks"
     for spec in sorted(packs.glob(f"*/{SPEC_FILE}")) if packs.is_dir() else []:
-        raw = yaml.safe_load(spec.read_text(encoding="utf-8")) or {}
-        if raw.get("source_root") == f"repo:{target}":
-            return spec.parent
+        root = str((yaml.safe_load(spec.read_text(encoding="utf-8")) or {}).get("source_root", ""))
+        if root.startswith("repo:") and root.removeprefix("repo:").partition("@")[0] == target:
+            return EvalPack(spec.parent, root.removeprefix("repo:"))
     return None
+
+
+def tests_target(target: str, local: Path | None) -> bool:
+    """Whether a run tests the target's calls on this server, which means running its code (see VETTED_ONLY)."""
+    if local is not None or not VETTED_ONLY:
+        return True
+    pack = eval_pack_for(target)
+    return bool(pack and pack.commit)
 
 
 def resolve_target(target: str, presets: list[dict] | None = None) -> tuple[str, str, Path | None]:
@@ -134,12 +155,15 @@ def run_pipeline(run: Run, target: str, local: Path | None, target_rate: float =
 
 
 def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> None:
+    pack = eval_pack_for(target) if local is None else None
     run.emit("stage", stage="fetch")
     if local is not None:
         root = local
     else:
-        root, fresh = fetch_repo(target)
-        run.emit("note", message=f"{'Cloned' if fresh else 'Reused a clone of'} github.com/{target}. Its code is parsed, never run.")
+        # A repo with an eval pack is fetched at the commit the pack was reviewed against, so the port is what was tested.
+        root, fresh = fetch_repo(pack.source if pack else target)
+        at = f" at {pack.commit[:7]}" if pack and pack.commit else ""
+        run.emit("note", message=f"{'Cloned' if fresh else 'Reused a clone of'} github.com/{target}{at}. Scanning parses its code without running it.")
     name = root.resolve().name
 
     run.emit("stage", stage="scan")
@@ -158,13 +182,14 @@ def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> 
     models = tokenfactory.tiers()
     run.emit("models", models=models)
 
-    spec_rel = find_eval_spec(root)
+    runs_any_code = local is not None or not VETTED_ONLY
+    spec_rel = find_eval_spec(root) if runs_any_code else None  # a repo's own spec runs whatever it names
     spec_target = (root / spec_rel) if spec_rel else None
-    if spec_target is None and local is None and (pack := eval_pack_for(target)):
-        spec_target = pack
-        cases = sum(len(s.cases()) for s in load_spec(pack).call_sites)
-        run.emit("note", message=f"This repo ships no eval spec, so OpenPort uses its own eval pack for it: {cases} hand-labelled cases.")
-    if spec_target is None and AUTO_CAPTURE:
+    if spec_target is None and pack is not None and tests_target(target, local):
+        spec_target = pack.folder
+        cases = sum(len(s.cases()) for s in load_spec(pack.folder).call_sites)
+        run.emit("note", message=f"OpenPort tests this repo with its own eval pack: {cases} hand-labelled cases.")
+    if spec_target is None and AUTO_CAPTURE and runs_any_code:
         spec_target = _capture_spec(run, root, name, scan)
 
     assignments, tune_data = {}, None
@@ -193,8 +218,11 @@ def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> 
         run.emit("cost", evals_usd=sum(r.cost_usd for r in results), helper_usd=totals["helper_cost_usd"])
         assignments = load_assignments(plan_path)
         tune_data = report.load_tune_report(report_path)
-    else:
+    elif runs_any_code:
         run.emit("note", message="This repo has no eval spec yet, so each call moves to Nemotron Super untuned.")
+    else:
+        run.emit("note", message="Testing a call runs the repo's code, which this public demo does only for its demo repos, so each "
+                                 "call moves to Nemotron Super untuned. Run `openport capture` and `openport tune` locally to test them.")
 
     run.emit("stage", stage="port")
     plan = build_plan(scan.findings, models, "super", assignments)

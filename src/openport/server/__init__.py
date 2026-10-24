@@ -31,9 +31,20 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/api/info")
+def info() -> dict:
+    """What this server will do with a repo, for the launcher to say up front."""
+    return {"vetted_only": pipeline.VETTED_ONLY}
+
+
+def _preset(preset: dict) -> dict:
+    target, _, local = resolve_target(preset["id"])
+    return {**{k: v for k, v in preset.items() if k != "path"}, "tested": pipeline.tests_target(target, local)}
+
+
 @app.get("/api/presets")
 def presets() -> list[dict]:
-    return [{k: v for k, v in p.items() if k != "path"} for p in pipeline.PRESETS]
+    return [_preset(p) for p in pipeline.PRESETS]
 
 
 @app.get("/api/upgrade-presets")

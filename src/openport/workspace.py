@@ -5,12 +5,15 @@ run its evals.
 """
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 from . import config
 
-_GITHUB = re.compile(r"^(?:https?://github\.com/|git@github\.com:)?([A-Za-z0-9][\w.-]*)/([A-Za-z0-9_][\w.-]*?)(?:\.git)?/?$")
+_GITHUB = re.compile(
+    r"^(?:https?://github\.com/|git@github\.com:)?([A-Za-z0-9][\w.-]*)/([A-Za-z0-9_][\w.-]*?)(?:\.git)?/?(?:@([0-9a-f]{40}))?$"
+)
 
 
 def is_remote(target: str) -> bool:
@@ -20,18 +23,27 @@ def is_remote(target: str) -> bool:
 def fetch_repo(target: str) -> tuple[Path, bool]:
     """Shallow-clone a GitHub repo (URL or owner/name) into runs/repos/, reusing an earlier clone.
 
-    Returns the local path and whether it was freshly cloned.
+    `owner/name@<commit>` (the full hash) fetches exactly that commit, whatever the branch holds now:
+    eval packs pin the commit whose code was reviewed. Returns the local path and whether it was
+    freshly cloned.
     """
     match = _GITHUB.match(target)
     if match is None:
         raise ValueError(f"Not a GitHub repo: {target}")
-    owner, name = match.groups()
-    destination = config.RUNS_DIR / "repos" / f"{owner}__{name}"
+    owner, name, commit = match.groups()
+    url = f"https://github.com/{owner}/{name}.git"
+    repos = config.RUNS_DIR / "repos"
+    destination = (repos / commit[:12] if commit else repos) / f"{owner}__{name}"  # same folder name either way
     if destination.exists():
         return destination, False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--depth", "1", "--quiet", f"https://github.com/{owner}/{name}.git", str(destination)],
-        check=True,
-    )
+    if commit is None:
+        subprocess.run(["git", "clone", "--depth", "1", "--quiet", url, str(destination)], check=True)
+        return destination, True
+    partial = destination.with_name(destination.name + ".partial")  # a failed fetch never looks like a clone
+    shutil.rmtree(partial, ignore_errors=True)
+    partial.mkdir()
+    for args in (["init", "--quiet"], ["fetch", "--depth", "1", "--quiet", url, commit], ["checkout", "--quiet", "--detach", "FETCH_HEAD"]):
+        subprocess.run(["git", "-C", str(partial), *args], check=True)
+    partial.rename(destination)
     return destination, True
