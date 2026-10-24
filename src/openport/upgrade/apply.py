@@ -14,8 +14,9 @@ from pathlib import Path
 
 from ..scan.findings import is_test_path
 
+SKIP_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "runs"}  # installs, caches, OpenPort's output
 # .git comes along, so a proven upgrade can be committed and opened as a PR from the copy.
-COPY_IGNORE = shutil.ignore_patterns(".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "runs")
+COPY_IGNORE = shutil.ignore_patterns(*SKIP_DIRS)
 _PIN = re.compile(r"^(\s*)([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(\s*==\s*)([^\s;#]+)(.*)$")
 
 
@@ -134,15 +135,21 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
 
 
 def diff(root: Path, folder: Path) -> str:
-    """A unified diff of every file that differs between the original repo and the upgraded copy."""
+    """A unified diff of the repo's files that the upgrade changed in the copy.
+
+    Only the original's files count: bumps and fixes edit files that exist, and anything new in the copy
+    was made by an install or a test run (node_modules, .venv).
+    """
     chunks: list[str] = []
-    for path in sorted(folder.rglob("*")):
-        if not path.is_file() or ".git" in path.parts or "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo"):
+    for original in sorted(Path(root).rglob("*")):
+        relative = original.relative_to(root)
+        if not original.is_file() or ".git" in relative.parts or SKIP_DIRS & set(relative.parts) or original.suffix in (".pyc", ".pyo"):
             continue
-        relative = path.relative_to(folder)
-        original = root / relative
+        path = folder / relative
+        if not path.is_file():
+            continue
         new = path.read_text(encoding="utf-8", errors="replace")
-        old = original.read_text(encoding="utf-8", errors="replace") if original.is_file() else ""
+        old = original.read_text(encoding="utf-8", errors="replace")
         if old != new:
             name = relative.as_posix()
             chunks += difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}")

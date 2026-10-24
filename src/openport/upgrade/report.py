@@ -39,6 +39,8 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
         lines.append(f"| After OpenPort's fix{f' {i}' if len(applied_rounds) > 1 else ''} | {_tests(fix.tests)} |")
     if run.before and not run.before.ok:
         lines += ["", "> The tests were already failing before the upgrade, so this PR can't prove the upgrade is safe."]
+    if run.fix_error:
+        lines += ["", f"> The upgrade broke the tests, and Nemotron Super couldn't be asked for a fix ({run.fix_error})."]
 
     applied = [fix for fix in run.rounds if fix.edits]
     if applied:

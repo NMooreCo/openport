@@ -108,7 +108,7 @@ The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vu
 
 1. `openport upgrade` reads the repo's lockfiles and asks [OSV.dev](https://osv.dev) which installed versions are vulnerable.
 2. For each package it picks the release that fixes the most advisories while being **at least a week old**, so a brand-new malicious release can't be auto-selected. Advisories with no fix yet are reported, not ignored.
-3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container.
+3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container (pip and pytest, uv, or `npm test`, whichever the project uses). Pins in `requirements.txt` are edited; `uv.lock` and `package-lock.json` are updated by uv and npm in the container, resolving nothing newer than the same age cutoff, so the guard covers every package the bump pulls in.
 4. If the upgrade breaks them, Tavily reads the package's own changelog and the advisory, and Nemotron Super fixes the application code (never the tests) until they pass.
 5. It writes the diff and a PR description with the advisories, the version chosen and why, the code changes with their sources, and the test results.
 
@@ -117,7 +117,7 @@ uv run openport upgrade examples/authkit            # dry run: what's vulnerable
 uv run openport upgrade examples/authkit --apply    # upgrade a copy, prove it with the tests
 ```
 
-On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5.
+On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5. Its Node twin, `authkit-node`, moves jsonwebtoken 8.5.1 to 9.0.0 (3 advisories) through npm, and its tests pass before and after, so it needs no code change.
 
 ## Dashboard
 
@@ -144,6 +144,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `examples/supportdesk-ts/` | SupportDesk's three OpenAI calls in TypeScript (JSON mode, JSON schema, a tool-calling agent), tested on the same cases |
 | `examples/evalpacks/preflight/` | OpenPort's eval pack for [jsliapark/preflight](https://github.com/jsliapark/preflight), an AI PR reviewer that ships no evals: 119 hand-labelled cases, pinned to a reviewed commit |
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
+| `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |
 | `tests/` | Offline tests (no API keys needed) |
 
 ## How OpenPort uses NVIDIA Nemotron and Nebius

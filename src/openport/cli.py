@@ -574,8 +574,8 @@ def upgrade(
     min_age: int = typer.Option(7, "--min-age", help="Only propose a fix version at least this many days old"),
     apply: bool = typer.Option(False, "--apply", help="Upgrade a copy, run the repo's tests before and after in Docker, and have Super fix what breaks"),
     rounds: int = typer.Option(3, help="With --apply: fix attempts before giving up"),
-    test_image: str | None = typer.Option(None, help="With --apply: container image for the tests (default: Python 3.12)"),
-    test_command: str | None = typer.Option(None, help="With --apply: shell command that installs and runs the tests"),
+    test_image: str | None = typer.Option(None, help="With --apply: container image for the tests (default: Python or Node, from the project)"),
+    test_command: str | None = typer.Option(None, help="With --apply: shell command that installs and runs the tests (default: pip, uv or npm)"),
     out: Path | None = typer.Option(None, help="With --apply: where to write the upgraded copy (default: runs/upgrades/<name>)"),
     open_pr: bool = typer.Option(False, "--open", help="With --apply: if the tests prove the upgrade, push it to your fork and open the PR there"),
     upstream: bool = typer.Option(False, help="With --open: propose the PR to the original repo instead of your fork"),
@@ -623,7 +623,7 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     from .upgrade.fix import make_fixer
     from .upgrade.research import research_upgrade
     from .upgrade.run import upgrade_repo
-    from .upgrade.testrun import PYTHON_IMAGE, PYTHON_TESTS, run_tests
+    from .upgrade.testrun import run_tests, test_setup
 
     if shutil.which("docker") is None:
         _fail("--apply runs the repo's tests in a Docker container; install Docker first.")
@@ -654,10 +654,14 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     name = root.resolve().name
     out_dir = out or config.RUNS_DIR / "upgrades" / name
     console.print(f"\nUpgrading a copy in {out_dir} (the original is untouched)...")
-    run = upgrade_repo(
-        root, out_dir, plans=plans, rounds=rounds, researcher=researcher, fixer=fixer, on_event=event,
-        run_tests=lambda folder: run_tests(folder, image=test_image or PYTHON_IMAGE, command=test_command or PYTHON_TESTS),
-    )
+    ecosystems = {p.dep.ecosystem for p in plans if p.target}
+
+    def tests(folder: Path):
+        image, command = test_setup(folder, ecosystems)
+        return run_tests(folder, image=test_image or image, command=test_command or command)
+
+    run = upgrade_repo(root, out_dir, plans=plans, min_age_days=min_age, rounds=rounds, researcher=researcher, fixer=fixer,
+                       on_event=event, run_tests=tests)
     if not run.upgraded:
         _fail("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
     config.RUNS_DIR.mkdir(parents=True, exist_ok=True)

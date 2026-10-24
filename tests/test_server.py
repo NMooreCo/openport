@@ -188,7 +188,7 @@ def upgrade_server(tmp_path, monkeypatch):
                     TestRun(True, 0, "5 passed", "", 1.0)])
     fix = lambda *args: ([Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", [])
     monkeypatch.setattr(upgrades, "plan_upgrades", lambda deps: plan)
-    monkeypatch.setattr("openport.upgrade.testrun.run_tests", lambda folder: next(results))
+    monkeypatch.setattr("openport.upgrade.testrun.run_tests", lambda folder, *setup: next(results))
     monkeypatch.setattr("openport.upgrade.fix.make_fixer", lambda: fix)
     monkeypatch.setattr(upgrades.shutil, "which", lambda name: "/usr/bin/docker")
     monkeypatch.setattr(upgrades, "PRESETS", [{"id": "authkit", "label": "AuthKit", "detail": "demo", "path": "authkit"}])

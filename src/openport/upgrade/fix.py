@@ -11,7 +11,7 @@ from .. import tokenfactory
 from ..citations import parse_citations, verified
 from ..runtime.openport_llm import UsageMeter
 from ..scan.findings import is_test_path
-from .apply import Edit
+from .apply import SKIP_DIRS, Edit
 
 SYSTEM = """You fix application code that broke when dependencies were upgraded to fix security advisories.
 
@@ -32,7 +32,8 @@ SOURCE_BUDGET = 40_000  # characters of source sent per request
 
 def source_files(folder: Path, test_output: str) -> dict[str, str]:
     """The repo's source files (not tests), the ones named in the failure first, within a size budget."""
-    files = [p for p in sorted(folder.rglob("*")) if p.is_file() and p.suffix in SOURCE_SUFFIXES and "__pycache__" not in p.parts]
+    files = [p for p in sorted(folder.rglob("*"))
+             if p.is_file() and p.suffix in SOURCE_SUFFIXES and not SKIP_DIRS & set(p.relative_to(folder).parts)]
     relative = {p: p.relative_to(folder).as_posix() for p in files}
     candidates = [p for p in files if not is_test_path(relative[p])]
     candidates.sort(key=lambda p: relative[p] not in test_output)  # named in the traceback first

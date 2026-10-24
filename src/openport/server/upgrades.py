@@ -16,6 +16,7 @@ from .pipeline import PIPELINE_LOCK, Run, _save
 
 PRESETS = [
     {"id": "authkit", "label": "AuthKit", "detail": "Demo app: PyJWT 1.7.1 and requests 2.31.0 pinned, with tests", "path": "authkit"},
+    {"id": "authkit-node", "label": "AuthKit (Node)", "detail": "The same in Node: jsonwebtoken 8.5.1 in package-lock.json, with tests", "path": "authkit-node"},
 ]
 APPLY = os.getenv("OPENPORT_UPGRADE_APPLY", "1") != "0"  # set 0 to only choose versions
 
@@ -53,7 +54,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     from ..upgrade.fix import make_fixer
     from ..upgrade.research import research_upgrade
     from ..upgrade.run import upgrade_repo
-    from ..upgrade.testrun import run_tests
+    from ..upgrade.testrun import run_tests, test_setup
 
     run.emit("stage", stage="fetch")
     root = local if local is not None else fetch_repo(target)[0]
@@ -86,7 +87,9 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
 
     run.emit("stage", stage="test")
     researcher = research_upgrade if os.getenv("TAVILY_API_KEY") else None
-    result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=run_tests,
+    ecosystems = {p.dep.ecosystem for p in plans if p.target}
+    result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans,
+                          run_tests=lambda folder: run_tests(folder, *test_setup(folder, ecosystems)),
                           researcher=researcher, fixer=make_fixer(), on_event=event)
     run.emit("stage", stage="pr")
     run.emit("upgrade_pr", body=report.render(result), diff=result.diff[:300_000], proven=result.proven)

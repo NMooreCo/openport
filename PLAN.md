@@ -235,7 +235,8 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **Done (Oct 24): `--apply`.** It upgrades a copy, runs the repo's tests in Docker before and after, has Tavily read the changelog and advisory, and has Super fix application code (exact edits; edits to tests are rejected). It writes the diff and PR description.
   - On real OSV data, selection now fixes what it safely can (one disputed advisory without a fix no longer blocks PyJWT), follows OSV's per-branch ranges, and counts each flaw once (GHSA and PYSEC records merged).
   - Live on `examples/authkit`: PyJWT 1.7.1 → 2.14.0 and requests 2.31.0 → 2.33.0 fix 15 advisories. Tests: 5 passed before; 4 failed after the bump; Super dropped `.decode()` (2 still failing), then added `algorithms=["HS256"]` → 5 passed. **Proven.** One proposed edit was rejected by the exact-match guard.
-- Still to do: bump lockfile-managed deps (uv.lock, poetry.lock, package-lock.json) through their package managers; `--open` the PR like `openport pr`; run the test jobs on Serverless Jobs.
+- Done (Oct 24): `--open` (a proven upgrade only), and lockfile bumps: `uv.lock` through `uv lock --upgrade-package`, `package-lock.json` through `npm install --package-lock-only` (an `overrides` entry for transitive packages), both in a container and resolving nothing newer than the age cutoff (`--exclude-newer`, `--before`). Tests run the project's way (pip, uv or `npm test`). Checked live: `authkit-node` (jsonwebtoken 8.5.1 → 9.0.0, 5 passed before and after) and a uv project (requests 2.31.0 → 2.33.0). If Super can't be reached, the run ends with a note instead of crashing.
+- Still to do: poetry.lock and pnpm-lock.yaml bumps; run the test jobs on Serverless Jobs.
 
 **Sat 24: first live runs on Token Factory.**
 - `openport smoke`: JSON mode, tool calling (auto, forced, round trip) and the reasoning switch work on all three tiers; strict `json_schema` fails on Nano (Super and Ultra pass).

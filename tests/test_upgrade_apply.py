@@ -101,6 +101,76 @@ def test_a_proven_upgrade_can_be_opened_as_a_pr_from_the_copy(tmp_path):
     assert plan.commands[-1][:7] == ["gh", "pr", "create", "--repo", "me/authkit", "--head", "openport/security-upgrades"]
 
 
+CUTOFF = datetime(2026, 10, 17, tzinfo=timezone.utc)
+
+
+def test_lockfiles_are_bumped_by_their_package_manager_with_the_age_cutoff(tmp_path):
+    from openport.upgrade.bump import bump_steps
+
+    (tmp_path / "package.json").write_bytes(b'{\r\n    "name": "app",\r\n    "dependencies": {"jsonwebtoken": "^8.5.1"}\r\n}\r\n')
+    uv, npm = bump_steps(tmp_path, {"uv.lock": {"requests": "2.33.0"}, "package-lock.json": {"jsonwebtoken": "9.0.0", "semver": "5.7.2"}}, CUTOFF)
+    assert uv.image.startswith("python:") and uv.command.endswith(
+        "uv lock --exclude-newer 2026-10-17T00:00:00Z --upgrade-package requests==2.33.0")
+    assert npm.image.startswith("node:") and npm.packages == ["jsonwebtoken", "semver"]
+    lock_only = "npm install --package-lock-only --ignore-scripts --no-audit --no-fund --before=2026-10-17T00:00:00Z"
+    assert npm.command == f"{lock_only} jsonwebtoken@9.0.0 && {lock_only}"  # direct: installed; transitive: an override
+    package = (tmp_path / "package.json").read_bytes()
+    assert b'\r\n    "overrides": {\r\n        "semver": "5.7.2"\r\n    }\r\n}\r\n' in package  # its indentation and line endings
+
+
+def test_tests_run_the_projects_own_way(tmp_path):
+    from openport.upgrade.testrun import NODE_TESTS, PYTHON_TESTS, UV_TESTS, summarize, test_setup
+
+    assert test_setup(tmp_path, {"PyPI"}) == ("python:3.12.11-slim", PYTHON_TESTS)
+    (tmp_path / "uv.lock").write_text("")
+    assert test_setup(tmp_path, {"PyPI"})[1] == UV_TESTS
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "node --test"}}')
+    assert test_setup(tmp_path, {"npm"}) == ("node:22.23.4-slim", NODE_TESTS)
+    assert summarize("ℹ tests 5\nℹ pass 4\nℹ fail 1\nℹ duration_ms 52") == "1 failed, 4 passed"  # node --test
+    assert summarize("# pass 5\n# fail 0") == "5 passed"
+    assert summarize("....\n4 failed, 1 passed in 0.21s\n") == "4 failed, 1 passed in 0.21s"
+
+
+def test_a_lockfile_bump_that_fails_leaves_those_packages_out(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "package.json").write_text('{"dependencies": {"jsonwebtoken": "^8.5.1"}, "scripts": {"test": "node --test"}}')
+    (root / "package-lock.json").write_text("{}")
+    jwt = upgrade("jsonwebtoken", "8.5.1", "9.0.0", source="package-lock.json")
+    results = iter([passing(), passing()])
+
+    def container(folder, image, command):
+        return TestRun(True, 0, "", "", 1.0) if "jsonwebtoken@9.0.0" in command else TestRun(False, 1, "ERESOLVE", "", 1.0)
+
+    run = upgrade_repo(root, tmp_path / "out", plans=[jwt], run_tests=lambda folder: next(results), run_container=container)
+    assert run.proven and run.changed == ["package-lock.json", "package.json"]
+
+    failing_npm = upgrade_repo(root, tmp_path / "out2", plans=[jwt], run_tests=lambda folder: passing(),
+                               run_container=lambda *args: TestRun(False, 1, "ERESOLVE could not resolve", "", 1.0))
+    assert failing_npm.upgraded == [] and failing_npm.after_bump is None
+    assert failing_npm.skipped == [(jwt, "package-lock.json couldn't be updated: ERESOLVE could not resolve")]
+
+
+def test_the_diff_shows_only_the_repos_own_files(tmp_path):
+    copy = copy_repo(AUTHKIT, tmp_path / "copy")
+    (copy / "node_modules" / "left-pad").mkdir(parents=True)  # what `npm ci` leaves in the copy
+    (copy / "node_modules" / "left-pad" / "index.js").write_text("module.exports = 1;")
+    (copy / "coverage.xml").write_text("<coverage/>")  # or a test run
+    apply_bumps(copy, {"PyJWT": "2.14.0"})
+    assert [line for line in diff(AUTHKIT, copy).splitlines() if line.startswith("+++ ")] == ["+++ b/requirements.txt"]
+
+
+def test_a_fixer_that_cant_be_reached_ends_the_rounds_with_a_note(tmp_path):
+    results = iter([passing(), failing()])
+
+    def fixer(*args):
+        raise RuntimeError("Error code: 402 - budget exhausted")
+
+    run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade()], run_tests=lambda folder: next(results), fixer=fixer)
+    assert not run.proven and run.rounds == [] and run.fix_error == "RuntimeError: Error code: 402 - budget exhausted"
+    assert "Nemotron Super couldn't be asked for a fix (RuntimeError: Error code: 402 - budget exhausted)" in render(run)
+
+
 def test_tests_run_in_a_container_with_only_the_copy_mounted(tmp_path):
     calls = []
 

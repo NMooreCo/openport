@@ -9,15 +9,18 @@ and have Nemotron Super repair whatever the upgrade broke.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
 from . import Upgrade, plan_upgrades, read_lockfiles
 from .apply import Edit, apply_bumps, apply_edits, copy_repo, diff
+from .bump import LOCKFILES, bump_steps
 from .fix import source_files
-from .testrun import TestRun
+from .testrun import TestRun, run_in_container
 
-BUMPABLE_SOURCES = ("requirements.txt",)  # pinned requirements; lockfile-managed deps need their package manager
+# Pinned requirements are edited in place; uv.lock and package-lock.json are rewritten by uv and npm (bump.py).
+BUMPABLE_SOURCES = ("requirements.txt", *LOCKFILES)
 
 
 @dataclass
@@ -41,6 +44,7 @@ class UpgradeRun:
     changed: list[str] = field(default_factory=list)
     diff: str = ""
     out: str = ""
+    fix_error: str = ""  # why Super couldn't be asked for a fix (e.g. the API refused), if it couldn't
 
     @property
     def final(self) -> TestRun | None:
@@ -63,6 +67,7 @@ def upgrade_repo(
     researcher: Callable[[Upgrade], list[dict]] | None = None,
     fixer=None,
     on_event: Callable[[str, object], None] | None = None,
+    run_container: Callable[[Path, str, str], TestRun] = run_in_container,  # runs uv or npm to bump a lockfile
 ) -> UpgradeRun:
     emit = on_event or (lambda kind, data: None)
     plans = plans if plans is not None else plan_upgrades(read_lockfiles(root), min_age_days=min_age_days)
@@ -76,19 +81,38 @@ def upgrade_repo(
     copy_repo(root, out)
     run.before = run_tests(out)
     emit("before", run.before)
-    run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in upgraded})
+    run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in upgraded if p.dep.source == "requirements.txt"})
+    locked: dict[str, dict[str, str]] = {}
+    for p in upgraded:
+        if p.dep.source in LOCKFILES:
+            locked.setdefault(p.dep.source, {})[p.dep.name] = p.target.version
+    cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
+    for step in bump_steps(out, locked, cutoff):
+        result = run_container(out, step.image, step.command)
+        if result.ok:
+            run.changed += [step.lockfile] + (["package.json"] if step.lockfile == "package-lock.json" else [])
+            continue
+        failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
+        run.upgraded = [p for p in run.upgraded if p not in failed]
+        run.skipped += [(p, f"{step.lockfile} couldn't be updated: {result.summary or 'the package manager failed'}") for p in failed]
+    if not run.upgraded:
+        return run
     run.after_bump = run_tests(out)
     emit("after_bump", run.after_bump)
 
     current, notes = run.after_bump, ""
     if not current.ok and fixer is not None:
         if researcher is not None:
-            for upgrade in upgraded:
+            for upgrade in run.upgraded:
                 run.research += researcher(upgrade)
             emit("research", run.research)
-        summary = [{"name": p.dep.name, "from": p.dep.version, "to": p.target.version} for p in upgraded]
+        summary = [{"name": p.dep.name, "from": p.dep.version, "to": p.target.version} for p in run.upgraded]
         for _ in range(rounds):
-            edits, rationale, sources = fixer(summary, run.research, current.output, source_files(out, current.output), notes)
+            try:
+                edits, rationale, sources = fixer(summary, run.research, current.output, source_files(out, current.output), notes)
+            except Exception as error:  # e.g. Token Factory refusing the request: report it, keep the bump and the tests
+                run.fix_error = f"{type(error).__name__}: {error}"[:300]
+                break
             applied, rejected = apply_edits(out, edits)
             current = run_tests(out) if applied else current
             run.rounds.append(FixRound(applied, rejected, rationale, sources, current))
