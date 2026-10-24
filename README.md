@@ -77,6 +77,15 @@ Keep it honest after merging. `openport port` adds a GitHub Action (when the rep
 uv run openport check .
 ```
 
+## Upgrade vulnerable dependencies (Phase 2, dry run)
+
+The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vulnerable packages. `openport upgrade` reads the repo's lockfiles, asks [OSV.dev](https://osv.dev) which installed versions are vulnerable, and picks the earliest version that fixes each advisory and is at least a week old — so a brand-new malicious release can't be auto-selected. Today it reports; the code fixes, test runs and PR are next.
+
+```bash
+uv run openport upgrade .            # Python and Node lockfiles; OSV.dev, no key needed
+uv run openport upgrade . --min-age 14
+```
+
 ## Dashboard
 
 Watch a whole run live: calls found, each tuning attempt, the code changes and the PR description.

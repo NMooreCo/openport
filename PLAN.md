@@ -217,6 +217,13 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - **Wired into the dashboard pipeline:** when a pasted repo has no eval spec, the pipeline now runs a `capture` stage (bounded, `OPENPORT_CAPTURE_CASES`, default 6), emits a `captured` event flagged as unreviewed, and tunes on the generated spec instead of porting untuned. 63 offline tests.
 - **Labelling choice:** `--label-with ultra` (default) or `--label-with original`, which labels generated cases by running the app through its original closed model instead of Ultra (needs that provider's key; this one does execute the repo). 66 offline tests.
 
+**Phase 2 `openport upgrade` started (built offline; dry run only):** `openport upgrade <folder | owner/repo>`.
+- **Lockfiles:** reads installed versions from Python (`requirements*.txt`, `uv.lock`, `poetry.lock`) and Node (`package-lock.json` v1/v2/v3, `pnpm-lock.yaml`) lockfiles; parsed, never installed.
+- **Advisories:** queries OSV.dev per dependency at its installed version (free, no key) and extracts the fixed versions.
+- **Safe target:** picks the lowest stable release that fixes every advisory, is newer than installed, and is at least `--min-age` days old (default 7) — the supply-chain guard against freshly-published malicious releases; holds if the only fix is too new.
+- **CLI:** a dry-run report (vulnerable deps, installed -> fix, advisory IDs, status). 86 offline tests.
+- Not yet (needs a live environment): Tavily research on the advisory/changelog, Super patching broken call sites, running the repo's test suite before/after, and opening the PR.
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.

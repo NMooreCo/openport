@@ -395,6 +395,44 @@ def check(
 
 
 @app.command()
+def upgrade(
+    target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
+    min_age: int = typer.Option(7, "--min-age", help="Only propose a fix version at least this many days old"),
+) -> None:
+    """Phase 2 (dry run): find vulnerable dependencies and the safe version that fixes each, via OSV.dev."""
+    from .upgrade import plan_upgrades, read_lockfiles
+
+    root = _target_root(target)
+    deps = read_lockfiles(root)
+    if not deps:
+        _fail("No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml).")
+    console.print(f"Read {len(deps)} dependencies. Checking OSV.dev...")
+    try:
+        plans = plan_upgrades(deps, min_age_days=min_age)
+    except Exception as error:  # OSV or a registry being unreachable shouldn't look like a crash
+        _fail(f"Advisory lookup failed: {type(error).__name__}: {error}")
+    if not plans:
+        console.print(f"[green]No known vulnerabilities in {len(deps)} dependencies.[/green]")
+        return
+
+    colors = {"upgrade": "green", "held: fix too new": "yellow", "no fix available": "red"}
+    table = Table(title=f"Vulnerable dependencies in {root.resolve().name}")
+    for column in ("Package", "Installed", "Fix", "Advisories", "Status"):
+        table.add_column(column)
+    for up in plans:
+        fix = f"[green]{up.target.version}[/green] ({up.target.age_days}d old)" if up.target else "—"
+        color = colors.get(up.status, "white")
+        table.add_row(up.dep.name, up.dep.version, fix, ", ".join(up.advisory_ids), f"[{color}]{up.status}[/{color}]")
+    console.print(table)
+
+    upgradable = sum(up.status == "upgrade" for up in plans)
+    console.print(
+        f"\n{len(plans)} vulnerable of {len(deps)} dependencies: {upgradable} have a safe fix. "
+        "Dry run: `openport upgrade` proposes versions; it doesn't change files yet."
+    )
+
+
+@app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Interface to listen on"),
     port: int = typer.Option(8000, help="Port to listen on"),

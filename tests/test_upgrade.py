@@ -3,9 +3,10 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from openport.upgrade import lockfiles, osv
+from openport.upgrade import lockfiles, osv, plan_upgrades
 from openport.upgrade.lockfiles import Dependency, read_lockfiles
 from openport.upgrade.osv import Advisory, find_advisories, osv_name, parse_vuln, query_body
+from openport.upgrade.registry import parse_npm_releases, parse_pypi_releases
 from openport.upgrade.select import choose_target, fix_floor
 from packaging.version import Version
 
@@ -184,3 +185,44 @@ def test_choose_target_skips_prereleases():
 
 def test_choose_target_none_when_no_fix_available():
     assert choose_target("2.20.0", [adv()], {"9.9.9": days_ago(90)}, now=NOW) is None
+
+
+# --- registry release dates --------------------------------------------------
+
+def test_parse_pypi_releases():
+    data = {
+        "releases": {
+            "2.31.0": [{"upload_time_iso_8601": "2024-05-29T12:00:00.000000Z"}],
+            "2.32.0": [],  # no files (fully yanked): skipped
+        }
+    }
+    out = parse_pypi_releases(data)
+    assert set(out) == {"2.31.0"} and out["2.31.0"].year == 2024
+
+
+def test_parse_npm_releases():
+    data = {"time": {"created": "2020-01-01T00:00:00Z", "modified": "2024-01-01T00:00:00Z", "1.6.0": "2023-10-01T00:00:00.000Z"}}
+    out = parse_npm_releases(data)
+    assert set(out) == {"1.6.0"} and out["1.6.0"].year == 2023
+
+
+# --- plan_upgrades orchestration ---------------------------------------------
+
+def test_plan_upgrades_reports_a_status_per_vulnerable_dep():
+    requests = Dependency("requests", "2.20.0", "PyPI", "r")
+    leftpad = Dependency("leftpad", "1.0.0", "npm", "r")
+    nofix = Dependency("nofix", "1.0.0", "PyPI", "r")
+
+    def find(_deps):
+        return [(requests, [adv("2.31.0")]), (leftpad, [adv("2.0.0")]), (nofix, [adv()])]
+
+    def releases_for(dep):
+        return {
+            "requests": {"2.31.0": days_ago(60)},
+            "leftpad": {"2.0.0": days_ago(1)},  # fixes, but too new
+        }.get(dep.name, {})
+
+    plans = plan_upgrades([requests, leftpad, nofix], find=find, releases_for=releases_for, now=NOW)
+    status = {p.dep.name: p.status for p in plans}
+    assert status == {"requests": "upgrade", "leftpad": "held: fix too new", "nofix": "no fix available"}
+    assert next(p for p in plans if p.dep.name == "requests").target.version == "2.31.0"
