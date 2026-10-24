@@ -186,6 +186,68 @@ def scan(
 
 
 @app.command()
+def capture(
+    target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
+    logs: list[str] | None = typer.Option(None, "--logs", help="Recorded calls for a site: ID=PATH to a JSONL of {input, output} lines (repeatable)"),
+    generate: int = typer.Option(0, help="With no logs, have Super invent N inputs per call and Ultra label them (needs NEBIUS_API_KEY)"),
+    out: Path | None = typer.Option(None, help="Where to write the eval spec (default: runs/captures/<name>)"),
+    include_tests: bool = typer.Option(False, help="Also capture calls found in test files"),
+) -> None:
+    """Draft a starter eval spec from a repo: a call site, grader and dataset per LLM call, ready for `openport tune`."""
+    from .capture import capture_repo, write_capture
+    from .scan import scan_repo
+
+    root = _target_root(target)
+    report = scan_repo(root)
+
+    log_map: dict[str, Path] = {}
+    for item in logs or []:
+        site_id, sep, path = item.partition("=")
+        if not sep or not path:
+            _fail(f"--logs wants ID=PATH, got {item!r}")
+        file = Path(path)
+        if not file.is_file():
+            _fail(f"No such logs file: {path}")
+        log_map[site_id] = file
+    unknown = set(log_map) - {f.id for f in report.findings}
+    if unknown:
+        _fail(f"No call site called {', '.join(sorted(unknown))}. Run `openport scan` to list them.")
+
+    def progress(site):
+        console.print(f"  {site.spec['id']:<26} {len(site.cases)} case(s) from {site.source}")
+
+    try:
+        result = capture_repo(root, report, logs=log_map, generate=generate, include_tests=include_tests, on_site=progress)
+    except (config.MissingKeyError, RuntimeError) as error:
+        _fail(str(error))
+    if not result.sites and not result.skipped:
+        _fail("No LLM calls found to capture.")
+
+    out_dir = out or config.RUNS_DIR / "captures" / root.resolve().name
+    paths = write_capture(result, out_dir)
+
+    table = Table(title=f"Captured eval spec for {result.target}")
+    for column in ("Call site", "SDK / output", "Grader", "Cases", "From"):
+        table.add_column(column)
+    for site in result.sites:
+        grader = site.spec["grader"]
+        detail = grader["type"] + (f" ({len(grader['fields'])})" if grader["type"] == "fields" else "")
+        color = "green" if site.cases else "yellow"
+        table.add_row(
+            site.spec["id"], f"{site.finding.sdk} {site.finding.output}", detail,
+            f"[{color}]{len(site.cases)}[/{color}]", site.source,
+        )
+    console.print(table)
+    if result.helper_cost_usd is not None:
+        console.print(f"OpenPort's own cost: ${result.helper_cost_usd:.4f}")
+    if result.skipped:
+        console.print(f"[yellow]Skipped {len(result.skipped)} call(s) the harness can't run yet (see the notes).[/yellow]")
+    console.print(f"Spec: {paths['spec']}")
+    console.print(f"Notes: {paths['notes']}")
+    console.print("Review the spec, then run: openport tune " + str(Path(out_dir)))
+
+
+@app.command()
 def tune(
     target: Path = typer.Argument(..., help="Target app folder, or its openport.evals.yaml"),
     sites: str | None = typer.Option(None, help="Comma-separated eval call-site IDs (default: all)"),

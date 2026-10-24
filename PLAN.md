@@ -208,6 +208,13 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 - 44 Python tests.
 - **Biggest gap for real repos:** no eval spec means no tuning. Next: `openport capture`, a starter eval set per call: import logs, seed from the repo's own test data (preflight's labelled diffs), or have Super write inputs and the original model or Ultra label them, flagged for human review.
 
+**Sat 24: `openport capture` (built; checked offline):** `openport capture <folder | owner/repo>`.
+- Drafts a starter `openport.evals.yaml` from a scan (code parsed, never run): one call site per LLM call, with a client the runner can swap, a grader inferred from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text), and a `<id>.jsonl` dataset.
+- **Cases:** imported from a recorded-call log (`--logs ID=PATH`), or, with no logs, generated — Super invents realistic inputs and Ultra labels graded outputs (`--generate N`), flagged for review.
+- Calls the harness can't run yet (TypeScript, methods, clients it can't bind at import, non-evaluable outputs) are skipped and listed in `CAPTURE_NOTES.md`.
+- Verified on SupportDesk: with its logs it reproduces the hand-written spec's graders and datasets; the captured spec loads, imports every call and reads its cases. 62 offline tests.
+- This closes the "no eval spec means no tuning" gap: a real repo can now go scan -> capture -> tune. Next: wire capture into the dashboard pipeline, and a `--run-original` labeller for repos whose closed-model key is available.
+
 **Still open for Fri 23:**
 - Add API keys, then run `openport smoke` and `openport baseline examples/supportdesk`.
 - Create the public GitHub repo.

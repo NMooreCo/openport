@@ -48,6 +48,13 @@ Measure the "plain swap" baseline for the SupportDesk demo app: what happens if 
 uv run openport baseline examples/supportdesk
 ```
 
+For a repo that has no eval spec yet, draft one. `openport capture` scans the repo and writes a starter `openport.evals.yaml` with a call site, a grader and a dataset per LLM call. The grader is chosen from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text). Point it at recorded calls to fill the datasets, or let Super invent inputs and Ultra label them. Generated cases are flagged for review, and calls the harness can't run (TypeScript, methods, unusual clients) are listed in `CAPTURE_NOTES.md`. The result is runnable by `openport tune`.
+
+```bash
+uv run openport capture examples/supportdesk --logs triage.triage_ticket=logs/triage.jsonl
+uv run openport capture jsliapark/preflight --generate 10   # needs NEBIUS_API_KEY
+```
+
 Tune each call. OpenPort starts it on Nemotron Nano exactly as written. If it misses the target, Nemotron Ultra reads the failures and proposes a fix (extra prompt instructions, reasoning on or off, a higher token limit, temperature), and it tries again, moving up to Super and then Ultra if needed. About 30% of each call's cases are held out: Ultra never sees them, and a fix only counts if it passes those too. The result is a plan for `openport port`.
 
 ```bash
