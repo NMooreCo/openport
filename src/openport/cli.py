@@ -633,6 +633,7 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     from .github import UPGRADE_BRANCH
     from .upgrade import report as upgrade_report
     from .upgrade.apply import changed_files, make_pr_folder
+    from .upgrade.changelog import changelog_digest
     from .upgrade.fix import make_fixer
     from .upgrade.research import research_upgrade
     from .upgrade.run import upgrade_repo
@@ -646,6 +647,7 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
         fixer = None
         console.print("[yellow]No NEBIUS_API_KEY: OpenPort will bump and test, but can't fix code the upgrade breaks.[/yellow]")
     researcher = research_upgrade if os.getenv("TAVILY_API_KEY") else None
+    changelog = changelog_digest if os.getenv("TAVILY_API_KEY") else None
 
     def show(test_run):
         return f"[{'green' if test_run.ok else 'red'}]{'pass' if test_run.ok else 'FAIL'}[/] {test_run.summary} ({test_run.seconds}s)"
@@ -655,6 +657,10 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
             console.print(f"  Tests before the upgrade: {show(data)}")
         elif kind == "after_bump":
             console.print(f"  Tests after the version bump: {show(data)}")
+        elif kind == "changelogs":
+            for found in data:
+                console.print(f"  [cyan]Tavily[/cyan]: {found.name}'s changelog, {len(found.releases)} release(s) in between, "
+                              f"{len(found.quotes)} line(s) for the PR")
         elif kind == "research":
             console.print(f"  [cyan]Tavily[/cyan]: {len(data)} page(s) on what changed")
         elif kind == "round":
@@ -675,8 +681,8 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
             setups = [("tests", test_image or setups[0][1], test_command or setups[0][2])]
         return run_suites(folder, setups)
 
-    run = upgrade_repo(root, out_dir, plans=plans, min_age_days=min_age, rounds=rounds, researcher=researcher, fixer=fixer,
-                       on_event=event, run_tests=tests)
+    run = upgrade_repo(root, out_dir, plans=plans, min_age_days=min_age, rounds=rounds, researcher=researcher, changelog=changelog,
+                       fixer=fixer, on_event=event, run_tests=tests)
     if not run.upgraded:
         _fail("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
     config.RUNS_DIR.mkdir(parents=True, exist_ok=True)

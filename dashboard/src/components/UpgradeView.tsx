@@ -3,7 +3,7 @@ import type { RunInfo } from "../App";
 import type { Source } from "../run";
 import {
   UPGRADE_STAGE_LABELS, UPGRADE_STAGES, advisoryUrl, finalTests, shortSummary, upgraded, useUpgrade,
-  type FixRound, type Package, type TestResult, type UpgradeState,
+  type Changelog, type FixRound, type Package, type TestResult, type UpgradeState,
 } from "../upgrade";
 import { Tile } from "./Metrics";
 import { ResultTabs } from "./ResultTabs";
@@ -160,6 +160,41 @@ function FixStep({ fix, index }: { fix: FixRound; index: number }) {
   );
 }
 
+function Changelogs({ changelogs }: { changelogs: Changelog[] }) {
+  return (
+    <section aria-labelledby="changelogs">
+      <h2 id="changelogs" className="text-sm font-medium text-white">What changed upstream</h2>
+      <p className="mt-1 text-xs text-muted">
+        Quoted from each package's own changelog, found and read with Tavily, for the releases between the two versions.
+      </p>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        {changelogs.map((log) => (
+          <article key={`${log.name}@${log.from}`} className="min-w-0 rounded-xl border border-line bg-panel p-4">
+            <p className="text-sm break-words text-white">
+              <span className="font-medium">{log.name}</span> <span className="font-mono text-xs text-muted">{log.from} → {log.to}</span>
+            </p>
+            <p className="mt-0.5 text-xs text-muted">
+              {plural(log.releases.length, "release")} ·{" "}
+              <a href={log.url} target="_blank" rel="noreferrer" className="underline decoration-line hover:text-white">{log.title}</a>
+            </p>
+            {log.quotes.length ? (
+              <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-300">
+                {log.quotes.map((quote, i) => (
+                  <li key={i} className="break-words">
+                    <span className="font-mono text-muted">{quote.version}</span> “{quote.text}”
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-xs text-muted">None of them says anything was removed or now works differently.</p>
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Tests({ state }: { state: UpgradeState }) {
   const bumps = upgraded(state).map((p) => `${p.name} ${p.target}`).join(", ");
   const fixing = state.stages.fix === "active" && state.status === "running";
@@ -212,10 +247,11 @@ export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive: () =>
           <p className="mt-3 text-sm text-muted">No dependency has a known vulnerability.</p>
         ) : (
           <div className="mt-3 grid gap-3 md:grid-cols-2">
-            {packages.map((pkg) => <PackageCard key={`${pkg.ecosystem}:${pkg.name}`} pkg={pkg} />)}
+            {packages.map((pkg) => <PackageCard key={`${pkg.ecosystem}:${pkg.name}@${pkg.version}:${pkg.source}`} pkg={pkg} />)}
           </div>
         )}
       </section>
+      {state.changelogs && state.changelogs.length > 0 && <Changelogs changelogs={state.changelogs} />}
 
       {(state.before || state.stages.test === "active") && <Tests state={state} />}
 

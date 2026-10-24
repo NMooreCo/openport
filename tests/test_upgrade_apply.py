@@ -362,6 +362,35 @@ def test_the_diff_shows_only_the_repos_own_files(tmp_path):
     assert [line for line in diff(AUTHKIT, copy).splitlines() if line.startswith("+++ ")] == ["+++ b/requirements.txt"]
 
 
+def test_the_pr_quotes_what_changed_upstream_and_super_reads_those_releases_first(tmp_path):
+    from openport.upgrade.changelog import Digest, Release
+
+    found = Digest("PyJWT", "1.7.1", "2.14.0", "https://github.com/jpadilla/pyjwt/blob/HEAD/CHANGELOG.rst", "PyJWT changelog",
+                   [Release("2.0.0", [(3, "Drop support for Python 2 and Python 3.0-3.5")]), Release("2.14.0")],
+                   "## 2.0.0\nDrop support for Python 2 and Python 3.0-3.5")
+    seen = {}
+
+    def fixer(upgrades, research, output, files, notes):
+        seen["research"] = research
+        return [], "nothing to change", []
+
+    results = iter([passing(), failing()])
+    run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade()], run_tests=lambda folder: next(results), fixer=fixer,
+                       changelog=lambda up: found, rounds=1)
+    assert run.changelogs == [found]
+    assert seen["research"][0] == {"title": "PyJWT changelog", "url": found.url, "excerpt": found.text}  # in full, first
+    body = render(run)
+    assert ("### What changed upstream" in body and "- **PyJWT** 1.7.1 → 2.14.0: 2 releases, from [PyJWT changelog]"
+            "(https://github.com/jpadilla/pyjwt/blob/HEAD/CHANGELOG.rst)\n  - 2.0.0: “Drop support for Python 2 and Python 3.0-3.5”") in body
+
+    def unreachable(up):
+        raise OSError("Tavily is down")
+
+    results = iter([passing(), passing()])
+    quiet = upgrade_repo(AUTHKIT, tmp_path / "out2", plans=[upgrade()], run_tests=lambda folder: next(results), changelog=unreachable)
+    assert quiet.proven and quiet.changelogs == [] and "What changed upstream" not in render(quiet)  # the upgrade goes on
+
+
 def test_a_fixer_that_cant_be_reached_ends_the_rounds_with_a_note(tmp_path):
     results = iter([passing(), failing()])
 

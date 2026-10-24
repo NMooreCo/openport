@@ -35,13 +35,25 @@ export interface FixRound {
   tests: TestResult | null; // null when every proposed edit was rejected, so the tests didn't run again
 }
 
+/** What changed upstream, quoted from a package's own changelog (found and read with Tavily). */
+export interface Changelog {
+  name: string;
+  from: string;
+  to: string;
+  url: string;
+  title: string;
+  releases: { version: string; notable: string[] }[];
+  quotes: { version: string; text: string }[];
+}
+
 export interface UpgradeState {
   id: string;
   status: "queued" | "running" | "done" | "failed";
   stages: Record<UpgradeStage, StageState>;
   deps?: { count: number; files: string[] };
   packages?: Package[];
-  bumped?: string[]; // the packages actually upgraded, once the bump is done
+  bumped?: string[]; // the packages actually upgraded, once the bump is done: "name@version" (older runs: "name")
+  changelogs?: Changelog[];
   before?: TestResult;
   afterBump?: TestResult;
   research: Source[];
@@ -51,7 +63,9 @@ export interface UpgradeState {
   error?: string;
 }
 
-export const UPGRADE_EVENT_TYPES = ["stage", "note", "deps", "advisories", "bumped", "tests", "research", "fix", "upgrade_pr", "done", "failed"];
+export const UPGRADE_EVENT_TYPES = [
+  "stage", "note", "deps", "advisories", "bumped", "changelogs", "tests", "research", "fix", "upgrade_pr", "done", "failed",
+];
 
 export function initialUpgrade(id: string): UpgradeState {
   return { id, status: "queued", stages: pendingStages(UPGRADE_STAGES), research: [], fixes: [], notes: [] };
@@ -70,7 +84,9 @@ export function reduceUpgrade(state: UpgradeState, event: RunEvent): UpgradeStat
     case "advisories":
       return { ...state, packages: event.packages };
     case "bumped":
-      return { ...state, bumped: event.packages };
+      return { ...state, bumped: event.versions ?? event.packages };
+    case "changelogs":
+      return { ...state, changelogs: event.packages };
     case "tests":
       return event.step === "before" ? { ...state, before: testResult(event) } : { ...state, afterBump: testResult(event) };
     case "research":
@@ -94,7 +110,9 @@ export const useUpgrade = (runId: string | null) => useEvents(runId, initialUpgr
 
 /** The packages this run upgrades: those actually bumped once that's done, else the ones it means to bump. */
 export const upgraded = (state: UpgradeState) =>
-  (state.packages ?? []).filter((p) => (state.bumped ? state.bumped.includes(p.name) : p.target && p.bumpable));
+  (state.packages ?? []).filter((p) =>
+    state.bumped ? state.bumped.includes(`${p.name}@${p.version}`) || state.bumped.includes(p.name) : p.target && p.bumpable,
+  );
 
 /** The latest test result: after the last fix that re-ran them, else after the bump. */
 export function finalTests(state: UpgradeState): TestResult | undefined {

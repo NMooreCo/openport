@@ -71,6 +71,23 @@ def tavily_search(query: str, domains: list[str]) -> list[dict]:
     return response.get("results", [])
 
 
+def tavily_extract(urls: list[str]) -> dict[str, str]:
+    """Each page Tavily could read, as markdown (pages it couldn't aren't charged)."""
+    from tavily import TavilyClient
+
+    client = TavilyClient(api_key=config.require("TAVILY_API_KEY"))
+    response = client.extract(urls, format="markdown")
+    return {result["url"]: result.get("raw_content") or "" for result in response.get("results", [])}
+
+
+def tavily_map(url: str, select_paths: list[str]) -> list[str]:
+    """The pages of a site whose paths match one of `select_paths` (regexes)."""
+    from tavily import TavilyClient
+
+    client = TavilyClient(api_key=config.require("TAVILY_API_KEY"))
+    return client.map(url, max_depth=2, limit=50, select_paths=select_paths).get("results", [])
+
+
 EXTRACT_PROMPT = """From the search results below, find the standard API price of the model `{model}`: USD per 1 million input tokens and per 1 million output tokens. Use the regular price, not batch, cached-input or long-context prices. If the exact model isn't priced in the results, use null.
 
 Respond with JSON only: {{"input": number or null, "output": number or null, "source": "the URL the prices come from"}}

@@ -52,6 +52,7 @@ def run_pipeline(run: Run, target: str, local: Path | None) -> None:
 
 def _upgrade(run: Run, target: str, local: Path | None) -> None:
     from ..upgrade import report
+    from ..upgrade.changelog import changelog_digest
     from ..upgrade.fix import make_fixer
     from ..upgrade.research import research_upgrade
     from ..upgrade.run import upgrade_repo
@@ -81,7 +82,9 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
             if kind == "after_bump" and not data.ok:
                 run.emit("stage", stage="fix")  # the research and Super's edits come next
         elif kind == "bumped":  # the packages actually upgraded: a lockfile the package manager couldn't update drops out
-            run.emit("bumped", packages=[p.dep.name for p in data])
+            run.emit("bumped", packages=[p.dep.name for p in data], versions=[f"{p.dep.name}@{p.dep.version}" for p in data])
+        elif kind == "changelogs":
+            run.emit("changelogs", packages=[found.to_dict() for found in data])
         elif kind == "research":
             run.emit("research", sources=[{"title": s["title"], "url": s["url"]} for s in data])
         elif kind == "round":
@@ -90,6 +93,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
 
     run.emit("stage", stage="test")
     researcher = research_upgrade if os.getenv("TAVILY_API_KEY") else None
+    changelog = changelog_digest if os.getenv("TAVILY_API_KEY") else None
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
     meter = UsageMeter()  # Super's fixes: what this run spends on Token Factory
 
@@ -98,7 +102,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
 
     try:
         result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=tests,
-                              researcher=researcher, fixer=make_fixer(meter=meter), on_event=event)
+                              researcher=researcher, changelog=changelog, fixer=make_fixer(meter=meter), on_event=event)
     finally:
         run.emit("cost", evals_usd=0.0, helper_usd=_cost(meter))
     run.emit("stage", stage="pr")

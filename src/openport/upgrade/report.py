@@ -55,6 +55,15 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
             lines += ["", f"Lockfiles were resolved in a throwaway container that held back releases under {min_age_days} days old, "
                           "and every version they add was checked against its registry's release date."]
 
+    if run.changelogs:
+        lines += ["", "### What changed upstream", "",
+                  "Quoted from each package's own changelog (found and read with Tavily), for the releases between the two versions:", ""]
+        for found in run.changelogs:
+            releases = f"{len(found.releases)} release{'' if len(found.releases) == 1 else 's'}"
+            lines.append(f"- **{found.name}** {found.old} → {found.new}: {releases}, from [{found.title}]({found.url})"
+                         + ("" if found.quotes else "; none of them says anything was removed or now works differently"))
+            lines += [f"  - {version}: “{text}”" for version, text in found.quotes]
+
     lines += ["", "### Tests", "", "| | Result |", "|---|---|",
               f"| Before the upgrade | {_tests(run.before)} |", f"| After the version bump | {_tests(run.after_bump)} |"]
     applied_rounds = [fix for fix in run.rounds if fix.edits]  # a round whose edits were all rejected didn't re-run the tests

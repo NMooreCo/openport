@@ -13,6 +13,7 @@ in its container can reach the diff or the PR.
 """
 
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,6 +48,7 @@ class UpgradeRun:
     before: TestRun | None
     after_bump: TestRun | None
     rounds: list[FixRound] = field(default_factory=list)
+    changelogs: list = field(default_factory=list)  # a changelog.Digest for each upgraded package whose changelog was found
     research: list[dict] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
     diff: str = ""
@@ -72,6 +74,7 @@ def upgrade_repo(
     rounds: int = 3,
     run_tests: Callable[[Path], TestRun],
     researcher: Callable[[Upgrade], list[dict]] | None = None,
+    changelog: Callable[[Upgrade], object] | None = None,  # an upgrade -> its changelog.Digest, or None
     fixer=None,
     on_event: Callable[[str, object], None] | None = None,
     run_container: Callable[[Path, str, str], TestRun] = run_in_container,  # runs a package manager to bump a lockfile
@@ -115,7 +118,8 @@ def upgrade_repo(
         return run_tests(scratch_copy())  # never `out` itself: the tests run the repo's code
 
     try:
-        return _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container, release_dates)
+        return _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit, run_container,
+                        release_dates)
     finally:
         for folder in set(scratches):
             try:
@@ -124,7 +128,8 @@ def upgrade_repo(
                 pass
 
 
-def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, fixer, emit, run_container, release_dates) -> UpgradeRun:
+def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit, run_container,
+             release_dates) -> UpgradeRun:
     run.before = tested()
     emit("before", run.before)
     run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in run.upgraded if p.dep.source == "requirements.txt"})
@@ -157,14 +162,28 @@ def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researc
     emit("bumped", run.upgraded)
     if not run.upgraded:
         return run
+    if changelog is not None:  # what changed upstream, for the PR whatever the tests say
+
+        def read(upgrade: Upgrade):
+            try:
+                return changelog(upgrade)
+            except Exception:  # Tavily unreachable or out of credit: the PR goes without it
+                return None
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            run.changelogs = [found for found in pool.map(read, run.upgraded) if found]
+        emit("changelogs", run.changelogs)
     run.after_bump = tested()
     emit("after_bump", run.after_bump)
 
     current, notes = run.after_bump, ""
     if not current.ok and fixer is not None:
+        # The releases in between, in full, come first: Super's quotes from them are checked like any other source's.
+        run.research = [{"title": d.title, "url": d.url, "excerpt": d.text} for d in run.changelogs]
         if researcher is not None:
             for upgrade in run.upgraded:
                 run.research += researcher(upgrade)
+        if researcher is not None or run.research:
             emit("research", run.research)
         summary = [{"name": p.dep.name, "from": p.dep.version, "to": p.target.version} for p in run.upgraded]
         for _ in range(rounds):
