@@ -118,6 +118,24 @@ def test_parse_vuln_extracts_fixed_versions_for_the_package():
     assert adv.aliases == ["CVE-2024-1234"]
 
 
+def test_parse_vuln_reads_ranges_and_skips_commit_hashes():
+    vuln = {"id": "PYSEC-1", "aliases": ["CVE-1"], "affected": [{"package": {"ecosystem": "PyPI", "name": "pyjwt"}, "ranges": [
+        {"type": "GIT", "events": [{"introduced": "0"}, {"fixed": "9c528670c455b8d948aff95ed50e22940d1ad3fc"}]},
+        {"type": "ECOSYSTEM", "events": [{"introduced": "1.5.0"}, {"fixed": "2.4.0"}]},
+        {"type": "ECOSYSTEM", "events": [{"introduced": "3.0"}, {"last_affected": "3.1"}]},
+    ]}]}
+    adv_ = parse_vuln(vuln, "PyPI", "pyjwt")
+    assert adv_.fixed_versions == ["2.4.0"]
+    assert adv_.ranges == [{"introduced": "1.5.0", "fixed": "2.4.0"}, {"introduced": "3.0", "last_affected": "3.1"}]
+
+
+def test_one_record_per_flaw():
+    ghsa = Advisory(id="GHSA-x", summary="", aliases=["CVE-2022-29217", "PYSEC-2022-202"])
+    pysec = Advisory(id="PYSEC-2022-202", summary="", aliases=["CVE-2022-29217", "GHSA-x"])
+    other = Advisory(id="PYSEC-2025-183", summary="", aliases=["CVE-2025-45768"])
+    assert [a.id for a in osv.dedupe([pysec, other, ghsa])] == ["GHSA-x", "PYSEC-2025-183"]
+
+
 def test_query_body_uses_normalized_name_and_version():
     assert query_body(Dependency("Flask", "2.0.1", "PyPI", "r")) == {
         "version": "2.0.1",
@@ -157,8 +175,38 @@ def test_fix_floor_takes_max_of_each_advisorys_lowest_fix():
     assert fix_floor([adv("2.31.0"), adv("2.20.0", "2.25.0")]) == Version("2.31.0")
 
 
-def test_fix_floor_none_when_an_advisory_has_no_fix():
-    assert fix_floor([adv("2.31.0"), adv()]) is None
+def test_fix_floor_ignores_advisories_without_a_fix():
+    assert fix_floor([adv("2.31.0"), adv()]) == Version("2.31.0")
+    assert fix_floor([adv()]) is None
+
+
+def advisory(key, ranges):
+    return Advisory(id=f"GHSA-{key}", summary="", aliases=[f"CVE-{key}"], ranges=ranges)
+
+
+def test_an_unfixable_advisory_does_not_block_the_rest():
+    # PyJWT, Oct 2026: one disputed advisory has no fix; the others are fixed in 2.4.0 and 2.13.0.
+    advisories = [
+        advisory("2022-1", [{"introduced": "1.5.0", "fixed": "2.4.0"}]),
+        advisory("2026-2", [{"introduced": "0", "fixed": "2.13.0"}]),
+        advisory("2025-3", [{"introduced": "0"}]),  # disputed, no fix
+    ]
+    releases = {"2.4.0": days_ago(800), "2.13.0": days_ago(30)}
+    target = choose_target("1.7.1", advisories, releases, now=NOW)
+    assert target.version == "2.13.0" and target.fixed == ["CVE-2022-1", "CVE-2026-2"] and target.still_open == ["CVE-2025-3"]
+
+
+def test_newest_fix_too_new_means_a_partial_upgrade():
+    advisories = [advisory("1", [{"introduced": "0", "fixed": "2.4.0"}]), advisory("2", [{"introduced": "0", "fixed": "2.14.0"}])]
+    target = choose_target("1.7.1", advisories, {"2.4.0": days_ago(800), "2.14.0": days_ago(2)}, now=NOW)
+    assert target.version == "2.4.0" and target.still_open == ["CVE-2"]  # 2.14.0 is too new to trust yet
+
+
+def test_a_fix_on_another_branch_does_not_count():
+    two_branches = advisory("1", [{"introduced": "1.0", "fixed": "1.7.2"}, {"introduced": "2.0", "fixed": "2.4.0"}])
+    releases = {"1.7.2": days_ago(90), "2.0.0": days_ago(80), "2.4.0": days_ago(60)}
+    assert choose_target("1.7.1", [two_branches], releases, now=NOW).version == "1.7.2"
+    assert choose_target("2.0.0", [two_branches], releases, now=NOW).version == "2.4.0"  # 2.0.0 itself is affected
 
 
 def test_choose_target_picks_earliest_old_enough_fix():

@@ -11,7 +11,7 @@ from datetime import datetime
 from .lockfiles import Dependency, read_lockfiles
 from .osv import Advisory, find_advisories
 from .registry import fetch_releases
-from .select import Target, choose_target, fix_floor
+from .select import Target, choose_target, fix_floor, has_fix
 
 
 @dataclass
@@ -19,11 +19,11 @@ class Upgrade:
     dep: Dependency
     advisories: list[Advisory]
     target: Target | None
-    status: str  # "upgrade" | "held: fix too new" | "no fix available"
+    status: str  # "upgrade" | "partial" (some advisories stay open) | "held: fix too new" | "no fix available"
 
     @property
     def advisory_ids(self) -> list[str]:
-        return [a.aliases[0] if a.aliases else a.id for a in self.advisories]
+        return list(dict.fromkeys(a.key for a in self.advisories))
 
 
 def plan_upgrades(
@@ -39,11 +39,12 @@ def plan_upgrades(
     releases_for = releases_for or fetch_releases
     plans: list[Upgrade] = []
     for dep, advisories in find(deps):
-        if fix_floor(advisories) is None:
+        if not any(has_fix(a) for a in advisories):
             plans.append(Upgrade(dep, advisories, None, "no fix available"))
             continue
         target = choose_target(dep.version, advisories, releases_for(dep), min_age_days=min_age_days, now=now)
-        plans.append(Upgrade(dep, advisories, target, "upgrade" if target else "held: fix too new"))
+        status = "held: fix too new" if target is None else "partial" if target.still_open else "upgrade"
+        plans.append(Upgrade(dep, advisories, target, status))
     return plans
 
 
