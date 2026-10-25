@@ -660,6 +660,93 @@ def test_clients_from_factories_constructors_and_fields_are_found(tmp_path):
     assert "OPENAI_API_KEY" not in agents
 
 
+SHAPES = {
+    "app/__init__.py": "",
+    "app/shapes.py": '''from groq import Groq
+from library import LibraryClient
+from openai import OpenAI
+from tracing import instrument
+
+traced = instrument(OpenAI(timeout=10))  # wrapped by a library: the client inside is what moves
+
+
+def summarize(text):
+    return traced.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+
+
+def quick(text):
+    client = OpenAI()
+    return client.with_options(timeout=5).chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": text}])
+
+
+def fast(text):
+    client = Groq(api_key="gsk-old")
+    return client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": text}])
+
+
+class Agent:
+    def __init__(self, client):
+        self.client = client
+
+    def run(self, text):
+        return self.client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+
+
+class _Base:
+    def __init__(self):
+        self._client = OpenAI(max_retries=2)
+
+
+class Chat(_Base):  # its client comes from the class it extends, here in this file
+    def ask(self, text):
+        def attempt():  # and the call is in a function inside the method
+            return self._client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+        return attempt()
+
+
+class Graph(LibraryClient):  # set up by a class from a library
+    def ask(self, text):
+        return self.client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+''',
+    "web/shapes.ts": '''import OpenAI from "openai";
+import { withTracing } from "tracing";
+import { GroqClient } from "groq-client";
+
+const traced = withTracing(new OpenAI());
+
+export async function summarize(text: string) {
+  return traced.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });
+}
+
+export class Agent {
+  client: OpenAI;
+  constructor(client: OpenAI) { this.client = client; }
+  async run(text: string) { return this.client.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] }); }
+}
+
+export class Fast {
+  client = new GroqClient();
+  async go(text: string) { return this.client.chat.completions.create({ model: "llama-3", messages: [{ role: "user", content: text }] }); }
+}
+''',
+}
+
+
+def test_wrapped_and_copied_clients_move_and_other_clients_say_why_they_stay(tmp_path):
+    result, sites = port(write(tmp_path / "repo", SHAPES), tmp_path / "out")
+    code = (result.output / "app/shapes.py").read_text()
+    assert sites["shapes.summarize"].status == "ported" and "traced = instrument(token_factory_client(timeout=10))" in code
+    assert sites["shapes.quick"].status == "ported" and "    client = token_factory_client()\n" in code  # through .with_options(...)
+    assert "is a `Groq`, not one of OpenAI's or Anthropic's SDK clients" in sites["shapes.fast"].reason
+    assert "the `client` parameter of `__init__`" in sites["shapes.run"].reason
+    assert sites["shapes.attempt"].status == "ported" and "self._client = token_factory_client(max_retries=2)" in code
+    assert "set up by the class it extends (`LibraryClient`)" in sites["shapes.ask"].reason
+    web = (result.output / "web/shapes.ts").read_text()
+    assert sites["shapes.summarize-2"].status == "ported" and "withTracing(new OpenAI({ baseURL: process.env.NEBIUS_BASE_URL" in web
+    assert "the `client` parameter of `constructor`" in sites["shapes.run-2"].reason
+    assert "is a `GroqClient`" in sites["shapes.go"].reason
+
+
 def test_typescript_port(tmp_path):
     root = write(tmp_path / "repo", PROBLY_LIKE)
     result, sites = port(root, tmp_path / "out")

@@ -84,6 +84,9 @@ class _TsRepo:
                 name, value, statement = f"this.{_text(node.child_by_field_name('name'))}", node.child_by_field_name("value"), node
             else:
                 continue
+            if value is not None and value.type == "call_expression":  # wrapped on the way: withTracing(new OpenAI())
+                args = value.child_by_field_name("arguments")
+                value = next((a for a in (args.named_children if args is not None else []) if a.type == "new_expression"), None)
             if value is None or value.type != "new_expression":
                 continue
             ctor = _text(value.child_by_field_name("constructor")).split(".")[-1]
@@ -200,6 +203,42 @@ def _ts_chosen_by_caller(binding: _TsBinding) -> str | None:
         if child.type in ("pair", "shorthand_property_identifier") and key == "baseURL" or child.type == "spread_element":
             if from_caller(child.child_by_field_name("value") if child.type == "pair" else child):
                 return f"`{_text(child)}`"
+    return None
+
+
+def _ts_foreign_client(f: _TsFile | None, site: CallSiteFinding) -> str | None:
+    """Why a client the port didn't find stays: it's another class (`this.client = new GroqClient()`), or the object
+    was handed it when built (`this.client = client` in its constructor). None when neither."""
+    call = _call_node(f, site) if f else None
+    receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
+    scope = call
+    kinds = ("class_declaration", "class") if receiver.startswith("this.") else _FUNCTION_NODES
+    while scope is not None and scope.type not in kinds:
+        scope = scope.parent
+    for node in _walk(scope) if scope is not None else []:
+        if node.type == "assignment_expression" and _text(node.child_by_field_name("left")) == receiver:
+            value = node.child_by_field_name("right")
+        elif node.type == "variable_declarator" and _text(node.child_by_field_name("name")) == receiver:
+            value = node.child_by_field_name("value")
+        elif node.type == "public_field_definition" and f"this.{_text(node.child_by_field_name('name'))}" == receiver:
+            value = node.child_by_field_name("value")  # a class field: `client = new GroqClient()`
+        else:
+            continue
+        value = _unwrap(value)
+        if value is not None and value.type == "new_expression":
+            ctor = _text(value.child_by_field_name("constructor")).split(".")[-1]
+            if ctor not in CLIENTS:
+                return f"its client is a `{ctor}`, not one of OpenAI's or Anthropic's SDK clients: port it by hand"
+        method = node.parent
+        while method is not None and method.type not in _FUNCTION_NODES:
+            method = method.parent
+        declared = method.child_by_field_name("parameters") if method is not None else None
+        if value is not None and value.type == "identifier" and declared is not None and _text(value) in {
+                _text(n) for n in _walk(declared) if n.type in _NAMES}:
+            named = _text(method.child_by_field_name("name"))
+            where = f"`{named}`" if named else "the function that sets it"
+            return (f"its client is whatever builds the object passes (the `{_text(value)}` parameter of {where}): "
+                    "port the code that builds that client instead")
     return None
 
 
@@ -715,6 +754,8 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         if not links[site.id] and (parameter := _ts_parameter_client(repo.file(site.file), site)):
             plan[site.id].keep_because(f"its client is whatever its caller passes (the `{parameter}` parameter): port the code that "
                                        "builds that client instead")
+        elif not links[site.id] and (why := _ts_foreign_client(repo.file(site.file), site)):
+            plan[site.id].keep_because(why)
         if len(urls) > 1:
             plan[site.id].keep_because(f"its client is one of several, for different providers (base URLs {', '.join(urls)}): "
                                        "add Token Factory among them by hand")

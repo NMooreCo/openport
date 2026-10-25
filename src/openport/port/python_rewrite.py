@@ -4,7 +4,7 @@ Plain HTTP calls (requests, httpx, aiohttp) move to Token Factory's URL and key 
 import ast
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from ..runtime.openport_llm import _PROVIDER_ONLY_OPTIONS
@@ -125,7 +125,10 @@ class _Repo:
             function = ".".join(names)
 
         kind, var = "other", None
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is node:
+        value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Return)) else None
+        # `client = OpenAI()`, or wrapped by the app or a library on the way: `client = instrument(OpenAI())`.
+        built = value is node or isinstance(value, ast.Call) and any(arg is node for arg in value.args)
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and built:
             target = statement.targets[0] if isinstance(statement, ast.Assign) else statement.target
             if isinstance(target, ast.Name):
                 var = target.id
@@ -135,7 +138,7 @@ class _Repo:
                 kind = "module" if not functions or declared_global else "local"
             elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id in ("self", "cls"):
                 kind, var = "attribute", target.attr
-        elif isinstance(statement, ast.Return) and statement.value is node:
+        elif isinstance(statement, ast.Return) and built:
             kind = "return"
         ctor = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
         return _Binding(f.path, node, ctor, kind, var, function, classes[0].name if classes else None, statement, not scopes)
@@ -202,14 +205,21 @@ class _Repo:
             return []
         receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
         kind = site.receiver_kind
+        options = re.fullmatch(r"([\w.]+?)\.with_options\(.*\)", receiver, re.S)
+        if options:  # client.with_options(timeout=...): the SDK's copy of `client`, with other request options
+            base = options[1]
+            kinds = ["attribute"] if base.startswith(("self.", "cls.")) else ["local", "module_global", "imported", "other"]
+            return next((found for k in kinds if (found := self.link(replace(site, receiver=base, receiver_kind=k)))), [])
         if kind == "module_global":
             return [b for b in self.bindings(f) if b.kind == "module" and b.var == receiver]
         if kind == "local":
             return [b for b in self.bindings(f) if b.kind == "local" and b.var == receiver and b.function == site.function]
-        if kind == "attribute":
+        if kind == "attribute":  # set by the class the call is in (even from a function inside a method), or one it extends here
             match = re.fullmatch(r"(?:self|cls)\.(\w+)", receiver)
-            cls = site.function.split(".")[-2] if "." in site.function else None
-            return [b for b in self.bindings(f) if match and b.kind == "attribute" and b.var == match[1] and b.cls == cls]
+            call = _call_node(f, site)
+            enclosing = next((a for a in f.ancestors(call) if isinstance(a, ast.ClassDef)), None) if call else None
+            classes = _lineage(f, enclosing)
+            return [b for b in self.bindings(f) if match and b.kind == "attribute" and b.var == match[1] and b.cls in classes]
         if kind == "imported":
             names, _ = self.imports(f)
             module, original = names.get(receiver, ("", ""))
@@ -219,6 +229,10 @@ class _Repo:
             match = re.fullmatch(r"([\w.]+)\(.*\)", receiver, re.S)
             return self.made_by(f, match[1], site.function) if match else []
         if kind == "other" and re.fullmatch(r"\w+", receiver):  # `client = get_client(...)` earlier in the function
+            wrapped = [b for b in self.bindings(f) if b.var == receiver  # client = instrument(OpenAI()), here or at the top
+                       and (b.kind == "local" and b.function == site.function or b.kind == "module")]
+            if wrapped:
+                return wrapped
             call = _call_node(f, site)
             function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None) if call else None
             value = _assigned_value(function, receiver, site.line) if function else None
@@ -273,9 +287,48 @@ def _chosen_by_caller(f: _File, binding: _Binding) -> str | None:
     return None
 
 
+def _receiver_base(receiver: str) -> str:
+    """The client a call's receiver names: without `.beta`, or `.with_options(...)` (the SDK's copy of a client)."""
+    return re.sub(r"(?:\.beta)+$", "", re.sub(r"\.with_options\(.*\)$", "", receiver, flags=re.S))
+
+
+def _foreign_client(f: _File | None, site: CallSiteFinding) -> str | None:
+    """Why a client the port didn't find stays: it's another class (`client = Groq()`, `self.client = ZhipuAI()`),
+    or the object was handed it when built (`self.client = client` in `__init__`). None when neither."""
+    call = _call_node(f, site) if f else None
+    if call is None:
+        return None
+    receiver = _receiver_base(site.receiver)
+    function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None)
+    cls = next((a for a in f.ancestors(call) if isinstance(a, ast.ClassDef)), None)
+    attribute = re.fullmatch(r"(?:self|cls)\.(\w+)", receiver)
+    assigned: list[tuple[ast.AST, ast.AST]] = []  # (value, the function it's assigned in)
+    if attribute and cls is not None:
+        for method in (n for n in cls.body if isinstance(n, _FUNCTIONS)):
+            assigned += [(n.value, method) for n in ast.walk(method) if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Attribute) and t.attr == attribute[1] and isinstance(t.value, ast.Name) and t.value.id in ("self", "cls")
+                for t in n.targets)]
+    elif re.fullmatch(r"\w+", receiver) and function is not None:
+        value = _assigned_value(function, receiver, site.line)
+        assigned = [(value, function)] if value is not None else []
+    for value, scope in assigned:
+        value = value.value if isinstance(value, ast.Await) else value
+        name = value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else \
+            value.func.attr if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) else ""
+        if name[:1].isupper() and not _constructor_sdk(value):
+            return f"its client is a `{name}`, not one of OpenAI's or Anthropic's SDK clients: port it by hand"
+        params = {a.arg for a in [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]}
+        if isinstance(value, ast.Name) and value.id in params:
+            return (f"its client is whatever builds the object passes (the `{value.id}` parameter of `{scope.name}`): "
+                    "port the code that builds that client instead")
+    if attribute and cls is not None and not assigned and cls.bases:  # set up by a class from elsewhere
+        return f"its client is set up by the class it extends (`{ast.unparse(cls.bases[0])}`): port it there, or by hand"
+    return None
+
+
 def _parameter_client(f: _File | None, site: CallSiteFinding) -> str | None:
     """The parameter a call's client arrives through, when it's a parameter of the function the call is in."""
-    receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
+    receiver = _receiver_base(site.receiver)
     call = _call_node(f, site) if f else None
     function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None) if call else None
     if function is None or not re.fullmatch(r"\w+", receiver):
@@ -291,6 +344,22 @@ def _providers(bindings: list[_Binding]) -> list[str]:
         return ast.unparse(keyword.value) if keyword else "the SDK's default"
 
     return sorted({base_url(b) for b in bindings}) if len(bindings) > 1 else []
+
+
+def _lineage(f: _File, cls: ast.ClassDef | None) -> set[str]:
+    """A class's name and the names of the classes it extends that this file defines, all the way up."""
+    defined = {node.name: node for node in f.tree.body if isinstance(node, ast.ClassDef)}
+    names, pending = set(), [cls] if cls is not None else []
+    while pending:
+        current = pending.pop()
+        if current.name in names:
+            continue
+        names.add(current.name)
+        for base in current.bases:
+            name = base.id if isinstance(base, ast.Name) else base.value.id if isinstance(base, ast.Subscript) and isinstance(base.value, ast.Name) else None
+            if name in defined:
+                pending.append(defined[name])
+    return names
 
 
 def _call_node(f: _File, site: CallSiteFinding) -> ast.Call | None:
@@ -826,6 +895,8 @@ def port_python(
         if not links[site.id] and (parameter := _parameter_client(repo.file(site.file), site)):
             plan[site.id].keep_because(f"its client is whatever its caller passes (the `{parameter}` parameter): port the code that "
                                        "builds that client instead")
+        elif not links[site.id] and (why := _foreign_client(repo.file(site.file), site)):
+            plan[site.id].keep_because(why)
         if len(urls) > 1:
             plan[site.id].keep_because(f"its client is one of several, for different providers (base URLs {', '.join(urls)}): "
                                        "add Token Factory among them by hand")
