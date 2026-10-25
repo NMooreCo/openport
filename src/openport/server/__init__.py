@@ -141,4 +141,7 @@ if STATIC.is_dir():
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str) -> FileResponse:
         file = STATIC / path
-        return FileResponse(file if path and file.is_file() else STATIC / "index.html")
+        if path and file.is_file():
+            return FileResponse(file)
+        # The page names its hashed scripts, so browsers ask for it again each time: a redeploy shows at once.
+        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})

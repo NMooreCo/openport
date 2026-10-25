@@ -210,6 +210,15 @@ def wait_for(client, run_id, timeout=30):
     raise TimeoutError(run)
 
 
+def test_the_page_is_asked_for_again_each_time(server):
+    from openport.server import STATIC
+
+    if not (STATIC / "index.html").is_file():
+        pytest.skip("the dashboard isn't built (npm run build in dashboard/)")
+    page = server.get("/")
+    assert page.status_code == 200 and page.headers["cache-control"] == "no-cache"  # so a redeploy's new scripts load at once
+
+
 def test_only_presets_and_github_repos(server):
     assert server.post("/api/runs", json={"target": "C:/Windows"}).status_code == 400
     assert server.post("/api/runs", json={"target": "../../etc"}).status_code == 400
