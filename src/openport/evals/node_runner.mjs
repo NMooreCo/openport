@@ -69,7 +69,7 @@ async function readStdin() {
 // by default), or a static method on the class itself.
 function entry(mod, name) {
   const [className, method] = name.includes(".") ? name.split(".", 2) : [null, name];
-  if (className === null) return mod[name] ?? mod.default?.[name];
+  if (className === null) return mod[name] ?? mod.default?.[name] ?? (mod.default?.name === name ? mod.default : undefined);
   const cls = mod[className] ?? mod.default?.[className] ?? (mod.default?.name === className ? mod.default : undefined);
   if (typeof cls !== "function") return undefined;
   if (typeof cls[method] === "function") return cls[method].bind(cls);

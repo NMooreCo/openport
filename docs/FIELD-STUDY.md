@@ -11,9 +11,9 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 ## What I found
 
 - **207 LLM calls in 14 of the 20 apps' own code:** 132 through the OpenAI and Anthropic SDKs, in 11 apps (72 OpenAI, 60 Anthropic), and 75 plain HTTP calls to OpenAI- or Anthropic-style endpoints, in 9. 151 are in Python and 56 in TypeScript; 51 use tool calling. Another 943 sit in tests, docs' code samples, benchmarks and evals, which OpenPort lists apart.
-- **144 of the 207 calls (70%) can be tested as written**, once the app's own dependencies are installed: wherever their client comes from, in a function or in a class's method, and over plain HTTP too, whose requests OpenPort redirects to its stand-in for the API. Most of the rest are in TypeScript functions that aren't exported (32), or in methods of classes OpenPort can't build on its own (16): their constructors take arguments, which the spec can give as `init:`, or come from a base class it doesn't follow.
+- **160 of the 207 calls (77%) can be tested as written**, once the app's own dependencies are installed: wherever their client comes from, in a function or in a class's method, and over plain HTTP too, whose requests OpenPort redirects to its stand-in for the API. Most of the rest are in methods of classes OpenPort can't build on its own (20): their constructors take arguments, which the spec can give as `init:`, or come from a base class it doesn't follow. Another 16 are in TypeScript functions inside other functions or objects, where the harness can't reach them.
 - **`openport port` moves 71 of them (34%) to Nemotron as they are:** 59 SDK calls and 12 HTTP calls. Each of the other 136 stays where it is with the reason, and most reasons are a choice the code makes somewhere OpenPort doesn't rewrite:
-  - 50 get their client from code the port doesn't follow, most often passed in by their caller;
+  - 50 get their client from code the port doesn't follow, 21 of them as a parameter their caller fills;
   - 36 HTTP calls build their URL from settings or variables;
   - 16 pick their provider at runtime: a factory choosing between providers, a client built from its caller's settings, or a table of endpoints.
   - The rest are calls Nemotron on Token Factory can't serve as written: images (11), Anthropic's own HTTP format (10), embeddings (7), audio (3), the provider's own web search (1), OpenAI's Responses API over HTTP (1) and a streamed Anthropic response (1).
@@ -35,16 +35,16 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 | [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 102,817 | 2,026 | – | – | 0 | 0 | – | 795 | 15 | 14 |
 | [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands) | 91,748 | 2,315 | – | – | 0 | 0 | – | 1,453 | 32 | 30 |
 | [ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) | 88,890 | 190 | – | – | 0 | 0 | – | 1,145 | 51 | 51 |
-| [lobehub/lobehub](https://github.com/lobehub/lobehub) | 83,470 | 18,195 | 12 OpenAI + 4 Anthropic | 1 | 5 | 4 | – | 1,732 | 23 | 17 |
+| [lobehub/lobehub](https://github.com/lobehub/lobehub) | 83,470 | 18,195 | 12 OpenAI + 4 Anthropic | 1 | 7 | 4 | – | 1,732 | 23 | 17 |
 | [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) | 79,159 | 114 | 49 Anthropic | – | 40 | 45 | – | 235 | 8 | 8 |
-| [ruvnet/ruflo](https://github.com/ruvnet/ruflo) | 79,038 | 4,341 | 5 OpenAI | 26 | 13 | 14 | – | 3,264 | 230 | 227 |
-| [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) | 77,729 | 1,856 | 6 OpenAI + 4 Anthropic | 3 | 7 | 0 | LiteLLM, LangChain, Vercel AI SDK | 1,604 | 10 | 10 |
+| [ruvnet/ruflo](https://github.com/ruvnet/ruflo) | 79,038 | 4,341 | 5 OpenAI | 26 | 24 | 14 | – | 3,264 | 230 | 227 |
+| [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) | 77,729 | 1,856 | 6 OpenAI + 4 Anthropic | 3 | 9 | 0 | LiteLLM, LangChain, Vercel AI SDK | 1,604 | 10 | 10 |
 | [calesthio/OpenMontage](https://github.com/calesthio/OpenMontage) | 71,581 | 447 | – | – | 0 | 0 | – | 243 | 6 | 6 |
 | [binary-husky/gpt_academic](https://github.com/binary-husky/gpt_academic) | 71,540 | 293 | 2 OpenAI | – | 1 | 0 | – | 21 | 4 | 3 |
 | [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) | 70,313 | 9,515 | – | 1 | 0 | 0 | – | 1,575 | 19 | 18 |
 | [Aider-AI/aider](https://github.com/Aider-AI/aider) | 49,739 | 160 | – | – | 0 | 0 | LiteLLM | 200 | 30 | 28 |
 | [zhayujie/CowAgent](https://github.com/zhayujie/CowAgent) | 47,562 | 1,133 | 1 OpenAI | 32 | 33 | 0 | – | 557 | 31 | 29 |
-| [LibreChat-AI/LibreChat](https://github.com/LibreChat-AI/LibreChat) | 46,258 | 6,580 | 1 OpenAI | – | 0 | 0 | LangChain | 2,697 | 3 | 1 |
+| [LibreChat-AI/LibreChat](https://github.com/LibreChat-AI/LibreChat) | 46,258 | 6,580 | 1 OpenAI | – | 1 | 0 | LangChain | 2,697 | 3 | 1 |
 
 Calls count only the app's own code, not its tests, docs' samples, benchmarks or evals. "Vulnerable" counts dependency versions: a package locked at two versions counts twice. markitdown locks nothing (it ships a `pyproject.toml` without a lockfile).
 
@@ -66,15 +66,16 @@ The second round, from running the port itself over the 20 apps and reading ever
 - **HTTP calls were found, but the port left them alone.** It now moves an OpenAI-style one where the code spells out where it goes: the URL or base URL, the environment variable the key comes from, and the model, plus the tuned settings. A URL constant that calls staying behind also use gets a second constant, as a shared client is split.
 - **Some of what it moved should never have moved.** Reading the diffs turned up speech to text and text to speech over chat completions (`input_audio`, audio output), a search API that answers from the web, an app posting to its own server (a host built from variables), a model server on the same machine, and a table of providers whose every entry pointed at Token Factory afterwards. Audio and the provider's web search now keep a call where it is, like images, and so do placeholder hosts, local servers and tables of endpoints.
 - **Two other APIs read as Anthropic's.** Feishu's chat API also posts to `/im/v1/messages` (10 of CowAgent's calls), and a generated client for lobehub's own REST API names `/api/v1/messages` (3 more). Neither counts now: 207 calls, not 220.
-- **Calls in class methods couldn't be tested without an adapter.** The harness now builds the class for each case (with `init:` from the spec when it takes arguments), and calls static methods on the class: 144 of the 207 calls are testable as written, up from 102 (and 47 before the first round).
+- **Calls in class methods couldn't be tested without an adapter.** The harness now builds the class for each case (with `init:` from the spec when it takes arguments), and calls static methods on the class. With that, and the TypeScript functions their module doesn't export (below), 160 of the 207 calls are testable as written, up from 102 (and 47 before the first round).
 - **The port didn't find clients made by factories called with arguments, kept on `this` in TypeScript, or imported in a monorepo** (from a project's own folder, not the repo root). It does now, and it keeps clients whose provider is chosen elsewhere: a factory switching between providers, like AutoGPT's OpenRouter-or-OpenAI one, or a client built from its caller's settings. Rewriting those would override a choice made outside the code it edits.
 - **Three bugs in its TypeScript port.** A shorthand `baseURL` or options spread in after Token Factory's settings overrode them, two functions each with their own `const openai` were taken for one call choosing between two clients, and edits came out space-indented in tab-indented files.
+- **TypeScript functions their module doesn't export couldn't be tested.** The Node runner now exports one as its module loads, after tsx or Node's type stripping has compiled it: an ES module gets `export { name };`, a CommonJS one `module.exports.name = name;` inside tsx's wrapper. The file is never written.
 - **A monorepo's subprojects could only be read, not upgraded.** `openport upgrade --project <folder>` (and `upgrade-action --project`) upgrades one, with its own tests, in a copy of the whole repo.
 
 ## What it says to build next
 
-- **Following clients passed in by the caller**, the most common reason (50 calls) a call stays where it is.
-- **Testing TypeScript functions that aren't exported** (32 calls), say by loading a copy of the module that exports them.
+- **Following a client from where it's made to where it's used**, through callers and other modules: the most common reason (50 calls) a call stays where it is.
+- **Building classes that take arguments** (20 calls), from what the app's own tests build them with.
 - **Reading the settings that plain HTTP calls take their URL from** (36 calls), where a project keeps them in its own files.
 - **Updating `yarn.lock` and `bun.lock`**, not just reading them.
 
