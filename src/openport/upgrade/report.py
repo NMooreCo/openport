@@ -53,8 +53,9 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
         lines.append(f"| `{up.dep.name}` | {up.dep.version} | **{t.version}** | {t.age_days} days ago | {fixed} | {open_} |")
 
     files = [(path, why) for path in re.findall(r"^\+\+\+ b/(.+)$", run.diff, re.M) if (why := _changed_by(path))]
-    if files:
+    if files or run.notes:
         lines += ["", "### Dependency files", ""] + [f"- `{path}`: {why}" for path, why in files]
+        lines += [f"- Not updated: {note}" for note in run.notes]  # a second lockfile still holding the old versions
         if any(path.rsplit("/", 1)[-1] in LOCKFILES for path, _ in files):
             lines += ["", f"Lockfiles were resolved in a throwaway container that held back releases under {min_age_days} days old, "
                           "and every version they add was checked against its registry's release date."]

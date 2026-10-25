@@ -629,7 +629,7 @@ def upgrade(
         color = colors.get(up.status, "white")
         ids = up.advisory_ids
         table.add_row(up.dep.name, up.dep.version, fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""),
-                      f"[{color}]{up.status}[/{color}]", up.dep.source)
+                      f"[{color}]{up.status}[/{color}]", ", ".join((up.dep.source, *up.dep.also)))
     console.print(table)
 
     upgradable = sum(up.target is not None for up in plans)

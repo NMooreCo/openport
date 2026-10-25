@@ -55,6 +55,7 @@ class UpgradeRun:
     diff: str = ""
     out: str = ""
     fix_error: str = ""  # why Super couldn't be asked for a fix (e.g. the API refused), if it couldn't
+    notes: list[str] = field(default_factory=list)  # e.g. a second lockfile with the same versions that couldn't be updated
 
     @property
     def final(self) -> TestRun | None:
@@ -148,14 +149,18 @@ def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds
 
     run.before = tested()
     emit("before", run.before)
-    run.changed = [repo_path(name) for name in
-                   apply_bumps(home, {p.dep.name: p.target.version for p in run.upgraded if p.dep.source == "requirements.txt"})]
+    # Every root lockfile that locks the version moves, not just the one the project's package manager uses
+    # (package-lock.json and bun.lock, say), so neither is left vulnerable.
+    pinned = {p.dep.name: p.target.version for p in run.upgraded if "requirements.txt" in (p.dep.source, *p.dep.also)}
+    run.changed = [repo_path(name) for name in apply_bumps(home, pinned)]
     locked: dict[str, dict[str, str]] = {}
     for p in run.upgraded:
-        if p.dep.source in LOCKFILES:
-            locked.setdefault(p.dep.source, {})[p.dep.name] = p.target.version
+        for source in (p.dep.source, *p.dep.also):
+            if source in LOCKFILES:
+                locked.setdefault(source, {})[p.dep.name] = p.target.version
     cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
-    for step in bump_steps(home, locked, cutoff):
+    for lockfile in [name for name in LOCKFILES if locked.get(name)]:
+        step, = bump_steps(home, {lockfile: locked[lockfile]}, cutoff)  # built from the files as the steps before left them
         work = scratch_copy()
         for name, text in step.writes.items():  # e.g. overrides; a failed bump leaves no half-made change behind
             _write(work / project / name, text)
@@ -176,6 +181,9 @@ def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds
         failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
         run.upgraded = [p for p in run.upgraded if p not in failed]
         run.skipped += [(p, f"{step.lockfile} couldn't be updated: {problem}") for p in failed]
+        others = [name for name in step.packages if name not in {p.dep.name for p in failed}]
+        if others:  # the project's own lockfile moved them; this other one still locks the old versions
+            run.notes.append(f"`{repo_path(step.lockfile)}` also locks {', '.join(others)} and couldn't be updated: {problem}")
     emit("bumped", run.upgraded)
     if not run.upgraded:
         return run

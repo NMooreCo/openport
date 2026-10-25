@@ -453,6 +453,39 @@ def test_a_monorepos_project_is_upgraded_in_its_own_folder_with_the_whole_repo_t
     assert [_changed_by(name) for name in ("yarn.lock", "web/bun.lock")] == ["rewritten by Yarn", "rewritten by bun"]
 
 
+def test_a_version_two_lockfiles_lock_moves_in_both(tmp_path):
+    """Like LibreChat: package.json names npm, and a bun.lock sits beside package-lock.json with the same versions."""
+    from openport.upgrade import read_lockfiles
+    from openport.upgrade.testrun import node_manager
+
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "package.json").write_text('{"packageManager": "npm@11.13.0", "dependencies": {"jsonwebtoken": "^8.5.1"}, "scripts": {"test": "node --test"}}')
+    (root / "package-lock.json").write_text('{"lockfileVersion": 3, "packages": {"": {}, "node_modules/jsonwebtoken": {"version": "8.5.1"}}}')
+    (root / "bun.lock").write_text('{"lockfileVersion": 1, "packages": {"jsonwebtoken": ["jsonwebtoken@8.5.1", "", {}, "sha512-x"]}}')
+    dep, = read_lockfiles(root)
+    assert (dep.source, dep.also) == ("package-lock.json", ("bun.lock",)) and node_manager(root) == "npm"  # the one npm reads
+    commands = []
+
+    def container(folder, image, command):
+        commands.append(command.split(" && ")[0])
+        ok = "bun" not in command or "FAILBUN" not in (folder / "package.json").read_text()
+        return TestRun(ok, 0 if ok else 1, "" if ok else "error: bun refused", "", 1.0)
+
+    jwt = upgrade("jsonwebtoken", "8.5.1", "9.0.0", source="package-lock.json")
+    jwt = Upgrade(dep, jwt.advisories, jwt.target, jwt.status)
+    run = upgrade_repo(root, tmp_path / "out", plans=[jwt], run_tests=lambda folder: passing(), run_container=container)
+    assert run.proven and {"package-lock.json", "bun.lock"} <= set(run.changed) and run.notes == []
+    assert commands[0].startswith("npm install") and "bun@" in commands[1]  # each lockfile by its own tool, npm's first
+
+    (root / "package.json").write_text('{"name": "FAILBUN", "packageManager": "npm@11.13.0", "dependencies": {"jsonwebtoken": "^8.5.1"}, "scripts": {"test": "node --test"}}')
+    run = upgrade_repo(root, tmp_path / "out2", plans=[jwt], run_tests=lambda folder: passing(), run_container=container)
+    assert run.proven and run.upgraded and run.notes == ["`bun.lock` also locks jsonwebtoken and couldn't be updated: bun refused"]
+    assert "- Not updated: `bun.lock` also locks jsonwebtoken" in render(run)
+    (root / "package.json").write_text('{"packageManager": "bun@1.3.1", "dependencies": {"jsonwebtoken": "^8.5.1"}}')
+    assert read_lockfiles(root)[0].source == "bun.lock" and node_manager(root) == "bun"  # the project names bun: its lockfile first
+
+
 def test_a_bump_that_pulls_in_a_brand_new_release_is_turned_away(tmp_path):
     root = tmp_path / "app"
     root.mkdir()

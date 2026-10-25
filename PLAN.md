@@ -322,7 +322,8 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - Upgrade PRs list `yarn.lock`, `bun.lock` and a monorepo project's own files under "Dependency files" (they were left out), and the dashboard page is never served stale after a redeploy.
 - **Clients the port missed:** a client wrapped on the way (`instrument(OpenAI())`, `withTracing(new OpenAI())`) moves now, and so does one used through `client.with_options(...)` or set as `self._client` by a parent class or from a function inside a method. Each client it still can't move says why: another class (`Groq`), handed in when the object is built, or set up by a class from outside the app. Of the 29 calls that only said "couldn't find where its client is created", 4 are left.
 - **Field study, rerun:** the port moves 73 of the 207 calls (35%); 160 are testable as written.
-- 223 offline tests.
+- **Two lockfiles, one version:** LibreChat names npm and runs `npm ci` in CI, but a `bun.lock` sits beside its `package-lock.json`, and the upgrader would have bumped only the alphabetically first (bun's) while the tests ran with npm: a "proven" upgrade that left npm's install vulnerable. Now the lockfile of the package manager the project names (else npm's, pnpm's, Yarn's, bun's) is the source, every root lockfile holding the version moves too, each step is built from the files as the step before left them, and a second lockfile that can't be updated is named in the PR ("Not updated") rather than sinking the upgrade.
+- 224 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.

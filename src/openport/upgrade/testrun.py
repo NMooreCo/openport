@@ -118,12 +118,13 @@ def yarn_berry(folder: Path) -> bool:
 
 
 def node_manager(folder: Path) -> str:
-    """Which package manager installs a Node project: the one whose lockfile it has (npm's first)."""
+    """Which package manager installs a Node project: the one package.json names, else the one whose lockfile it
+    has (npm's first), as the upgrade decides which lockfile is the project's own (lockfiles.node_lockfile_order)."""
+    from .lockfiles import NODE_LOCKFILES, node_lockfile_order
+
     folder = Path(folder)
-    for lockfile, manager in (("package-lock.json", "npm"), ("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun")):
-        if (folder / lockfile).is_file():
-            return manager
-    return "npm"
+    managers = {lockfile: manager for manager, lockfile in NODE_LOCKFILES.items()}
+    return next((managers[lockfile] for lockfile in node_lockfile_order(folder) if (folder / lockfile).is_file()), "npm")
 
 
 def test_setups(folder: Path, ecosystems: set[str]) -> list[tuple[str, str, str]]:

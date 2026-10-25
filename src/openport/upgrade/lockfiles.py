@@ -26,6 +26,7 @@ class Dependency:
     version: str
     ecosystem: str  # OSV ecosystem: "PyPI" or "npm"
     source: str  # the lockfile it came from: its name at the root, else its path ("api/uv.lock")
+    also: tuple[str, ...] = ()  # other lockfiles that lock this same version (a repo with package-lock.json and bun.lock)
 
 
 def parse_requirements(text: str) -> list[Dependency]:
@@ -158,9 +159,26 @@ def _lockfiles(root: Path):
                 yield Path(directory) / name
 
 
+NODE_LOCKFILES = {"npm": "package-lock.json", "pnpm": "pnpm-lock.yaml", "yarn": "yarn.lock", "bun": "bun.lock"}
+
+
+def node_lockfile_order(root: Path) -> list[str]:
+    """The root's Node lockfiles, the one its package manager writes first: the manager package.json names
+    (packageManager), else npm's, pnpm's, Yarn's, bun's."""
+    package = Path(root) / "package.json"
+    try:
+        named = str(json.loads(package.read_text(encoding="utf-8")).get("packageManager") or "") if package.is_file() else ""
+    except (ValueError, AttributeError):
+        named = ""
+    first = NODE_LOCKFILES.get(named.split("@")[0])
+    return list(dict.fromkeys([*([first] if first else []), *NODE_LOCKFILES.values()]))
+
+
 def read_lockfiles(root: Path) -> list[Dependency]:
     """Every dependency found across the repo's lockfiles, once per ecosystem, name and version. A root
-    lockfile's dependencies have its name as their source; a subproject's, its path ("api/uv.lock")."""
+    lockfile's dependencies have its name as their source; a subproject's, its path ("api/uv.lock"). When two
+    lockfiles lock the same version (package-lock.json and bun.lock, say), the source is the one the project's
+    package manager uses, and `also` lists the others."""
     root = Path(root)
     found: list[Dependency] = []
     for path in _lockfiles(root):
@@ -177,11 +195,11 @@ def read_lockfiles(root: Path) -> list[Dependency]:
             deps = [Dependency(d.name, d.version, d.ecosystem, relative) for d in deps]
         found += deps
 
-    seen: set[tuple[str, str, str]] = set()
-    unique: list[Dependency] = []
+    order = node_lockfile_order(root)
+    rank = {name: position for position, name in enumerate(order)}
+    found.sort(key=lambda dep: ("/" in dep.source, rank.get(dep.source, len(order))))  # stable: the walk's order otherwise
+    sources: dict[tuple[str, str, str], list[Dependency]] = {}
     for dep in found:
-        key = (dep.ecosystem, dep.name.lower(), dep.version)
-        if key not in seen:
-            seen.add(key)
-            unique.append(dep)
-    return unique
+        sources.setdefault((dep.ecosystem, dep.name.lower(), dep.version), []).append(dep)
+    return [Dependency(first.name, first.version, first.ecosystem, first.source, tuple(dict.fromkeys(d.source for d in rest if d.source != first.source)))
+            for first, *rest in sources.values()]
