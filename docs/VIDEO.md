@@ -88,6 +88,12 @@ pass-rate tables match the Oct 24 runs (SupportDesk 15:12, preflight 14:58); ref
 
 ## Still to settle before recording
 
+- **The field study could carry the 1:35 beat** (it's the strongest proof that OpenPort works on code I didn't
+  write). A line that fits in place of the TypeScript sentence: "Across the 20 most-starred open-source AI apps it
+  finds 207 LLM calls, tests 160 of them as written, and moves 73 to Nemotron as they are; every other call says why
+  it stays." → the per-app table in `docs/FIELD-STUDY.md`. Rerun `scripts/field_study.py` first if the scanner or
+  port has changed since Oct 25.
+
 - **"Ultra teaches a smaller model"** needs the fine-tuned student served (a Dedicated Endpoint or AI Cloud) and
   evaluated on the reply drafter. Until then the 2:30 line mentions it without a result.
 - **Serverless Jobs** needs a live `openport tune --jobs` run to show; until then the line stays general.
