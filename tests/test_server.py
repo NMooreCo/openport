@@ -312,6 +312,28 @@ def test_upgrade_pipeline_proves_the_upgrade(upgrade_server):
     assert next(e for e in events if e["type"] == "cost") == {**next(e for e in events if e["type"] == "cost"), "evals_usd": 0.0, "helper_usd": 0.0}
 
 
+def test_a_monorepo_project_is_upgraded_from_its_folders_github_url(upgrade_server, tmp_path, monkeypatch):
+    import shutil
+
+    from openport.server import upgrades
+    from openport.workspace import split_project
+
+    assert split_project("https://github.com/acme/mono/tree/main/apps/auth") == ("acme/mono", "apps/auth")
+    assert split_project("acme/mono") == ("acme/mono", "")
+    mono = tmp_path / "acme__mono"
+    shutil.copytree(AUTHKIT, mono / "apps" / "auth")  # AuthKit as one project of a monorepo
+    monkeypatch.setattr(upgrades, "fetch_repo", lambda repo: (mono, False) if repo == "acme/mono" else (_ for _ in ()).throw(ValueError(repo)))
+    assert upgrade_server.post("/api/upgrades", json={"target": "https://github.com/acme/mono/tree/main/../../etc"}).status_code == 400
+
+    started = upgrade_server.post("/api/upgrades", json={"target": "https://github.com/acme/mono/tree/main/apps/auth"}).json()
+    run = wait_for(upgrade_server, started["id"])
+    assert run["status"] == "done" and run["target"] == "acme/mono/apps/auth", run["events"][-1]
+    fix = next(e for e in run["events"] if e["type"] == "fix")
+    assert fix["files"] == ["authkit/tokens.py"] and fix["tests"]["ok"]  # paths start at the project, as its tests see them
+    diff = next(e for e in run["events"] if e["type"] == "upgrade_pr")["diff"]
+    assert "+++ b/apps/auth/requirements.txt" in diff and "+++ b/apps/auth/authkit/tokens.py" in diff
+
+
 def test_upgrade_without_docker_is_a_dry_run(upgrade_server, monkeypatch):
     from openport.server import upgrades
 

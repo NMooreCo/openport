@@ -597,10 +597,15 @@ def upgrade(
     """Find vulnerable dependencies and the safe version that fixes each (OSV.dev); with --apply, upgrade and prove it."""
     from .upgrade import plan_upgrades, read_lockfiles
 
+    from .workspace import split_project
+
     if open_pr and not apply:
         _fail("--open needs --apply: a PR is opened only for an upgrade the tests prove")
+    target, folder = split_project(target)  # https://github.com/owner/name/tree/main/apps/api: the apps/api project
+    if folder and project and Path(project).as_posix().strip("/") != folder:
+        _fail(f"The URL names the project {folder}, and --project names {project}: give one")
     root = _target_root(target)
-    project = Path(project).as_posix().strip("/") if project else ""
+    project = Path(project or folder).as_posix().strip("/") if project or folder else ""
     if project and not (root / project).is_dir():
         _fail(f"No folder {project} in {root}")
     deps = read_lockfiles(root / project)

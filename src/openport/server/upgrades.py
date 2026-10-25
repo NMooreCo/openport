@@ -12,7 +12,7 @@ from .. import config, tokenfactory
 from ..runtime.openport_llm import UsageMeter
 from ..upgrade import Upgrade, plan_upgrades, read_lockfiles
 from ..upgrade.run import BUMPABLE_SOURCES
-from ..workspace import fetch_repo
+from ..workspace import fetch_repo, split_project
 from .pipeline import PIPELINE_LOCK, Run, _save
 
 PRESETS = [
@@ -55,13 +55,17 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     from ..upgrade.changelog import changelog_digest
     from ..upgrade.fix import make_fixer
     from ..upgrade.research import research_upgrade
-    from ..upgrade.run import upgrade_repo
+    from ..upgrade.run import in_project, upgrade_repo
     from ..upgrade.testrun import run_suites, run_tests, test_setups
 
     run.emit("stage", stage="fetch")
-    root = local if local is not None else fetch_repo(target)[0]
+    repo, project = ("/".join(target.split("/")[:2]), "/".join(target.split("/")[2:])) if local is None else (target, "")
+    root = local if local is not None else fetch_repo(repo)[0]
     run.emit("stage", stage="find")
-    deps = read_lockfiles(root)
+    if project and not (root / project).is_dir():
+        run.emit("note", message=f"{repo} has no folder {project} on its default branch.")
+        return
+    deps = read_lockfiles(root / project)
     run.emit("deps", count=len(deps), files=sorted({d.source for d in deps}))
     if not deps:
         run.emit("note", message="No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock).")
@@ -97,12 +101,14 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
     meter = UsageMeter()  # Super's fixes: what this run spends on Token Factory
 
-    def tests(folder: Path):
-        return run_suites(folder, test_setups(folder, ecosystems), run_tests=run_tests)
+    def tests(folder: Path):  # a monorepo's project: its suites run in its folder, with the whole repo there
+        setups = test_setups(folder / project, ecosystems)
+        return run_suites(folder, [(name, image, in_project(project, command)) for name, image, command in setups], run_tests=run_tests)
 
+    out = config.RUNS_DIR / "upgrades" / (root.resolve().name + (f"-{project.replace('/', '-')}" if project else ""))
     try:
-        result = upgrade_repo(root, config.RUNS_DIR / "upgrades" / root.resolve().name, plans=plans, run_tests=tests,
-                              researcher=researcher, changelog=changelog, fixer=make_fixer(meter=meter), on_event=event)
+        result = upgrade_repo(root, out, plans=plans, project=project, run_tests=tests, researcher=researcher, changelog=changelog,
+                              fixer=make_fixer(meter=meter), on_event=event)
     finally:
         run.emit("cost", evals_usd=0.0, helper_usd=_cost(meter))
     run.emit("stage", stage="pr")
@@ -118,7 +124,14 @@ def _cost(meter: UsageMeter) -> float:
 
 
 def resolve_target(target: str) -> tuple[str, str, Path | None]:
-    """Upgrade presets, or a public GitHub repo as owner/name."""
+    """Upgrade presets, a public GitHub repo as owner/name, or a monorepo's project as its folder's GitHub URL
+    (https://github.com/owner/name/tree/main/apps/api, kept as owner/name/apps/api)."""
     from .pipeline import resolve_target as resolve
 
-    return resolve(target, PRESETS)
+    repo, project = split_project(target)
+    if not project:
+        return resolve(target, PRESETS)
+    if ".." in project.split("/"):
+        raise ValueError("A project's folder can't climb out of its repo")
+    name, label, _ = resolve(repo, [])
+    return f"{name}/{project}", f"{label}/{project}", None

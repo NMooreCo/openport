@@ -16,8 +16,19 @@ _GITHUB = re.compile(
 )
 
 
+# A folder on GitHub, as its page's URL: https://github.com/owner/name/tree/<branch>/<folder>.
+_TREE = re.compile(r"^(?:https?://)?github\.com/([A-Za-z0-9][\w.-]*)/([A-Za-z0-9_][\w.-]*?)/tree/[^/]+/(.+?)/?$")
+
+
 def is_remote(target: str) -> bool:
     return not Path(target).exists() and _GITHUB.match(target) is not None
+
+
+def split_project(target: str) -> tuple[str, str]:
+    """A monorepo project's GitHub URL as (the repo, the project's folder in it); anything else as (it, "").
+    The folder is read from the default branch, which is what gets cloned."""
+    match = _TREE.match(target.strip())
+    return (f"{match[1]}/{match[2]}", match[3]) if match else (target, "")
 
 
 def fetch_repo(target: str) -> tuple[Path, bool]:

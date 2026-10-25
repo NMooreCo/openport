@@ -9,7 +9,7 @@ interface Preset {
 
 export type Mode = "port" | "upgrade";
 
-const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: string; presets: string }> = {
+const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: string; presets: string; placeholder: string }> = {
   port: {
     tab: "Port to Nemotron",
     title: "Prove it, then port it.",
@@ -17,6 +17,7 @@ const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: s
       "served by Nebius Token Factory, tunes the prompt until it passes, and writes the pull request with the evidence.",
     action: "Port it",
     presets: "/api/presets",
+    placeholder: "owner/repo on GitHub",
   },
   upgrade: {
     tab: "Upgrade dependencies",
@@ -26,6 +27,7 @@ const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: s
       "and writes the pull request with the test results.",
     action: "Upgrade it",
     presets: "/api/upgrade-presets",
+    placeholder: "owner/repo, or a monorepo project's GitHub folder URL",
   },
 };
 
@@ -109,7 +111,7 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
           id="repo"
           value={target}
           onChange={(e) => setTarget(e.target.value)}
-          placeholder="owner/repo on GitHub"
+          placeholder={copy.placeholder}
           className="min-w-0 flex-1 rounded-lg border border-line bg-panel px-4 py-3 font-mono text-sm text-white placeholder:text-muted focus:border-emerald-500 focus:outline-none"
         />
         <button
