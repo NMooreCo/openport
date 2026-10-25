@@ -48,7 +48,7 @@ Measure the "plain swap" baseline for the SupportDesk demo app: what happens if 
 uv run openport baseline examples/supportdesk
 ```
 
-For a repo that has no eval spec yet, draft one. `openport capture` scans the repo and writes a starter `openport.evals.yaml` with a call site, a grader and a dataset per LLM call. The grader is chosen from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text). Point it at recorded calls to fill the datasets, or let Super invent inputs and label them — with Nemotron Ultra by default, or with `--label-with original` to run the app through its original closed model (needs that provider's key). Generated cases are flagged for review, and calls the harness can't run (TypeScript, methods, unusual clients) are listed in `CAPTURE_NOTES.md`. The result is runnable by `openport tune`.
+For a repo that has no eval spec yet, draft one. `openport capture` scans the repo and writes a starter `openport.evals.yaml` with a call site, a grader and a dataset per LLM call. The grader is chosen from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text). Point it at recorded calls to fill the datasets, or let Super invent inputs and label them — with Nemotron Ultra by default, or with `--label-with original` to run the app through its original closed model (needs that provider's key). Generated cases are flagged for review, and calls the harness can't run (methods, unexported TypeScript functions, plain HTTP calls) are listed in `CAPTURE_NOTES.md`. Where the client comes from doesn't matter: while a test runs, the OpenAI and Anthropic SDKs' own calls, sync or async, are routed to Nemotron. The result is runnable by `openport tune`.
 
 ```bash
 uv run openport capture examples/supportdesk --logs triage.triage_ticket=logs/triage.jsonl
@@ -62,7 +62,7 @@ uv run openport tune examples/supportdesk
 uv run openport port examples/supportdesk --plan runs/plan-supportdesk.json
 ```
 
-TypeScript and JavaScript calls on the OpenAI SDK are tested the same way. The app runs unchanged under Node (TypeScript through its own `tsx`), and OpenPort points its OpenAI SDK at a local stand-in for the API that applies each tuning variant and forwards the request to Token Factory, so the app's process never holds a Token Factory key. `examples/supportdesk-ts` is SupportDesk's three OpenAI calls in TypeScript, tested on the Python app's labelled cases. The port writes the tuned changes into TypeScript too, including the reasoning switch.
+TypeScript and JavaScript calls on the OpenAI or Anthropic SDK are tested the same way. The app runs unchanged under Node (TypeScript through its own `tsx`), and OpenPort points its SDK at a local stand-in for the API that applies each tuning variant and forwards the request to Token Factory (Anthropic's requests translated to Nemotron chat completions), so the app's process never holds a Token Factory key. `examples/supportdesk-ts` is SupportDesk's three OpenAI calls in TypeScript, tested on the Python app's labelled cases. The port writes the tuned changes into TypeScript too, including the reasoning switch; an Anthropic client becomes OpenPort's `AnthropicOnNemotron`, from a small runtime file it copies in.
 
 ```bash
 cd examples/supportdesk-ts && npm install && cd ../..
@@ -150,6 +150,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 |---|---|
 | `src/openport/` | The OpenPort agent and CLI |
 | `src/openport/runtime/openport_llm.py` | A standalone module copied into ported apps. It points OpenAI SDK code at Token Factory and runs Anthropic SDK code on Nemotron. |
+| `src/openport/runtime/openport_llm.mjs` | The same for TypeScript and JavaScript: runs Anthropic SDK code on Nemotron with nothing but `fetch` |
 | `src/openport/server/` | Dashboard API: runs the pipeline and streams its progress as server-sent events |
 | `dashboard/` | Dashboard frontend (Vite, React, Tailwind); builds into `src/openport/server/static/` |
 | `examples/supportdesk/` | Demo target: a small support-desk app with five LLM calls on the OpenAI and Anthropic SDKs, plus hand-labelled eval sets |
@@ -164,7 +165,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 
 **Token Factory is the inference backend.** OpenPort talks to it with the OpenAI SDK pointed at `https://api.tokenfactory.nebius.com/v1/` and a `NEBIUS_API_KEY`. It resolves the three Nemotron tiers — **Nano**, **Super** and **Ultra** — from the live `/v1/models` catalog at runtime (or from `OPENPORT_MODEL_<TIER>` if you pin them), and reads per-token prices from that same catalog so the cost numbers in every report are the real ones, not estimates.
 
-**The runtime shim makes the swap honest.** OpenAI SDK calls move to Token Factory with just a base URL and model change. Anthropic SDK calls can't — there is no Anthropic-compatible API — so [`openport_llm.py`](src/openport/runtime/openport_llm.py) translates Anthropic Messages calls (system parameter, content blocks, tools, `tool_use`/`tool_result`) into Nemotron chat completions at the call boundary, leaving the app's own code untouched.
+**The runtime shim makes the swap honest.** OpenAI SDK calls move to Token Factory with just a base URL and model change. Anthropic SDK calls can't — there is no Anthropic-compatible API — so [`openport_llm.py`](src/openport/runtime/openport_llm.py) translates Anthropic Messages calls (system parameter, content blocks, tools, `tool_use`/`tool_result`) into Nemotron chat completions at the call boundary, leaving the app's own code untouched. [`openport_llm.mjs`](src/openport/runtime/openport_llm.mjs) does the same in TypeScript and JavaScript, and a test checks the two translate alike.
 
 **OpenPort's own agent uses all three tiers, each for the job it fits** — the same "Ultra for reasoning, Nano/Super for the fast calls" split it recommends to its users:
 
