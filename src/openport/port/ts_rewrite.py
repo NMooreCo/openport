@@ -203,6 +203,17 @@ def _ts_chosen_by_caller(binding: _TsBinding) -> str | None:
     return None
 
 
+def _ts_parameter_client(f: _TsFile | None, site: CallSiteFinding) -> str | None:
+    """The parameter a call's client arrives through, when it's a parameter of the function the call is in."""
+    receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
+    function = _call_node(f, site) if f else None
+    while function is not None and function.type not in _FUNCTION_NODES:
+        function = function.parent
+    declared = (function.child_by_field_name("parameters") or function.child_by_field_name("parameter")) if function else None
+    names = {_text(n) for n in _walk(declared) if n.type in _NAMES} if declared is not None else set()
+    return receiver if receiver in names else None
+
+
 def _call_node(f: _TsFile, site: CallSiteFinding) -> Node | None:
     for node in _walk(f.root):
         if node.type == "call_expression" and node.start_point[0] + 1 == site.line:
@@ -701,6 +712,9 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         chosen = next((how for b in links[site.id] if (how := _ts_chosen_by_caller(b))), None)
         if plan[site.id].keep:  # where the code picks no single provider, as in the Python port
             continue
+        if not links[site.id] and (parameter := _ts_parameter_client(repo.file(site.file), site)):
+            plan[site.id].keep_because(f"its client is whatever its caller passes (the `{parameter}` parameter): port the code that "
+                                       "builds that client instead")
         if len(urls) > 1:
             plan[site.id].keep_because(f"its client is one of several, for different providers (base URLs {', '.join(urls)}): "
                                        "add Token Factory among them by hand")

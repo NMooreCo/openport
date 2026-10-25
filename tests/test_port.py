@@ -604,6 +604,10 @@ def summarize(text):
 async def route(text):
     client = get_router_client(prefer_router=True)
     return await client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+
+
+def relay(client, text):  # whatever client its caller passes
+    return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
 ''',
     "web/agents.ts": '''import OpenAI from "openai";
 
@@ -626,6 +630,10 @@ export class Tagger {
     return this.client.chat.completions.create({ model: "gpt-4o-mini", messages: [{ role: "user", content: text }] });
   }
 }
+
+export async function relay(openai: OpenAI, text: string) {
+  return openai.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });
+}
 ''',
 }
 
@@ -641,6 +649,8 @@ def test_clients_from_factories_constructors_and_fields_are_found(tmp_path):
     assert sites["jobs.proxied"].status == "ported" and "    return token_factory_client()\n" in clients  # an environment variable: fixed
     assert sites["clients.ask"].status == "kept" and "from whoever builds it (`base_url=base_url`)" in sites["clients.ask"].reason
     assert "self.client = OpenAI(base_url=base_url)" in clients
+    for relay in ("jobs.relay", "agents.relay"):  # a client passed in: the port says which parameter
+        assert sites[relay].status == "kept" and "whatever its caller passes (the `" in sites[relay].reason
 
     agents = (result.output / "web/agents.ts").read_text()
     assert sites["agents.summarize"].status == sites["agents.tag"].status == "ported"

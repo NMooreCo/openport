@@ -273,6 +273,17 @@ def _chosen_by_caller(f: _File, binding: _Binding) -> str | None:
     return None
 
 
+def _parameter_client(f: _File | None, site: CallSiteFinding) -> str | None:
+    """The parameter a call's client arrives through, when it's a parameter of the function the call is in."""
+    receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
+    call = _call_node(f, site) if f else None
+    function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None) if call else None
+    if function is None or not re.fullmatch(r"\w+", receiver):
+        return None
+    args = function.args
+    return receiver if receiver in {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]} else None
+
+
 def _providers(bindings: list[_Binding]) -> list[str]:
     """The base URLs a call's clients are built with, when it gets one of several: one each means a choice of provider."""
     def base_url(binding: _Binding) -> str:
@@ -812,6 +823,9 @@ def port_python(
         chosen = next((how for b in links[site.id] if (how := _chosen_by_caller(repo.file(b.file), b))), None)
         if plan[site.id].keep:
             continue
+        if not links[site.id] and (parameter := _parameter_client(repo.file(site.file), site)):
+            plan[site.id].keep_because(f"its client is whatever its caller passes (the `{parameter}` parameter): port the code that "
+                                       "builds that client instead")
         if len(urls) > 1:
             plan[site.id].keep_because(f"its client is one of several, for different providers (base URLs {', '.join(urls)}): "
                                        "add Token Factory among them by hand")
