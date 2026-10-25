@@ -239,14 +239,14 @@ export class Keyed {
 
 @needs_node
 def test_a_method_of_an_exported_class_runs_on_an_instance_of_its_own(tmp_path, monkeypatch):
-    from openport.capture.draft import runnable, ts_exported_params
+    from openport.capture.draft import runnable, ts_entry_params
     from openport.scan import scan_repo
 
     (tmp_path / "src").mkdir()
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "src" / "labeller.mjs").write_text(LABELLER_JS)
     (label,) = scan_repo(tmp_path).findings
-    assert label.function == "Labeller.label" and runnable(label, tmp_path) == (True, "") and ts_exported_params(tmp_path, label) == ["text"]
+    assert label.function == "Labeller.label" and runnable(label, tmp_path) == (True, "") and ts_entry_params(tmp_path, label) == ["text"]
     assert runnable(dataclasses.replace(label, function="Labeller.quick"), tmp_path) == (True, "")  # static: called on the class
     assert "takes apiKey to build" in runnable(dataclasses.replace(label, function="Keyed.label"), tmp_path)[1]  # retries has a default
 
@@ -263,6 +263,26 @@ def test_a_method_of_an_exported_class_runs_on_an_instance_of_its_own(tmp_path, 
         result = run_site(spec, call_site, "nano", "nvidia/nano-test", client=fake)
         assert result.pass_rate == 1.0, (call_site.function, [case.error for case in result.cases])
     assert [r["messages"][0]["content"] for r in fake.requests] == ["refund", "urgent: refund", "quick: refund", "refund"]
+
+
+@needs_node
+def test_a_function_the_module_doesnt_export_runs_too(tmp_path, monkeypatch):
+    """Exported for the eval as the module loads; the file itself is never changed."""
+    (tmp_path / "src").mkdir()
+    hidden_js = CLASSIFY_JS.replace("export async function classify", "async function classify") + "export const version = 1;\n"
+    hidden_ts = hidden_js.replace("async function classify(text)", "async function classify(text: string): Promise<object>")
+    (tmp_path / "src" / "classify.mjs").write_text(hidden_js)
+    (tmp_path / "src" / "classify.ts").write_text(hidden_ts)
+    (tmp_path / "cases.jsonl").write_text(json.dumps({"id": "c1", "input": {"text": "refund please"},
+                                                      "expected": {"label": "billing", "sawKey": "openport-placeholder"}}) + "\n")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    fake = FakeTokenFactory(lambda request: completion(content=json.dumps({"label": "billing"})))
+    for module in ("src/classify.mjs", "src/classify.ts"):  # plain JavaScript, and TypeScript through Node's type stripping
+        (tmp_path / "openport.evals.yaml").write_text(SPEC.replace("src/classify.mjs", module))
+        spec = load_spec(tmp_path)
+        result = run_site(spec, spec.call_sites[0], "nano", "nvidia/nano-test", client=fake)
+        assert result.pass_rate == 1.0, (module, [case.error for case in result.cases])
+    assert (tmp_path / "src" / "classify.ts").read_text() == hidden_ts
 
 
 # Just enough of the `openai` package: the client posts to `${baseURL}/chat/completions`, as the SDK does.

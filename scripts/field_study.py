@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from openport import config
-from openport.capture.draft import runnable, ts_exported_params
+from openport.capture.draft import runnable, ts_entry_params
 from openport.port.plan import build_plan
 from openport.port.python_rewrite import port_python
 from openport.port.ts_rewrite import port_typescript
@@ -55,8 +55,8 @@ def study(target: str, advisories: bool) -> dict:
             ok, why = runnable(site, root)
         else:  # dependencies aren't installed here, so ask only whether the harness could call it once they are
             ok, why = runnable(site, None)
-            if ok and ts_exported_params(root, site) is None:
-                ok, why = False, "not an exported function the harness can call"
+            if ok and ts_entry_params(root, site) is None:
+                ok, why = False, "not at the top of its module, where the harness can call it"
         testable += ok
         if not ok:
             reasons[re.sub(r"\(.*?\)|'.*?'", "…", why)] += 1

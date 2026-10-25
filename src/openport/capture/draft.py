@@ -136,8 +136,8 @@ def _runnable_on_node(finding: CallSiteFinding, root: Path | None) -> tuple[bool
         return False, f"output type {finding.output!r} isn't evaluable"
     if root is not None and not (root / "node_modules").is_dir():
         return False, "the project's dependencies aren't installed (run npm install), so its code can't run"
-    if root is not None and ts_exported_params(root, finding) is None:
-        return False, f"{finding.function!r} isn't an exported function the harness can call"
+    if root is not None and ts_entry_params(root, finding) is None:
+        return False, f"{finding.function!r} isn't at the top of its module, where the harness can call it"
     if root is not None and "." in finding.function:
         cls, method = _ts_method(root, finding)
         required = [] if any(c.type == "static" for c in method.children) else _ts_required(cls)
@@ -158,18 +158,23 @@ def _ts_tree(root: Path, finding: CallSiteFinding):
         return None
 
 
+def _ts_top_level(tree):
+    """A module's top-level declarations, exported or not: the harness can call a function or class that isn't
+    exported too (the Node runner exports it as the module loads)."""
+    for statement in tree.root_node.named_children if tree else []:
+        yield statement.named_children[0] if statement.type == "export_statement" and statement.named_children else statement
+
+
 def _ts_method(root: Path, finding: CallSiteFinding):
-    """The exported class and method a call is in (`Assistant.reply`): (class, method) nodes, or (None, None)."""
-    from ..scan.ts_scanner import _text, _walk
+    """The top-level class and method a call is in (`Assistant.reply`): (class, method) nodes, or (None, None)."""
+    from ..scan.ts_scanner import _text
 
     owner, _, name = finding.function.partition(".")
-    tree = _ts_tree(root, finding)
-    for node in _walk(tree.root_node) if tree and "." not in name else []:
-        if node.type != "export_statement":
+    for cls in _ts_top_level(_ts_tree(root, finding)) if "." not in name else []:
+        if cls.type not in ("class_declaration", "abstract_class_declaration") or _text(cls.child_by_field_name("name")) != owner:
             continue
-        cls = next((c for c in node.named_children if c.type in ("class_declaration", "class") and _text(c.child_by_field_name("name")) == owner), None)
-        body = cls.child_by_field_name("body") if cls is not None else None
-        method = next((m for m in body.named_children if m.type == "method_definition" and _text(m.child_by_field_name("name")) == name), None) if body else None
+        body = cls.child_by_field_name("body")
+        method = next((m for m in body.named_children if m.type == "method_definition" and _text(m.child_by_field_name("name")) == name), None)
         if method is not None:
             return cls, method
     return None, None
@@ -190,9 +195,10 @@ def _ts_required(cls) -> list[str] | str:
             and getattr(p.child_by_field_name("pattern"), "type", "") != "rest_pattern"]
 
 
-def ts_exported_params(root: Path, finding: CallSiteFinding) -> list[str] | None:
-    """The parameter names of the exported function (or exported class's method) the call is in, or None if it isn't one."""
-    from ..scan.ts_scanner import _parser, _text, _walk
+def ts_entry_params(root: Path, finding: CallSiteFinding) -> list[str] | None:
+    """The parameter names of the function the call is in, at the top of its module (exported or not), or of its
+    top-level class's method; None when the harness can't call it (say, a function inside another)."""
+    from ..scan.ts_scanner import _text
 
     if "." in finding.function:
         _, method = _ts_method(root, finding)
@@ -201,18 +207,12 @@ def ts_exported_params(root: Path, finding: CallSiteFinding) -> list[str] | None
             return None
         names = [_text(p.child_by_field_name("pattern") or p) for p in (params.named_children if params else [])]
         return [n for n in names if n.isidentifier()]
-    try:
-        source = (root / finding.file).read_bytes()
-    except OSError:
-        return None
-    tree = _parser(finding.file.endswith((".tsx", ".jsx"))).parse(source)
-    for node in _walk(tree.root_node):
-        if node.type != "export_statement":
-            continue
-        for declared in _walk(node):
-            name = declared.child_by_field_name("name")
-            value = declared.child_by_field_name("value") if declared.type == "variable_declarator" else declared
-            if _text(name) != finding.function or value is None or value.type not in (
+    for declaration in _ts_top_level(_ts_tree(root, finding)):
+        declared = [declaration] if declaration.type in ("function_declaration", "generator_function_declaration") else [
+            d for d in declaration.named_children if d.type == "variable_declarator"] if declaration.type in ("lexical_declaration", "variable_declaration") else []
+        for node in declared:
+            value = node.child_by_field_name("value") if node.type == "variable_declarator" else node
+            if _text(node.child_by_field_name("name")) != finding.function or value is None or value.type not in (
                 "function_declaration", "generator_function_declaration", "function_expression", "arrow_function", "function",
             ):
                 continue
@@ -226,7 +226,7 @@ def ts_exported_params(root: Path, finding: CallSiteFinding) -> list[str] | None
 def param_names(root: Path, finding: CallSiteFinding) -> list[str]:
     """The parameter names of the call's enclosing function, read from source (not imported)."""
     if finding.language != "python":
-        return ts_exported_params(root, finding) or []
+        return ts_entry_params(root, finding) or []
     found = _method(root, finding) if "." in finding.function else None
     node = found[1] if found else None
     if node is None:

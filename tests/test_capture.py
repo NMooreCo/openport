@@ -72,19 +72,21 @@ def test_runnable():
     assert draft.runnable(finding(sdk="http", language="typescript", receiver="axios"))[0] is False  # fetch only, under Node
 
 
-def test_typescript_sites_need_their_dependencies_and_an_export(tmp_path):
+def test_typescript_sites_need_their_dependencies_and_a_top_level_function(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.ts").write_text(
         "export async function classify(text: string, lang?: string) {}\n"
         "export const summarize = async (doc: string) => doc;\n"
-        "async function hidden(x: string) {}\n"
+        "async function hidden(x: string) {}\n"  # not exported: the Node runner exports it as the module loads
+        "export function outer() { async function inner(y: string) {} }\n"
     )
     ts = lambda name: finding(language="typescript", file="src/app.ts", function=name, module=None)  # noqa: E731
     assert draft.runnable(ts("classify"), tmp_path) == (False, "the project's dependencies aren't installed (run npm install), so its code can't run")
     (tmp_path / "node_modules").mkdir()
     assert draft.runnable(ts("classify"), tmp_path)[0] is True and draft.param_names(tmp_path, ts("classify")) == ["text", "lang"]
     assert draft.param_names(tmp_path, ts("summarize")) == ["doc"]
-    assert draft.runnable(ts("hidden"), tmp_path) == (False, "'hidden' isn't an exported function the harness can call")
+    assert draft.runnable(ts("hidden"), tmp_path)[0] is True and draft.param_names(tmp_path, ts("hidden")) == ["x"]
+    assert draft.runnable(ts("outer.inner"), tmp_path) == (False, "'outer.inner' isn't at the top of its module, where the harness can call it")
     site = draft.draft_site(ts("classify"), fields=["label"], args=["text", "lang"])
     assert site["args"] == ["text", "lang"] and "module" not in site and site["file"] == "src/app.ts"
 
