@@ -291,11 +291,13 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - 184 offline tests.
 
 **Sat 24 (late): a field study, and what it fixed.** Credits come back Monday, so the weekend goes to work that needs none.
-- **[Field study](docs/FIELD-STUDY.md):** OpenPort's scanner and upgrade dry run over the 20 most-starred open-source AI apps on GitHub, statically. 180 OpenAI and Anthropic SDK calls in 11 of them (50 testable as written; most others sit in class methods), and 746 known-vulnerable dependency versions in 19, 92% with a fix at least a week old. 17 of the 20 also reach models over plain HTTP. `scripts/field_study.py` reproduces it.
+- **[Field study](docs/FIELD-STUDY.md):** OpenPort's scanner and upgrade dry run over the 20 most-starred open-source AI apps on GitHub, statically. Their own code holds 220 LLM calls in 14 of them: 132 through the SDKs (47 testable as written; most others sit in class methods) and 88 over plain HTTP. 746 known-vulnerable dependency versions in 19, 92% with a fix at least a week old. `scripts/field_study.py` reproduces it.
 - Fixed because of it: scans parse only files that can hold a call (same findings, 17 minutes down to 27 seconds over 19 repos); OSV is asked in batches of 1,000; the upgrader reads every lockfile in a monorepo, plus `yarn.lock` and `bun.lock` (`--apply` still upgrades root lockfiles it can rewrite, and says why for the rest); clones allow Windows' long paths and never leave a broken folder; a registry that can't be read holds one package, not the run.
 - **Changelog digest (Tavily):** every upgrade PR quotes what changed upstream between the two versions, from the package's own changelog: Extract on the declared changelog or the repo's CHANGELOG/HISTORY file first, then Search, then Map. Super reads those releases in full before fixing anything. Live: PyJWT (18 releases), pytest (from docs.pytest.org) and requests (from HISTORY.md). The README now lists every job Tavily does.
-- Next from the study: plain HTTP calls to OpenAI-compatible endpoints, testing class methods without an adapter, Anthropic's SDK in TypeScript evals, and a weekly upgrade GitHub Action.
-- 194 offline tests.
+- **Plain HTTP calls are found now** (requests/httpx/aiohttp, fetch/axios/ky/got posts to LLM endpoints), and reported with how to move them; the port leaves them alone. Calls in docs' samples, benchmarks, e2e and evals folders count as not the app's, like tests.
+- **`openport upgrade-action`** writes a weekly GitHub Actions workflow: upgrade, prove it, fix, and open or update the PR. Not run on GitHub yet (it installs OpenPort from this repo, private until submission).
+- Next: rewriting and testing HTTP calls, testing class methods without an adapter, Anthropic's SDK in TypeScript evals.
+- 198 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.

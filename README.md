@@ -125,7 +125,7 @@ On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. Th
 
 ## Field study: 20 popular AI apps
 
-OpenPort's scanner and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. They hold 180 OpenAI and Anthropic SDK calls in 11 of the apps, 50 of them testable as written, and 746 known-vulnerable dependency versions in 19 of them, 92% with a fix at least a week old. The study also made scans of large repos about 40 times faster and taught the upgrader to read monorepos and `yarn.lock` and `bun.lock` files. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
+OpenPort's scanner and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. Their own code holds 220 LLM calls in 14 of the apps: 132 through the OpenAI and Anthropic SDKs (47 testable as written) and 88 over plain HTTP. They also lock 746 known-vulnerable dependency versions in 19 of the apps, 92% with a fix at least a week old. The study taught OpenPort to find plain HTTP calls, made scans of large repos about 40 times faster, and taught the upgrader to read monorepos and `yarn.lock` and `bun.lock` files. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
 
 ## Dashboard
 
