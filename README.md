@@ -106,11 +106,12 @@ uv run openport check .
 
 The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vulnerable packages and fix the code the upgrade breaks.
 
-1. `openport upgrade` reads the repo's lockfiles and asks [OSV.dev](https://osv.dev) which installed versions are vulnerable.
+1. `openport upgrade` reads every lockfile in the repo, its subprojects' included (`requirements*.txt`, `uv.lock`, `poetry.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`), and asks [OSV.dev](https://osv.dev) which installed versions are vulnerable.
 2. For each package it picks the release that fixes the most advisories while being **at least a week old**, so a brand-new malicious release can't be auto-selected. Advisories with no fix yet are reported, not ignored.
 3. With `--apply`, it upgrades a copy of the repo and runs the repo's own tests before and after, in a throwaway Docker container (pip and pytest, uv, Poetry, `npm test` or `pnpm test`, whichever the project uses). Pins in `requirements.txt` are edited; `uv.lock`, `poetry.lock`, `package-lock.json` and `pnpm-lock.yaml` are updated by their own package manager in the container, resolving nothing newer than the same age cutoff, so the guard covers every package the bump pulls in. Before a new lockfile is kept, every version it adds is checked against the registry's release date as well.
-4. If the upgrade breaks them, Tavily reads the package's own changelog and the advisory, and Nemotron Super fixes the application code (never the tests) until they pass.
-5. It writes the diff and a PR description with the advisories, the version chosen and why, the code changes with their sources, and the test results.
+4. Tavily finds each upgraded package's own changelog, and the PR quotes what changed between the two versions: what was removed, renamed or now works differently, word for word.
+5. If the upgrade breaks the tests, Nemotron Super reads those releases in full, and the advisory, and fixes the application code (never the tests) until they pass.
+6. It writes the diff and a PR description with the advisories, the version chosen and why, what changed upstream, the code changes with their sources, and the test results.
 
 ```bash
 uv run openport upgrade examples/authkit            # dry run: what's vulnerable, and the safe version
@@ -118,6 +119,10 @@ uv run openport upgrade examples/authkit --apply    # upgrade a copy, prove it w
 ```
 
 On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5. Its Node twin, `authkit-node`, moves jsonwebtoken 8.5.1 to 9.0.0 (3 advisories) through npm, and its tests pass before and after, so it needs no code change.
+
+## Field study: 20 popular AI apps
+
+OpenPort's scanner and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. They hold 180 OpenAI and Anthropic SDK calls in 11 of the apps, 50 of them testable as written, and 746 known-vulnerable dependency versions in 19 of them, 92% with a fix at least a week old. The study also made scans of large repos about 40 times faster and taught the upgrader to read monorepos and `yarn.lock` and `bun.lock` files. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
 
 ## Dashboard
 
@@ -149,6 +154,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `examples/evalpacks/preflight/` | OpenPort's eval pack for [jsliapark/preflight](https://github.com/jsliapark/preflight), an AI PR reviewer that ships no evals: 119 hand-labelled cases, pinned to a reviewed commit |
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |
+| `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint) and `field_study.py` (the [field study](docs/FIELD-STUDY.md)) |
 | `tests/` | Offline tests (no API keys needed) |
 
 ## How OpenPort uses NVIDIA Nemotron and Nebius
@@ -168,6 +174,15 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | Labelling generated eval cases | Ultra | [`capture/generate.py`](src/openport/capture/generate.py) |
 | Fixing the code a dependency upgrade broke | Super | [`upgrade/fix.py`](src/openport/upgrade/fix.py) |
 | Inventing training inputs, and answering them as the teacher | Super, Ultra | [`distill.py`](src/openport/distill.py) |
+
+**Tavily is how OpenPort reads what changed since any model was trained:** pricing pages, NVIDIA's model guidance and package changelogs. Every quote it uses is checked word for word against the page Tavily returned.
+
+| Job inside OpenPort | Tavily | Where |
+|---|---|---|
+| Closed-model prices for the cost estimate (Nano reads the page) | Search | [`pricing.py`](src/openport/pricing.py) |
+| NVIDIA's guidance for the exact Nemotron model being tuned | Search | [`tune/research.py`](src/openport/tune/research.py) |
+| Each upgraded package's changelog, cut to the releases in between and quoted in the PR | Extract, then Search, then Map | [`upgrade/changelog.py`](src/openport/upgrade/changelog.py) |
+| The advisory and migration notes, when an upgrade breaks the tests | Search | [`upgrade/research.py`](src/openport/upgrade/research.py) |
 
 **Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
 
