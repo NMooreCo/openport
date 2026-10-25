@@ -591,6 +591,7 @@ def upgrade(
     out: Path | None = typer.Option(None, help="With --apply: where to write the upgraded copy (default: runs/upgrades/<name>)"),
     open_pr: bool = typer.Option(False, "--open", help="With --apply: if the tests prove the upgrade, push it to your fork and open the PR there"),
     upstream: bool = typer.Option(False, help="With --open: propose the PR to the original repo instead of your fork"),
+    project: str | None = typer.Option(None, "--project", help="In a monorepo: the project to upgrade, as its folder in the repo (its own lockfiles and tests)"),
 ) -> None:
     """Find vulnerable dependencies and the safe version that fixes each (OSV.dev); with --apply, upgrade and prove it."""
     from .upgrade import plan_upgrades, read_lockfiles
@@ -598,7 +599,10 @@ def upgrade(
     if open_pr and not apply:
         _fail("--open needs --apply: a PR is opened only for an upgrade the tests prove")
     root = _target_root(target)
-    deps = read_lockfiles(root)
+    project = Path(project).as_posix().strip("/") if project else ""
+    if project and not (root / project).is_dir():
+        _fail(f"No folder {project} in {root}")
+    deps = read_lockfiles(root / project)
     if not deps:
         _fail("No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock).")
     console.print(f"Read {len(deps)} dependencies. Checking OSV.dev...")
@@ -611,7 +615,7 @@ def upgrade(
         return
 
     colors = {"upgrade": "green", "partial": "green", "held: fix too new": "yellow", "held: no release dates": "yellow", "no fix available": "red"}
-    table = Table(title=f"Vulnerable dependencies in {root.resolve().name}")
+    table = Table(title=f"Vulnerable dependencies in {root.resolve().name}" + (f"/{project}" if project else ""))
     for column in ("Package", "Installed", "Fix", "Advisories", "Status"):
         table.add_column(column)
     for up in plans:
@@ -626,17 +630,18 @@ def upgrade(
     if not apply:
         console.print("Dry run. With --apply, OpenPort upgrades a copy, runs the tests before and after, and fixes what breaks.")
         return
-    _apply_upgrades(root, plans, rounds, test_image, test_command, out, min_age, open_pr, upstream)
+    _apply_upgrades(root, plans, rounds, test_image, test_command, out, min_age, open_pr, upstream, project)
 
 
-def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, out, min_age: int, open_pr: bool, upstream: bool) -> None:
+def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, out, min_age: int, open_pr: bool, upstream: bool,
+                    project: str = "") -> None:
     from .github import UPGRADE_BRANCH
     from .upgrade import report as upgrade_report
     from .upgrade.apply import changed_files, make_pr_folder
     from .upgrade.changelog import changelog_digest
     from .upgrade.fix import make_fixer
     from .upgrade.research import research_upgrade
-    from .upgrade.run import upgrade_repo
+    from .upgrade.run import in_project, upgrade_repo
     from .upgrade.testrun import run_suites, test_setups
 
     if shutil.which("docker") is None:
@@ -670,19 +675,19 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
                 files = ", ".join(sorted({e.file for e in data.edits}))
                 console.print(f"  Super changed {files}: {data.rationale}\n  Tests after the fix: {show(data.tests)}")
 
-    name = root.resolve().name
+    name = root.resolve().name + (f"-{project.replace('/', '-')}" if project else "")
     out_dir = out or config.RUNS_DIR / "upgrades" / name
     console.print(f"\nUpgrading a copy in {out_dir} (the original is untouched)...")
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
 
-    def tests(folder: Path):
-        setups = test_setups(folder, ecosystems)
+    def tests(folder: Path):  # a monorepo's project: the whole repo is mounted, and its suites run in the project's folder
+        setups = test_setups(folder / project, ecosystems)
         if test_image or test_command:  # your own suite instead of the detected ones
             setups = [("tests", test_image or setups[0][1], test_command or setups[0][2])]
-        return run_suites(folder, setups)
+        return run_suites(folder, [(suite, image, in_project(project, command)) for suite, image, command in setups])
 
-    run = upgrade_repo(root, out_dir, plans=plans, min_age_days=min_age, rounds=rounds, researcher=researcher, changelog=changelog,
-                       fixer=fixer, on_event=event, run_tests=tests)
+    run = upgrade_repo(root, out_dir, plans=plans, project=project, min_age_days=min_age, rounds=rounds, researcher=researcher,
+                       changelog=changelog, fixer=fixer, on_event=event, run_tests=tests)
     if not run.upgraded:  # not an error: a weekly run with nothing safe to do yet just says why
         console.print("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
         return
@@ -695,21 +700,30 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
     if run.proven:  # the PR comes from the original's .git plus the changed files, never from the tested copy
         pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir), out_dir.with_name(out_dir.name + ".pr"))
-        _open_or_show_pr(pr_folder.resolve(), upgrade_report.TITLE, body_path.resolve(), open_pr, upstream, UPGRADE_BRANCH)
+        title, branch = upgrade_report.TITLE, UPGRADE_BRANCH
+        if project:  # each project of a monorepo gets its own PR
+            title, branch = f"{title} in {project}", f"{branch}-{project.replace('/', '-')}"
+        _open_or_show_pr(pr_folder.resolve(), title, body_path.resolve(), open_pr, upstream, branch)
     elif open_pr:
         _fail("Not opening a PR: the tests don't prove this upgrade.")
 
 
 @app.command("upgrade-action")
-def upgrade_action(folder: Path = typer.Argument(Path("."), help="The repo to add the workflow to")) -> None:
+def upgrade_action(
+    folder: Path = typer.Argument(Path("."), help="The repo to add the workflow to"),
+    project: str | None = typer.Option(None, "--project", help="In a monorepo: the project the workflow upgrades (one workflow each)"),
+) -> None:
     """Add a GitHub Actions workflow that runs `openport upgrade --apply --open` every Monday."""
-    from .upgrade.action import WORKFLOW_FILE, workflow
+    from .upgrade.action import workflow, workflow_file
 
-    path = folder / WORKFLOW_FILE
+    project = Path(project).as_posix().strip("/") if project else ""
+    if project and not (folder / project).is_dir():
+        _fail(f"No folder {project} in {folder}")
+    path = folder / workflow_file(project)
     if path.exists():
         _fail(f"{path} already exists; delete it first to write a fresh one")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(workflow(config.OPENPORT_SOURCE).encode("utf-8"))
+    path.write_bytes(workflow(config.OPENPORT_SOURCE, project).encode("utf-8"))
     console.print(f"Wrote {path}. Commit it, and add a NEBIUS_API_KEY repository secret (TAVILY_API_KEY too, for the changelog quotes).")
 
 
@@ -760,7 +774,8 @@ def port(
     models: str | None = typer.Option(None, help="Model ID per tier: nano=ID,super=ID,ultra=ID (default: from Token Factory)"),
     out: Path | None = typer.Option(None, help="Where to write the ported copy (default: runs/ports/<name>)"),
 ) -> None:
-    """Rewrite a copy of a repo onto Token Factory: swap SDK clients for the OpenPort runtime and set each call's model."""
+    """Rewrite a copy of a repo onto Token Factory: swap SDK clients for the OpenPort runtime, point plain HTTP calls at
+    Token Factory, and set each call's model."""
     from .port import build_plan, load_assignments, port_repo
     from .scan import scan_repo
 

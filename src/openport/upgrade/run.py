@@ -12,11 +12,12 @@ The tests and package managers run on a fresh scratch copy each time, so nothing
 in its container can reach the diff or the PR.
 """
 
+import shlex
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from . import Upgrade, plan_upgrades, read_lockfiles
@@ -65,11 +66,18 @@ class UpgradeRun:
         return bool(self.before and self.before.ok and self.final and self.final.ok)
 
 
+def in_project(project: str, command: str) -> str:
+    """A container command run in a monorepo's project folder (the whole repo is mounted, so the project's path
+    dependencies on its neighbours still resolve)."""
+    return f"cd {shlex.quote(project)} && {command}" if project else command
+
+
 def upgrade_repo(
     root: Path,
     out: Path,
     *,
     plans: list[Upgrade] | None = None,
+    project: str = "",  # in a monorepo: the folder whose lockfiles and tests this upgrade is for, relative to `root`
     min_age_days: int = 7,
     rounds: int = 3,
     run_tests: Callable[[Path], TestRun],
@@ -81,20 +89,23 @@ def upgrade_repo(
     release_dates: Callable[[Dependency], dict[str, datetime]] = fetch_releases,  # checks what a bump adds
 ) -> UpgradeRun:
     emit = on_event or (lambda kind, data: None)
-    plans = plans if plans is not None else plan_upgrades(read_lockfiles(root), min_age_days=min_age_days)
+    project = PurePosixPath(project).as_posix().strip("/") if project else ""
+    plans = plans if plans is not None else plan_upgrades(read_lockfiles(Path(root) / project), min_age_days=min_age_days)
     upgraded, skipped = [], []
     for p in plans:
         if not p.target:
             skipped.append((p, p.status))
         elif "/" in p.dep.source:
-            skipped.append((p, f"locked in {p.dep.source}: run the upgrade on that folder"))
+            folder = PurePosixPath(project, p.dep.source).parent.as_posix()
+            skipped.append((p, f"locked in {PurePosixPath(project, p.dep.source).as_posix()}: upgrade that project with --project {folder}"))
         elif p.dep.source not in BUMPABLE_SOURCES:
             skipped.append((p, f"{p.dep.source} can't be updated by OpenPort yet: update it with its package manager"))
         elif any(u.dep.source == p.dep.source and u.dep.name.lower() == p.dep.name.lower() for u in upgraded):
             skipped.append((p, f"{p.dep.name} {p.dep.version} is also locked here; this upgrade moves the other one only"))
         else:
             upgraded.append(p)
-    run = UpgradeRun(Path(root).resolve().name, upgraded, skipped, None, None, out=str(out))
+    name = Path(root).resolve().name
+    run = UpgradeRun(f"{name}/{project}" if project else name, upgraded, skipped, None, None, out=str(out))
     if not upgraded:
         return run
 
@@ -118,8 +129,8 @@ def upgrade_repo(
         return run_tests(scratch_copy())  # never `out` itself: the tests run the repo's code
 
     try:
-        return _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit, run_container,
-                        release_dates)
+        return _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit,
+                        run_container, release_dates)
     finally:
         for folder in set(scratches):
             try:
@@ -128,33 +139,39 @@ def upgrade_repo(
                 pass
 
 
-def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit, run_container,
+def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit, run_container,
              release_dates) -> UpgradeRun:
+    home = Path(out) / project  # the project's folder in the upgrade: its lockfiles, and the code its tests run
+
+    def repo_path(name: str) -> str:
+        return PurePosixPath(project, name).as_posix() if project else name
+
     run.before = tested()
     emit("before", run.before)
-    run.changed = apply_bumps(out, {p.dep.name: p.target.version for p in run.upgraded if p.dep.source == "requirements.txt"})
+    run.changed = [repo_path(name) for name in
+                   apply_bumps(home, {p.dep.name: p.target.version for p in run.upgraded if p.dep.source == "requirements.txt"})]
     locked: dict[str, dict[str, str]] = {}
     for p in run.upgraded:
         if p.dep.source in LOCKFILES:
             locked.setdefault(p.dep.source, {})[p.dep.name] = p.target.version
     cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
-    for step in bump_steps(out, locked, cutoff):
+    for step in bump_steps(home, locked, cutoff):
         work = scratch_copy()
         for name, text in step.writes.items():  # e.g. overrides; a failed bump leaves no half-made change behind
-            _write(work / name, text)
-        result = run_container(work, step.image, step.command)
+            _write(work / project / name, text)
+        result = run_container(work, step.image, in_project(project, step.command))
         problem = None if result.ok else result.summary.removeprefix("error: ") or "the package manager failed"
         if problem is None:
-            before, after = (_read(f / step.lockfile) if (f / step.lockfile).is_file() else "" for f in (Path(out), work))
+            before, after = (_read(f / step.lockfile) if (f / step.lockfile).is_file() else "" for f in (home, work / project))
             young = too_new(added_versions(step.lockfile, before, after), cutoff, release_dates)
             if young:
                 more = f" and {len(young) - 3} more" if len(young) > 3 else ""
                 problem = f"it would add releases under {min_age_days} days old: {', '.join(young[:3])}{more}"
         if problem is None:
-            touched = [name for name in (step.lockfile, *step.files) if (work / name).is_file()]
+            touched = [name for name in (step.lockfile, *step.files) if (work / project / name).is_file()]
             for name in touched:  # only the files the package manager is there to change come back
-                shutil.copy2(work / name, Path(out) / name)
-            run.changed += touched
+                shutil.copy2(work / project / name, home / name)
+            run.changed += [repo_path(name) for name in touched]
             continue
         failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
         run.upgraded = [p for p in run.upgraded if p not in failed]
@@ -187,12 +204,12 @@ def _upgrade(root, out, scratch_copy, run, tested, min_age_days, rounds, researc
             emit("research", run.research)
         summary = [{"name": p.dep.name, "from": p.dep.version, "to": p.target.version} for p in run.upgraded]
         for _ in range(rounds):
-            try:
-                edits, rationale, sources = fixer(summary, run.research, current.output, source_files(out, current.output), notes)
+            try:  # the tests ran in the project's folder, so the paths in their output start there
+                edits, rationale, sources = fixer(summary, run.research, current.output, source_files(home, current.output), notes)
             except Exception as error:  # e.g. Token Factory refusing the request: report it, keep the bump and the tests
                 run.fix_error = f"{type(error).__name__}: {error}"[:300]
                 break
-            applied, rejected = apply_edits(out, edits)
+            applied, rejected = apply_edits(home, edits)
             current = tested() if applied else current
             run.rounds.append(FixRound(applied, rejected, rationale, sources, current))
             emit("round", run.rounds[-1])

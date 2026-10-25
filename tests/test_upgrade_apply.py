@@ -130,6 +130,11 @@ def test_a_weekly_workflow_keeps_a_repo_current(tmp_path, monkeypatch):
     step = flow["jobs"]["upgrade"]["steps"][-1]
     assert step["run"].endswith("openport upgrade . --apply --open") and step["env"]["NEBIUS_API_KEY"] == "${{ secrets.NEBIUS_API_KEY }}"
     assert CliRunner().invoke(cli.app, ["upgrade-action", str(tmp_path)]).exit_code == 1  # never overwrites one
+    (tmp_path / "platform" / "backend").mkdir(parents=True)  # a monorepo's project: a workflow, a group and a PR of its own
+    assert CliRunner().invoke(cli.app, ["upgrade-action", str(tmp_path), "--project", "platform/backend"]).exit_code == 0
+    project = yaml.safe_load((tmp_path / ".github/workflows/openport-upgrade-platform-backend.yml").read_text(encoding="utf-8"))
+    assert project["jobs"]["upgrade"]["steps"][-1]["run"].endswith("--apply --open --project platform/backend")
+    assert project["concurrency"]["group"] == "openport-upgrade-platform-backend"
 
     # In GitHub Actions the branch and the PR stay in the repo, and next week's run updates the open PR.
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
@@ -349,10 +354,35 @@ def test_only_root_lockfiles_openport_can_rewrite_are_upgraded(tmp_path):
                        run_container=lambda *args: TestRun(True, 0, "", "", 1.0))
     assert [(p.dep.name, p.dep.version) for p in run.upgraded] == [("semver", "5.7.1")]
     assert [why for _, why in run.skipped] == [
-        "locked in api/uv.lock: run the upgrade on that folder",
+        "locked in api/uv.lock: upgrade that project with --project api",
         "yarn.lock can't be updated by OpenPort yet: update it with its package manager",
         "semver 7.5.1 is also locked here; this upgrade moves the other one only",  # one override can't serve both
     ]
+
+
+def test_a_monorepos_project_is_upgraded_in_its_own_folder_with_the_whole_repo_there(tmp_path):
+    root = tmp_path / "mono"
+    backend = root / "platform" / "backend"
+    backend.mkdir(parents=True)
+    (root / "platform" / "shared").mkdir()
+    (root / "platform" / "shared" / "index.js").write_text("export const x = 1;\n")  # a neighbour the project depends on
+    (backend / "package.json").write_text('{"dependencies": {"jsonwebtoken": "^8.5.1", "shared": "file:../shared"}, "scripts": {"test": "node --test"}}')
+    (backend / "package-lock.json").write_text("{}")
+    commands, neighbours = [], []
+
+    def container(folder, image, command):
+        commands.append(command)
+        neighbours.append((folder / "platform" / "shared" / "index.js").is_file())
+        (folder / "platform" / "backend" / "package-lock.json").write_text('{"bumped": true}')
+        return TestRun(True, 0, "", "", 1.0)
+
+    jwt = upgrade("jsonwebtoken", "8.5.1", "9.0.0", source="package-lock.json")  # as read from the project's folder
+    run = upgrade_repo(root, tmp_path / "out", plans=[jwt], project="platform/backend", run_tests=lambda folder: passing(),
+                       run_container=container)
+    assert run.proven and run.target == "mono/platform/backend"
+    assert commands[0].startswith("cd platform/backend && npm ") and all(neighbours)
+    assert run.changed == ["platform/backend/package-lock.json", "platform/backend/package.json"]
+    assert "+++ b/platform/backend/package-lock.json" in run.diff and (root / "platform/backend/package-lock.json").read_text() == "{}"
 
 
 def test_a_bump_that_pulls_in_a_brand_new_release_is_turned_away(tmp_path):

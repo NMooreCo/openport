@@ -54,8 +54,9 @@ def docker_command(folder: Path, image: str, command: str) -> list[str]:
     # The installs go before the container exits: made in Linux, they hold symlinks Windows can't delete
     # (uv's .venv/lib64, npm's node_modules/.bin), and on a Linux host they belong to root. On Linux, hand
     # what's left back to the folder's owner too (Docker Desktop maps ownership already).
+    # A monorepo's project runs from its own folder (`cd backend && ...`), so its installs are cleared from there too.
     owner = '; chown -R "$(stat -c %u:%g /repo)" /repo 2>/dev/null' if os.name != "nt" else ""
-    command = f"{command}; status=$?; rm -rf /repo/node_modules /repo/.venv{owner}; exit $status"
+    command = f"{command}; status=$?; rm -rf /repo/node_modules /repo/.venv node_modules .venv{owner}; exit $status"
     return [
         "docker", "run", "--rm", "-e", "PYTHONDONTWRITEBYTECODE=1",
         "-v", f"{Path(folder).resolve()}:/repo", "-w", "/repo", image, "sh", "-c", command,
