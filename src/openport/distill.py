@@ -23,6 +23,7 @@ from openai import OpenAI
 from . import config, tokenfactory
 from .capture.draft import param_names
 from .capture.generate import INPUT_SYSTEM, input_prompt, parse_inputs
+from .evals.entry import entry_callable
 from .evals.graders import Judge, grade
 from .evals.intercept import routed
 from .evals.runner import _settle, make_judge, prepare_imports, swapped_client
@@ -144,7 +145,7 @@ def distill_site(
         on_progress("invented", len(inputs))
 
     prepare_imports(spec)
-    function = getattr(importlib.import_module(site.module), site.entry_function)
+    function = entry_callable(importlib.import_module(site.module), site.entry_function, site.init)
     module = None if site.intercept else importlib.import_module(site.client_home)
     local = threading.local()
     recorder = _Recorder(VariantClient(client, variant), local)  # records the app's request before the variant

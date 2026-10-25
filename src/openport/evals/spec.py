@@ -39,6 +39,9 @@ class CallSite:
     # No module attribute to swap (the code builds its client in a function, on `self`...): the eval routes the
     # SDK's own calls instead (evals/intercept.py), which it does for every Python site anyway.
     intercept: bool = False
+    # A call in a class's method (`function: Assistant.reply`) runs on an instance built for each case: with no
+    # arguments, or these (keyword arguments as a mapping, positional ones as a list). See evals/entry.py.
+    init: dict | list | None = None
 
     @property
     def runs_on_node(self) -> bool:
@@ -106,6 +109,7 @@ def load_spec(target: Path) -> Spec:
             client_module=site.get("client_module", ""),
             args=list(site.get("args") or []),
             intercept=bool(site.get("intercept", False)),
+            init=site.get("init"),
         )
         for site in raw["call_sites"]
     ]

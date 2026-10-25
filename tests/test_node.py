@@ -1,5 +1,6 @@
 """TypeScript and JavaScript call sites in the eval harness: the app runs under Node, its SDK pointed at a local proxy."""
 
+import dataclasses
 import json
 import re
 import shutil
@@ -210,6 +211,58 @@ def test_a_javascript_call_on_anthropics_sdk_runs_on_nemotron(tmp_path, monkeypa
     result = run_site(spec, spec.call_sites[0], "nano", "nvidia/nano-test", client=fake)
     assert result.pass_rate == 1.0, [case.error for case in result.cases]
     assert {r["model"] for r in fake.requests} == {"nvidia/nano-test"}  # translated to chat completions on Nemotron
+
+
+LABELLER_JS = """export class Labeller {
+  constructor(prefix = "") { this.prefix = prefix; this.calls = 0; }
+
+  async label(text) {
+    this.calls += 1;
+    const response = await fetch(`${process.env.OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: "gpt-5-mini", messages: [{ role: "user", content: this.prefix + text }] }),
+    });
+    const body = await response.json();
+    return { label: body.choices[0].message.content, calls: this.calls };
+  }
+
+  static async quick(text) { return new Labeller("quick: ").label(text); }
+}
+
+export class Keyed {
+  constructor(apiKey, retries = 2) { this.apiKey = apiKey; }
+  async label(text) { return new Labeller().label(text); }
+}
+"""
+
+
+@needs_node
+def test_a_method_of_an_exported_class_runs_on_an_instance_of_its_own(tmp_path, monkeypatch):
+    from openport.capture.draft import runnable, ts_exported_params
+    from openport.scan import scan_repo
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "src" / "labeller.mjs").write_text(LABELLER_JS)
+    (label,) = scan_repo(tmp_path).findings
+    assert label.function == "Labeller.label" and runnable(label, tmp_path) == (True, "") and ts_exported_params(tmp_path, label) == ["text"]
+    assert runnable(dataclasses.replace(label, function="Labeller.quick"), tmp_path) == (True, "")  # static: called on the class
+    assert "takes apiKey to build" in runnable(dataclasses.replace(label, function="Keyed.label"), tmp_path)[1]  # retries has a default
+
+    site = "  - {{id: {id}, file: src/labeller.mjs, function: {function}, args: [text], sdk: http, original_model: gpt-5-mini, " \
+           "output: json_in_text, dataset: cases.jsonl, grader: {{type: fields, fields: [label, calls]}}{extra}}}\n"
+    (tmp_path / "openport.evals.yaml").write_text("target: labeller\nsource_root: .\ncall_sites:\n" + "".join(
+        site.format(id=f"s{i}", function=function, extra=extra) for i, (function, extra) in enumerate([
+            ("Labeller.label", ""), ("Labeller.label", ', init: ["urgent: "]'), ("Labeller.quick", ""), ("Keyed.label", ", init: [sk-test]")])))
+    (tmp_path / "cases.jsonl").write_text(json.dumps({"id": "c1", "input": {"text": "refund"}, "expected": {"label": "ok", "calls": 1}}) + "\n")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    fake = FakeTokenFactory(lambda request: completion(content="ok"))
+    spec = load_spec(tmp_path)
+    for call_site in spec.call_sites:
+        result = run_site(spec, call_site, "nano", "nvidia/nano-test", client=fake)
+        assert result.pass_rate == 1.0, (call_site.function, [case.error for case in result.cases])
+    assert [r["messages"][0]["content"] for r in fake.requests] == ["refund", "urgent: refund", "quick: refund", "refund"]
 
 
 # Just enough of the `openai` package: the client posts to `${baseURL}/chat/completions`, as the SDK does.

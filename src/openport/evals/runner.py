@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from .. import tokenfactory
 from ..runtime.openport_llm import AnthropicOnNemotron, SwappedOpenAI, UsageMeter
 from .context import CURRENT_CASE
+from .entry import entry_callable
 from .graders import Judge, grade
 from .intercept import http_routed, routed
 from .node import EvalProxy, run_node_case
@@ -156,12 +157,13 @@ def run_site(
     if site.runs_on_node:
         with EvalProxy(chat, messages) as proxy, ThreadPoolExecutor(max_workers=concurrency) as pool:
             def call(case: dict):
-                return run_node_case(spec.source_root, site.module, site.entry_function, site.args or None, case["input"], proxy.base_url(case["id"]))
+                return run_node_case(spec.source_root, site.module, site.entry_function, site.args or None, case["input"], proxy.base_url(case["id"]),
+                                     init=site.init)
 
             results = list(pool.map(lambda case: _run_case(site, call, case, judge), cases))
     else:
         prepare_imports(spec)
-        function = getattr(importlib.import_module(site.module), site.entry_function)
+        function = entry_callable(importlib.import_module(site.module), site.entry_function, site.init)
         proxy = EvalProxy(chat, messages) if site.sdk == "http" else None  # plain HTTP calls are redirected to it
 
         def call(case: dict):

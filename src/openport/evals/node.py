@@ -145,11 +145,14 @@ def clean_env(base_url: str) -> dict[str, str]:
                   "OPENPORT_HTTP_BASE": base_url}  # the runner points plain fetch calls to LLM endpoints here too
 
 
-def run_node_case(root: Path, module: str, export: str, args: list[str] | None, case_input: dict, base_url: str, run=subprocess.run) -> Any:
-    """Call the site's export with one case's input, under Node. Returns its output, parsed from JSON."""
+def run_node_case(root: Path, module: str, export: str, args: list[str] | None, case_input: dict, base_url: str, run=subprocess.run,
+                  init: dict | list | None = None) -> Any:
+    """Call the site's export with one case's input, under Node. Returns its output, parsed from JSON. An export
+    named `Class.method` runs on a new instance of the exported class, built with `init`'s arguments."""
+    env = clean_env(base_url) | ({"OPENPORT_INIT": json.dumps(init if isinstance(init, list) else [init])} if init else {})
     try:
         process = run(
-            node_command(root, module, export, args), cwd=root, env=clean_env(base_url), input=json.dumps(case_input),
+            node_command(root, module, export, args), cwd=root, env=env, input=json.dumps(case_input),
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT,
         )
     except subprocess.TimeoutExpired as error:

@@ -32,11 +32,23 @@ async function readStdin() {
   return data;
 }
 
+// `Class.method`: a method of an exported class, on a new instance built with OPENPORT_INIT's arguments (none
+// by default), or a static method on the class itself.
+function entry(mod, name) {
+  const [className, method] = name.includes(".") ? name.split(".", 2) : [null, name];
+  if (className === null) return mod[name] ?? mod.default?.[name];
+  const cls = mod[className] ?? mod.default?.[className] ?? (mod.default?.name === className ? mod.default : undefined);
+  if (typeof cls !== "function") return undefined;
+  if (typeof cls[method] === "function") return cls[method].bind(cls);
+  const instance = new cls(...JSON.parse(process.env.OPENPORT_INIT || "[]"));
+  return typeof instance[method] === "function" ? instance[method].bind(instance) : undefined;
+}
+
 try {
   const input = JSON.parse((await readStdin()) || "{}");
   const args = argKeys ? JSON.parse(argKeys).map((key) => input[key]) : [input];
   const mod = await import(pathToFileURL(resolve(modulePath)).href);
-  const fn = mod[exportName] ?? mod.default?.[exportName];
+  const fn = entry(mod, exportName);
   if (typeof fn !== "function") throw new Error(`${modulePath} has no exported function ${exportName}`);
   const output = await fn(...args);
   process.stdout.write(`\nOPENPORT_RESULT ${JSON.stringify(output ?? null)}\n`);

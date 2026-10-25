@@ -17,6 +17,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from .. import tokenfactory
+from ..evals.entry import entry_callable
 from ..runtime.openport_llm import UsageMeter
 
 INPUT_SYSTEM = """You write test inputs for an LLM call so it can be evaluated after moving to a new model.
@@ -89,7 +90,7 @@ def original_labeller(root, module_name: str, function_name: str) -> Callable[[d
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     module = importlib.import_module(module_name)
-    function = getattr(module, function_name)
+    function = entry_callable(module, function_name)  # a method runs on an instance built for each case
 
     def label(case_input: dict) -> object:
         output = function(**case_input)

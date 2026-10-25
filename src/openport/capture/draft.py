@@ -60,10 +60,73 @@ def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, 
         return _runnable_on_node(finding, root)
     if not finding.module:
         return False, "no import path for the call site"
-    if finding.function in ("<module>", "") or "." in finding.function:
-        return False, f"not in a module-level function (found in {finding.function!r})"
+    if finding.function in ("<module>", ""):
+        return False, "not in a function (found at the module's top level)"
+    if "." in finding.function:
+        ok, why = _method_buildable(root, finding)
+        if not ok:
+            return False, why
     if finding.output not in RUNNABLE_OUTPUTS:
         return False, f"output type {finding.output!r} isn't evaluable"
+    return True, ""
+
+
+_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+_PLAIN_BASES = {"object", "ABC", "Protocol", "Generic"}
+_MODEL_BASES = {"BaseModel", "BaseSettings"}  # pydantic: built from its fields, like a dataclass
+
+
+def _method(root: Path, finding: CallSiteFinding) -> tuple[ast.ClassDef, ast.AST, dict[str, ast.ClassDef]] | None:
+    """The module-level class and method a call is in (`Assistant.reply`), and the module's classes."""
+    owner, _, name = finding.function.rpartition(".")
+    try:
+        tree = ast.parse((root / finding.file).read_bytes())
+    except (OSError, SyntaxError, ValueError):
+        return None
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    cls = classes.get(owner)
+    method = next((n for n in cls.body if isinstance(n, _FUNCTIONS) and n.name == name), None) if cls else None
+    return (cls, method, classes) if method else None
+
+
+def _name(node: ast.AST) -> str:
+    target = node.func if isinstance(node, ast.Call) else node
+    return target.id if isinstance(target, ast.Name) else target.attr if isinstance(target, ast.Attribute) else ""
+
+
+def _required(cls: ast.ClassDef, classes: dict[str, ast.ClassDef], depth: int = 0) -> list[str] | str:
+    """The arguments building `cls` needs, or why OpenPort can't tell (a base class it can't see)."""
+    init = next((n for n in cls.body if isinstance(n, _FUNCTIONS) and n.name == "__init__"), None)
+    if init is not None:
+        args = init.args
+        positional = [*args.posonlyargs, *args.args][1:]  # after self
+        required = positional[: len(positional) - len(args.defaults)] if args.defaults else positional
+        return [a.arg for a in required] + [a.arg for a, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
+    bases = [_name(b.value if isinstance(b, ast.Subscript) else b) for b in cls.bases]
+    if any(_name(d) == "dataclass" for d in cls.decorator_list) or _MODEL_BASES & set(bases):
+        return [n.target.id for n in cls.body if isinstance(n, ast.AnnAssign) and n.value is None and isinstance(n.target, ast.Name)
+                and "ClassVar" not in ast.unparse(n.annotation)]
+    for base in (b for b in bases if b not in _PLAIN_BASES):
+        if base not in classes or depth > 5:
+            return f"built from {base}, which OpenPort can't see into"
+        return _required(classes[base], classes, depth + 1)
+    return []
+
+
+def _method_buildable(root: Path | None, finding: CallSiteFinding) -> tuple[bool, str]:
+    """A call in a class's method can be tested on an instance built with no arguments, or straight from the
+    class when the method is static or a classmethod (see evals/entry.py)."""
+    found = _method(root, finding) if root is not None else None
+    if found is None:
+        return False, f"in {finding.function!r}, not a module-level function or a method of a module-level class"
+    cls, method, classes = found
+    if any(_name(d) in ("staticmethod", "classmethod") for d in method.decorator_list):
+        return True, ""
+    required = _required(cls, classes)
+    if isinstance(required, str):
+        return False, f"a method of {cls.name}, {required}: give the arguments to build it as `init:` in the spec"
+    if required:
+        return False, f"a method of {cls.name}, which takes {', '.join(required)} to build: give them as `init:` in the spec"
     return True, ""
 
 
@@ -75,13 +138,69 @@ def _runnable_on_node(finding: CallSiteFinding, root: Path | None) -> tuple[bool
         return False, "the project's dependencies aren't installed (run npm install), so its code can't run"
     if root is not None and ts_exported_params(root, finding) is None:
         return False, f"{finding.function!r} isn't an exported function the harness can call"
+    if root is not None and "." in finding.function:
+        cls, method = _ts_method(root, finding)
+        required = [] if any(c.type == "static" for c in method.children) else _ts_required(cls)
+        owner = finding.function.split(".")[0]
+        if isinstance(required, str):
+            return False, f"a method of {owner}, {required}: give the arguments to build it as `init:` in the spec"
+        if required:
+            return False, f"a method of {owner}, which takes {', '.join(required)} to build: give them as `init:` in the spec"
     return True, ""
 
 
+def _ts_tree(root: Path, finding: CallSiteFinding):
+    from ..scan.ts_scanner import _parser
+
+    try:
+        return _parser(finding.file.endswith((".tsx", ".jsx"))).parse((root / finding.file).read_bytes())
+    except OSError:
+        return None
+
+
+def _ts_method(root: Path, finding: CallSiteFinding):
+    """The exported class and method a call is in (`Assistant.reply`): (class, method) nodes, or (None, None)."""
+    from ..scan.ts_scanner import _text, _walk
+
+    owner, _, name = finding.function.partition(".")
+    tree = _ts_tree(root, finding)
+    for node in _walk(tree.root_node) if tree and "." not in name else []:
+        if node.type != "export_statement":
+            continue
+        cls = next((c for c in node.named_children if c.type in ("class_declaration", "class") and _text(c.child_by_field_name("name")) == owner), None)
+        body = cls.child_by_field_name("body") if cls is not None else None
+        method = next((m for m in body.named_children if m.type == "method_definition" and _text(m.child_by_field_name("name")) == name), None) if body else None
+        if method is not None:
+            return cls, method
+    return None, None
+
+
+def _ts_required(cls) -> list[str] | str:
+    """The arguments building an exported class needs: its constructor's parameters without defaults."""
+    from ..scan.ts_scanner import _text
+
+    body = cls.child_by_field_name("body")
+    constructor = next((m for m in body.named_children if m.type == "method_definition" and _text(m.child_by_field_name("name")) == "constructor"), None)
+    if constructor is None:
+        heritage = next((c for c in cls.named_children if c.type == "class_heritage"), None)
+        return "built like the class it extends, which OpenPort doesn't look into" if heritage is not None else []
+    params = constructor.child_by_field_name("parameters")
+    return [_text(p.child_by_field_name("pattern")) for p in (params.named_children if params else [])
+            if p.type == "required_parameter" and p.child_by_field_name("value") is None
+            and getattr(p.child_by_field_name("pattern"), "type", "") != "rest_pattern"]
+
+
 def ts_exported_params(root: Path, finding: CallSiteFinding) -> list[str] | None:
-    """The parameter names of the exported function the call is in, or None if it isn't one."""
+    """The parameter names of the exported function (or exported class's method) the call is in, or None if it isn't one."""
     from ..scan.ts_scanner import _parser, _text, _walk
 
+    if "." in finding.function:
+        _, method = _ts_method(root, finding)
+        params = method.child_by_field_name("parameters") if method is not None else None
+        if method is None:
+            return None
+        names = [_text(p.child_by_field_name("pattern") or p) for p in (params.named_children if params else [])]
+        return [n for n in names if n.isidentifier()]
     try:
         source = (root / finding.file).read_bytes()
     except OSError:
@@ -108,17 +227,20 @@ def param_names(root: Path, finding: CallSiteFinding) -> list[str]:
     """The parameter names of the call's enclosing function, read from source (not imported)."""
     if finding.language != "python":
         return ts_exported_params(root, finding) or []
-    try:
-        tree = ast.parse((root / finding.file).read_text(encoding="utf-8", errors="replace"))
-    except (OSError, SyntaxError):
+    found = _method(root, finding) if "." in finding.function else None
+    node = found[1] if found else None
+    if node is None:
+        try:
+            tree = ast.parse((root / finding.file).read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError):
+            return []
+        target = finding.function.split(".")[-1]
+        node = next((n for n in ast.walk(tree) if isinstance(n, _FUNCTIONS) and n.name == target), None)
+    if node is None:
         return []
-    target = finding.function.split(".")[-1]
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == target:
-            args = node.args
-            names = [p.arg for p in (args.posonlyargs + args.args + args.kwonlyargs)]
-            return [n for n in names if n not in ("self", "cls")]
-    return []
+    args = node.args
+    names = [p.arg for p in (args.posonlyargs + args.args + args.kwonlyargs)]
+    return [n for n in names if n not in ("self", "cls")]
 
 
 def draft_site(finding: CallSiteFinding, *, fields: list[str] | None = None, args: list[str] | None = None) -> dict:
