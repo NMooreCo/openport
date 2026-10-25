@@ -49,7 +49,8 @@ def grader_for(output: str, fields: list[str] | None) -> dict:
 
 
 def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, str]:
-    """Whether the eval runner can import this call and swap its client. Returns (ok, reason-if-not)."""
+    """Whether the eval runner can call this function and route its SDK calls. Returns (ok, reason-if-not).
+    Where the client comes from doesn't matter: the runner intercepts the SDK itself (evals/intercept.py)."""
     if finding.sdk == "http":
         return False, "a plain HTTP call: the eval harness runs OpenAI and Anthropic SDK calls"
     if finding.language != "python":
@@ -60,8 +61,6 @@ def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, 
         return False, f"not in a module-level function (found in {finding.function!r})"
     if finding.output not in RUNNABLE_OUTPUTS:
         return False, f"output type {finding.output!r} isn't evaluable"
-    if client_attr_for(finding) is None:
-        return False, f"client reached via {finding.receiver_kind} ({finding.receiver!r}); can't swap it at import"
     return True, ""
 
 
@@ -136,13 +135,14 @@ def draft_site(finding: CallSiteFinding, *, fields: list[str] | None = None, arg
             "dataset": f"{finding.id}.jsonl",
             "grader": grader_for(finding.output, fields),
         }
+    attr = client_attr_for(finding)
     return {
         "id": finding.id,
         "title": humanize_title(finding),
         "file": finding.file,
         "module": finding.module,
         "function": finding.function,
-        "client_attr": client_attr_for(finding) or "client",
+        **({"client_attr": attr} if attr else {"intercept": True}),  # no attribute to swap: route the SDK's calls
         "sdk": finding.sdk,
         "original_model": finding.model or finding.model_expr or "unknown",
         "output": finding.output,

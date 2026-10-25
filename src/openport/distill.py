@@ -24,7 +24,8 @@ from . import config, tokenfactory
 from .capture.draft import param_names
 from .capture.generate import INPUT_SYSTEM, input_prompt, parse_inputs
 from .evals.graders import Judge, grade
-from .evals.runner import make_judge, prepare_imports, swapped_client
+from .evals.intercept import routed
+from .evals.runner import _settle, make_judge, prepare_imports, swapped_client
 from .evals.spec import CallSite, Spec, load_spec
 from .runtime.openport_llm import UsageMeter
 from .tune.variant import Variant, VariantClient
@@ -144,19 +145,20 @@ def distill_site(
 
     prepare_imports(spec)
     function = getattr(importlib.import_module(site.module), site.entry_function)
-    module = importlib.import_module(site.client_home)
+    module = None if site.intercept else importlib.import_module(site.client_home)
     local = threading.local()
     recorder = _Recorder(VariantClient(client, variant), local)  # records the app's request before the variant
-    factory = site.client_attr.endswith("()")
     attr = site.client_attr.removesuffix("()")
-    original = getattr(module, attr)
+    original = getattr(module, attr) if module is not None else None
     swapped = swapped_client(site, teacher, meter, recorder)
-    setattr(module, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
+    if module is not None:
+        setattr(module, attr, (lambda *args, **kwargs: swapped) if site.client_attr.endswith("()") else swapped)
 
     def teach(case_input: dict):
         local.calls = []
         try:
-            output = function(**case_input)
+            with routed(swapped, passthrough=client):  # whatever client the code builds, as in an eval
+                output = _settle(function(**case_input))
             output = output.model_dump() if hasattr(output, "model_dump") else output
         except Exception as error:  # a crash is a rejected example, not a failed run
             return None, f"crashed: {type(error).__name__}"
@@ -173,7 +175,8 @@ def distill_site(
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             outcomes = list(pool.map(teach, inputs))
     finally:
-        setattr(module, attr, original)
+        if module is not None:
+            setattr(module, attr, original)
 
     kept = [example for example, _ in outcomes if example]
     rejected: dict[str, int] = {}

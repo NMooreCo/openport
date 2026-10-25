@@ -1,6 +1,8 @@
 """Run a call site's eval cases on a Nemotron model, through the OpenPort runtime, and grade them."""
 
+import asyncio
 import importlib
+import inspect
 import json
 import os
 import re
@@ -18,6 +20,7 @@ from .. import tokenfactory
 from ..runtime.openport_llm import AnthropicOnNemotron, SwappedOpenAI, UsageMeter
 from .context import CURRENT_CASE
 from .graders import Judge, grade
+from .intercept import routed
 from .node import EvalProxy, run_node_case
 from .spec import CallSite, Spec
 
@@ -64,6 +67,11 @@ class SiteResult:
 
 def _plain(output: Any) -> Any:
     return output.model_dump() if isinstance(output, BaseModel) else output
+
+
+def _settle(result: Any) -> Any:
+    """An async entry point's coroutine, run to its result."""
+    return asyncio.run(result) if inspect.iscoroutine(result) else result
 
 
 def prepare_imports(spec: Spec) -> None:
@@ -126,15 +134,18 @@ def run_site(
 ) -> SiteResult:
     """Point the call site's SDK client at `model`, run every case, and put the original client back.
 
-    `client_attr` names the module attribute the code gets its client from: a client object
-    (`client`), or a factory function (`get_client()`), which is replaced by one returning the
-    swapped client. With `model=None`, each call runs on the model its code names.
+    While a case runs, the SDK's own calls go to the swapped client, whatever client object the code
+    built (evals/intercept.py). `client_attr` can also name the module attribute the code gets its
+    client from: a client object (`client`), or a factory function (`get_client()`), which is replaced
+    by one returning the swapped client; `intercept: true` sites have none. An async entry point runs
+    to completion. With `model=None`, each call runs on the model its code names.
 
     A TypeScript or JavaScript site runs under Node instead, its OpenAI SDK pointed at a local proxy
     that sends each request through the same swapped client (see evals/node.py).
     """
     meter = UsageMeter()
-    swapped = swapped_client(site, model, meter, client or tokenfactory.client(), extra_body)
+    real = client or tokenfactory.client()
+    swapped = swapped_client(site, model, meter, real, extra_body)
     cases = cases if cases is not None else site.cases(limit)
     cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
     if site.runs_on_node:
@@ -148,16 +159,22 @@ def run_site(
     else:
         prepare_imports(spec)
         function = getattr(importlib.import_module(site.module), site.entry_function)
-        home = importlib.import_module(site.client_home)
-        factory = site.client_attr.endswith("()")
+
+        def call(case: dict):
+            with routed(swapped, passthrough=real):  # the swapped client's own calls to Token Factory pass through
+                return _settle(function(**case["input"]))
+
+        home = None if site.intercept else importlib.import_module(site.client_home)
         attr = site.client_attr.removesuffix("()")
-        original = getattr(home, attr)
-        setattr(home, attr, (lambda *args, **kwargs: swapped) if factory else swapped)
+        original = getattr(home, attr) if home is not None else None
+        if home is not None:
+            setattr(home, attr, (lambda *args, **kwargs: swapped) if site.client_attr.endswith("()") else swapped)
         try:
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                results = list(pool.map(lambda case: _run_case(site, lambda c: function(**c["input"]), case, judge), cases))
+                results = list(pool.map(lambda case: _run_case(site, call, case, judge), cases))
         finally:
-            setattr(home, attr, original)
+            if home is not None:
+                setattr(home, attr, original)
 
     used = meter.by_model
     prompt_tokens = sum(u.prompt_tokens for u in used.values())

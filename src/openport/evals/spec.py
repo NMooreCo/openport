@@ -36,6 +36,9 @@ class CallSite:
     # TypeScript/JavaScript: `module` is a file, `entry` (or `function`) its export, and `args` the input keys
     # passed to it in order (default: the whole input as one argument). Python entries take keyword arguments.
     args: list[str] = field(default_factory=list)
+    # No module attribute to swap (the code builds its client in a function, on `self`...): the eval routes the
+    # SDK's own calls instead (evals/intercept.py), which it does for every Python site anyway.
+    intercept: bool = False
 
     @property
     def runs_on_node(self) -> bool:
@@ -102,6 +105,7 @@ def load_spec(target: Path) -> Spec:
             entry=site.get("entry", ""),
             client_module=site.get("client_module", ""),
             args=list(site.get("args") or []),
+            intercept=bool(site.get("intercept", False)),
         )
         for site in raw["call_sites"]
     ]
