@@ -65,9 +65,7 @@ def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, 
 
 
 def _runnable_on_node(finding: CallSiteFinding, root: Path | None) -> tuple[bool, str]:
-    """TypeScript/JavaScript runs under Node with its OpenAI SDK pointed at OpenPort's proxy (evals/node.py)."""
-    if finding.sdk != "openai":
-        return False, "TypeScript call sites on the Anthropic SDK can't be run by the eval harness yet"
+    """TypeScript/JavaScript runs under Node with its OpenAI or Anthropic SDK pointed at OpenPort's proxy (evals/node.py)."""
     if finding.output not in RUNNABLE_OUTPUTS:
         return False, f"output type {finding.output!r} isn't evaluable"
     if root is not None and not (root / "node_modules").is_dir():

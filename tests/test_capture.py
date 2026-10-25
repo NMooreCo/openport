@@ -61,7 +61,7 @@ def test_grader_for():
 def test_runnable():
     assert draft.runnable(finding())[0] is True
     assert draft.runnable(finding(language="typescript"))[0] is True  # runs under Node, through OpenPort's proxy
-    assert draft.runnable(finding(language="typescript", sdk="anthropic"))[0] is False
+    assert draft.runnable(finding(language="typescript", sdk="anthropic"))[0] is True  # through the proxy's Messages API
     assert draft.runnable(finding(module=None))[0] is False
     assert draft.runnable(finding(function="<module>"))[0] is False
     assert draft.runnable(finding(function="Agent.run"))[0] is False

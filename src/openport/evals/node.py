@@ -1,12 +1,14 @@
 """Run a TypeScript or JavaScript call site's eval cases: the app's code runs unchanged, under Node.
 
-The app's OpenAI SDK reaches a local stand-in for the OpenAI API (`EvalProxy`) through OPENAI_BASE_URL.
-Each request goes through the same swapped client the Python harness uses (model swap, the variant
-being tuned, usage metering), then on to Token Factory. The Node process never holds a Token Factory
-key, and its environment is stripped of anything that looks like a secret. The URL carries the case
-ID (/case/<id>/v1), so each reply can be tied to its case.
+The app's OpenAI SDK reaches a local stand-in for the OpenAI API (`EvalProxy`) through OPENAI_BASE_URL,
+and its Anthropic SDK a stand-in for Anthropic's Messages API through ANTHROPIC_BASE_URL. Each request
+goes through the same swapped client the Python harness uses (model swap, the variant being tuned,
+usage metering; Anthropic's requests translated to Nemotron chat completions), then on to Token Factory.
+The Node process never holds a Token Factory key, and its environment is stripped of anything that
+looks like a secret. The URL carries the case ID (/case/<id>/v1), so each reply can be tied to its case.
 """
 
+import dataclasses
 import inspect
 import json
 import os
@@ -31,7 +33,7 @@ MARKER = "OPENPORT_RESULT "
 ERROR_MARKER = "OPENPORT_ERROR "
 TIMEOUT = 300  # seconds per case
 _KNOWN = set(inspect.signature(Completions.create).parameters) - {"self", "extra_headers", "extra_query", "extra_body", "timeout"}
-_PATH = re.compile(r"^/case/([^/]+)/v1/chat/completions/?$")
+_PATH = re.compile(r"^/case/([^/]+)/v1/(chat/completions|messages)/?$")
 _SECRET = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.IGNORECASE)
 
 
@@ -40,7 +42,7 @@ class NodeCaseError(Exception):
 
 
 class EvalProxy:
-    """A local stand-in for the OpenAI chat completions API that forwards through `client`."""
+    """A local stand-in for OpenAI's chat completions API and Anthropic's Messages API that forwards through `client`."""
 
     def __init__(self, client: Any):
         self.client = client
@@ -50,24 +52,33 @@ class EvalProxy:
             def do_POST(self):  # noqa: N802 (the http.server API)
                 match = _PATH.match(self.path)
                 if match is None:
-                    return self._reply(404, {"error": {"message": f"OpenPort's eval proxy only serves chat completions, not {self.path}"}})
+                    return self._reply(404, {"error": {"message": f"OpenPort's eval proxy serves chat completions and messages, not {self.path}"}})
+                anthropic = match[2] == "messages"
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 if body.get("stream"):
-                    return self._reply(400, {"error": {"message": "Streaming isn't supported in OpenPort evals"}})
+                    return self._reply(400, self._error("Streaming isn't supported in OpenPort evals", anthropic))
                 token = CURRENT_CASE.set(unquote(match[1]))
                 try:
-                    response = proxy.forward(body)
+                    response = proxy.forward_messages(body) if anthropic else proxy.forward(body)
                 except APIStatusError as error:  # Token Factory's own error body, as it came: the Python SDK unwraps "error"
                     try:
                         payload = error.response.json()
                     except ValueError:
                         payload = None
-                    return self._reply(error.status_code, payload if isinstance(payload, dict) else {"error": {"message": str(error)}})
+                    if anthropic or not isinstance(payload, dict):
+                        message = ((payload or {}).get("error") or {}).get("message") if isinstance(payload, dict) else None
+                        payload = self._error(message or str(error), anthropic)
+                    return self._reply(error.status_code, payload)
                 except Exception as error:  # noqa: BLE001 (the app sees an API error, as it would in production)
-                    return self._reply(500, {"error": {"message": f"{type(error).__name__}: {error}"}})
+                    return self._reply(500, self._error(f"{type(error).__name__}: {error}", anthropic))
                 finally:
                     CURRENT_CASE.reset(token)
-                self._reply(200, json.loads(response.model_dump_json()))
+                self._reply(200, dataclasses.asdict(response) if anthropic else json.loads(response.model_dump_json()))
+
+            @staticmethod
+            def _error(message: str, anthropic: bool) -> dict:
+                """An error body in the shape the app's SDK reads."""
+                return {"type": "error", "error": {"type": "api_error", "message": message}} if anthropic else {"error": {"message": message}}
 
             def _reply(self, status: int, payload: dict):
                 data = json.dumps(payload).encode()
@@ -90,6 +101,10 @@ class EvalProxy:
         if extra:
             known["extra_body"] = extra
         return self.client.chat.completions.create(**known)
+
+    def forward_messages(self, body: dict):
+        """Send an Anthropic Messages request through the client, which translates it for Nemotron."""
+        return self.client.messages.create(**body)
 
     def base_url(self, case_id: str) -> str:
         return f"http://127.0.0.1:{self._server.server_address[1]}/case/{quote(case_id, safe='')}/v1"
@@ -119,9 +134,11 @@ def node_command(root: Path, module: str, export: str, args: list[str] | None) -
 
 
 def clean_env(base_url: str) -> dict[str, str]:
-    """The app's environment: no secrets, and its OpenAI SDK pointed at the local proxy."""
+    """The app's environment: no secrets, and its OpenAI and Anthropic SDKs pointed at the local proxy (the
+    Anthropic SDK adds /v1 itself)."""
     env = {name: value for name, value in os.environ.items() if not _SECRET.search(name)}
-    return env | {"OPENAI_BASE_URL": base_url, "OPENAI_API_KEY": "openport-placeholder"}
+    return env | {"OPENAI_BASE_URL": base_url, "OPENAI_API_KEY": "openport-placeholder",
+                  "ANTHROPIC_BASE_URL": base_url.removesuffix("/v1"), "ANTHROPIC_API_KEY": "openport-placeholder"}
 
 
 def run_node_case(root: Path, module: str, export: str, args: list[str] | None, case_input: dict, base_url: str, run=subprocess.run) -> Any:

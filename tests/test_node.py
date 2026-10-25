@@ -104,12 +104,26 @@ def test_proxy_passes_token_factorys_errors_on_as_they_came():
         assert post(proxy.base_url("c") + "/chat/completions", {"model": "m", "messages": []}) == (402, body)
 
 
+def test_the_proxy_speaks_anthropics_messages_api_too():
+    from openport.runtime.openport_llm import AnthropicOnNemotron
+
+    fake = FakeTokenFactory(lambda request: completion(content="billing"))
+    with node.EvalProxy(AnthropicOnNemotron("nvidia/nano-test", client=fake)) as proxy:
+        status, body = post(proxy.base_url("c").removesuffix("/v1") + "/v1/messages",
+                            {"model": "claude-sonnet-5-5", "max_tokens": 64, "system": "Label it.", "messages": [{"role": "user", "content": "refund"}]})
+        assert status == 200 and (body["type"], body["role"], body["content"]) == ("message", "assistant", [{"text": "billing", "type": "text"}])
+        assert fake.requests[0]["model"] == "nvidia/nano-test" and fake.requests[0]["messages"][0] == {"role": "system", "content": "Label it."}
+        status, error = post(proxy.base_url("c").removesuffix("/v1") + "/v1/messages", {"model": "m", "max_tokens": 1, "messages": [], "stream": True})
+        assert status == 400 and error["type"] == "error" and error["error"]["type"] == "api_error"  # in the shape Anthropic's SDK reads
+
+
 def test_the_app_gets_no_secrets(monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "nb-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
     env = node.clean_env("http://127.0.0.1:1/case/c/v1")
     assert "NEBIUS_API_KEY" not in env and "GITHUB_TOKEN" not in env
     assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:1/case/c/v1" and env["OPENAI_API_KEY"] == "openport-placeholder"
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1/case/c" and env["ANTHROPIC_API_KEY"] == "openport-placeholder"  # its SDK adds /v1
 
 
 @needs_node
@@ -151,6 +165,36 @@ def test_a_javascript_call_site_runs_and_tunes_like_a_python_one(tmp_path, monke
                        engineer=lambda *args, **extra: Variant(system_addendum="Reply with JSON only."))
     assert result.chosen is not None and result.chosen.tune_pass == 1.0
     assert result.system_prompts == ["Label the message."]  # what the port needs to find the prompt in the code
+
+
+# The same, calling Anthropic's Messages API the way @anthropic-ai/sdk does.
+CLAUDE_JS = """export async function classify(text) {
+  const response = await fetch(`${process.env.ANTHROPIC_BASE_URL}/v1/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 64, system: "Label the message.", messages: [{ role: "user", content: text }] }),
+  });
+  if (!response.ok) throw new Error(`API error ${response.status}`);
+  const body = await response.json();
+  return { label: body.content[0].text };
+}
+"""
+
+
+@needs_node
+def test_a_javascript_call_on_anthropics_sdk_runs_on_nemotron(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "classify.mjs").write_text(CLAUDE_JS)
+    (tmp_path / "openport.evals.yaml").write_text(SPEC.replace("sdk: openai", "sdk: anthropic").replace("fields: [label, sawKey]", "fields: [label]"))
+    labels = {"refund please": "billing", "app crashed": "technical"}
+    (tmp_path / "cases.jsonl").write_text("".join(json.dumps({"id": f"c{i}", "input": {"text": text}, "expected": {"label": label}}) + "\n"
+                                                  for i, (text, label) in enumerate(labels.items())))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    fake = FakeTokenFactory(lambda request: completion(content=labels[request["messages"][-1]["content"]]))
+    spec = load_spec(tmp_path)
+    result = run_site(spec, spec.call_sites[0], "nano", "nvidia/nano-test", client=fake)
+    assert result.pass_rate == 1.0, [case.error for case in result.cases]
+    assert {r["model"] for r in fake.requests} == {"nvidia/nano-test"}  # translated to chat completions on Nemotron
 
 
 SUPPORTDESK_TS = Path(__file__).parents[1] / "examples" / "supportdesk-ts"

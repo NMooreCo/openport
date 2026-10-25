@@ -149,8 +149,6 @@ def run_site(
     cases = cases if cases is not None else site.cases(limit)
     cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
     if site.runs_on_node:
-        if site.sdk != "openai":
-            raise ValueError(f"{site.id}: TypeScript and JavaScript call sites can be evaluated on the OpenAI SDK only")
         with EvalProxy(swapped) as proxy, ThreadPoolExecutor(max_workers=concurrency) as pool:
             def call(case: dict):
                 return run_node_case(spec.source_root, site.module, site.entry_function, site.args or None, case["input"], proxy.base_url(case["id"]))
