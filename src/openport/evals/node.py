@@ -42,10 +42,12 @@ class NodeCaseError(Exception):
 
 
 class EvalProxy:
-    """A local stand-in for OpenAI's chat completions API and Anthropic's Messages API that forwards through `client`."""
+    """A local stand-in for OpenAI's chat completions API and Anthropic's Messages API. Chat completions forward
+    through `client`, messages through `anthropic` (default: `client`)."""
 
-    def __init__(self, client: Any):
+    def __init__(self, client: Any, anthropic: Any = None):
         self.client = client
+        self.anthropic = anthropic or client
         proxy = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -104,7 +106,7 @@ class EvalProxy:
 
     def forward_messages(self, body: dict):
         """Send an Anthropic Messages request through the client, which translates it for Nemotron."""
-        return self.client.messages.create(**body)
+        return self.anthropic.messages.create(**body)
 
     def base_url(self, case_id: str) -> str:
         return f"http://127.0.0.1:{self._server.server_address[1]}/case/{quote(case_id, safe='')}/v1"
@@ -135,10 +137,11 @@ def node_command(root: Path, module: str, export: str, args: list[str] | None) -
 
 def clean_env(base_url: str) -> dict[str, str]:
     """The app's environment: no secrets, and its OpenAI and Anthropic SDKs pointed at the local proxy (the
-    Anthropic SDK adds /v1 itself)."""
+    Anthropic SDK adds /v1 itself). Code OpenPort already ported reads NEBIUS_BASE_URL, so that points there too."""
     env = {name: value for name, value in os.environ.items() if not _SECRET.search(name)}
-    return env | {"OPENAI_BASE_URL": base_url, "OPENAI_API_KEY": "openport-placeholder",
-                  "ANTHROPIC_BASE_URL": base_url.removesuffix("/v1"), "ANTHROPIC_API_KEY": "openport-placeholder"}
+    placeholder = "openport-placeholder"
+    return env | {"OPENAI_BASE_URL": base_url, "OPENAI_API_KEY": placeholder, "NEBIUS_BASE_URL": base_url, "NEBIUS_API_KEY": placeholder,
+                  "ANTHROPIC_BASE_URL": base_url.removesuffix("/v1"), "ANTHROPIC_API_KEY": placeholder}
 
 
 def run_node_case(root: Path, module: str, export: str, args: list[str] | None, case_input: dict, base_url: str, run=subprocess.run) -> Any:

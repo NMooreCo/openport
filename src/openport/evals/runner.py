@@ -149,7 +149,10 @@ def run_site(
     cases = cases if cases is not None else site.cases(limit)
     cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
     if site.runs_on_node:
-        with EvalProxy(swapped) as proxy, ThreadPoolExecutor(max_workers=concurrency) as pool:
+        # Either API can arrive: code ported off Anthropic's SDK sends chat completions.
+        chat = swapped if site.sdk == "openai" else SwappedOpenAI(model or (lambda named: named), client=real, meter=meter, extra_body=extra_body)
+        messages = swapped if site.sdk == "anthropic" else AnthropicOnNemotron(model, client=real, meter=meter, extra_body=extra_body)
+        with EvalProxy(chat, messages) as proxy, ThreadPoolExecutor(max_workers=concurrency) as pool:
             def call(case: dict):
                 return run_node_case(spec.source_root, site.module, site.entry_function, site.args or None, case["input"], proxy.base_url(case["id"]))
 

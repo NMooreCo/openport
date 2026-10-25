@@ -121,7 +121,8 @@ def test_the_app_gets_no_secrets(monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "nb-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
     env = node.clean_env("http://127.0.0.1:1/case/c/v1")
-    assert "NEBIUS_API_KEY" not in env and "GITHUB_TOKEN" not in env
+    assert env["NEBIUS_API_KEY"] == "openport-placeholder" and "GITHUB_TOKEN" not in env  # never the real key
+    assert env["NEBIUS_BASE_URL"] == "http://127.0.0.1:1/case/c/v1"  # code OpenPort ported reaches the proxy too
     assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:1/case/c/v1" and env["OPENAI_API_KEY"] == "openport-placeholder"
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1/case/c" and env["ANTHROPIC_API_KEY"] == "openport-placeholder"  # its SDK adds /v1
 
@@ -141,7 +142,7 @@ def test_a_javascript_call_site_runs_and_tunes_like_a_python_one(tmp_path, monke
     (tmp_path / "openport.evals.yaml").write_text(SPEC)
     labels = {"refund please": "billing", "app crashed": "technical", "love it": "praise", "where is my box": "shipping"}
     (tmp_path / "cases.jsonl").write_text("".join(
-        json.dumps({"id": f"c{i}", "input": {"text": text}, "expected": {"label": label, "sawKey": None}}) + "\n"
+        json.dumps({"id": f"c{i}", "input": {"text": text}, "expected": {"label": label, "sawKey": "openport-placeholder"}}) + "\n"
         for i, (text, label) in enumerate(labels.items())
     ))
     monkeypatch.setenv("NEBIUS_API_KEY", "nb-secret")  # held by OpenPort, never by the app
@@ -195,6 +196,61 @@ def test_a_javascript_call_on_anthropics_sdk_runs_on_nemotron(tmp_path, monkeypa
     result = run_site(spec, spec.call_sites[0], "nano", "nvidia/nano-test", client=fake)
     assert result.pass_rate == 1.0, [case.error for case in result.cases]
     assert {r["model"] for r in fake.requests} == {"nvidia/nano-test"}  # translated to chat completions on Nemotron
+
+
+# Just enough of the `openai` package: the client posts to `${baseURL}/chat/completions`, as the SDK does.
+OPENAI_STUB = {
+    "node_modules/openai/package.json": '{"name": "openai", "type": "module", "exports": "./index.mjs"}',
+    "node_modules/openai/index.mjs": """export default class OpenAI {
+  constructor(options = {}) {
+    const baseURL = (options.baseURL ?? process.env.OPENAI_BASE_URL).replace(/\\/$/, "");
+    const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
+    this.chat = { completions: { create: async (body) => {
+      const response = await fetch(`${baseURL}/chat/completions`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
+      if (!response.ok) throw new Error(`API error ${response.status}`);
+      return response.json();
+    } } };
+  }
+}
+export { OpenAI };
+""",
+}
+APP_JS = """import OpenAI from "openai";
+
+const client = new OpenAI();
+
+export async function classify(text) {
+  const reply = await client.chat.completions.create({ model: "gpt-5-mini", messages: [{ role: "user", content: text }] });
+  return { label: reply.choices[0].message.content };
+}
+"""
+
+
+@needs_node
+def test_ported_typescript_still_passes_its_evals(tmp_path, monkeypatch):
+    """`openport check` and the CI gate run the ported code: it has to reach OpenPort's proxy, not Token Factory without a key."""
+    from openport.port import build_plan, port_repo
+    from openport.scan import scan_repo
+
+    root = tmp_path / "app"
+    spec_text = SPEC.replace("fields: [label, sawKey]", "fields: [label]")
+    files = {**OPENAI_STUB, "src/classify.mjs": APP_JS, "openport.evals.yaml": spec_text,
+             "cases.jsonl": json.dumps({"id": "c1", "input": {"text": "refund please"}, "expected": {"label": "billing"}}) + "\n"}
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    report = scan_repo(root)
+    port_repo(root, report, build_plan(report.findings, MODELS, "super"), tmp_path / "out")
+    ported = (tmp_path / "out" / "src" / "classify.mjs").read_text()
+    assert "process.env.NEBIUS_BASE_URL" in ported and '"nvidia/super-test"' in ported
+    shutil.copytree(root / "node_modules", tmp_path / "out" / "node_modules")  # as `npm install` would
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = load_spec(tmp_path / "out")
+    fake = FakeTokenFactory(lambda request: completion(content="billing"))
+    gate = run_site(spec, spec.call_sites[0], "as written", None, client=fake)
+    assert gate.pass_rate == 1.0, [case.error for case in gate.cases]
+    assert fake.requests[0]["model"] == "nvidia/super-test"  # the model the ported code names
 
 
 SUPPORTDESK_TS = Path(__file__).parents[1] / "examples" / "supportdesk-ts"

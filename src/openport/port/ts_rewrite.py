@@ -24,7 +24,8 @@ from .prompts import find_prompt_file, prompt_file_insertion, ts_literal_inserti
 PROVIDER_ONLY = {"apiKey", "baseURL", "organization", "project"}
 EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 # `?? ""` matters: with apiKey undefined, the SDK would fall back to OPENAI_API_KEY and send it to Nebius.
-CONNECTION = [f'baseURL: "{TOKEN_FACTORY_BASE_URL}"', 'apiKey: process.env.NEBIUS_API_KEY ?? ""']
+# NEBIUS_BASE_URL overrides the URL, as in the Python runtime; OpenPort's own evals of the ported code use it.
+CONNECTION = [f'baseURL: process.env.NEBIUS_BASE_URL ?? "{TOKEN_FACTORY_BASE_URL}"', 'apiKey: process.env.NEBIUS_API_KEY ?? ""']
 
 
 @dataclass

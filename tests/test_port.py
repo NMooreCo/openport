@@ -318,7 +318,7 @@ def test_typescript_port(tmp_path):
     out = result.output
 
     llm = (out / "src/pages/api/llm.ts").read_text()
-    assert 'baseURL: "https://api.tokenfactory.nebius.com/v1/",' in llm
+    assert 'baseURL: process.env.NEBIUS_BASE_URL ?? "https://api.tokenfactory.nebius.com/v1/",' in llm  # overridable, as in Python
     assert 'apiKey: process.env.NEBIUS_API_KEY ?? "",' in llm
     assert "OPENAI_API_KEY" not in llm
     assert 'const MODEL = "nvidia/super-test";  // was "gpt-4o"' in llm  # shared constant, same target: edited once
