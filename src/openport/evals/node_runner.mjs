@@ -10,6 +10,22 @@ import { pathToFileURL } from "node:url";
 
 const [modulePath, exportName, argKeys] = process.argv.slice(2);
 
+// Plain fetch calls to an LLM endpoint (a hard-coded https://api.openai.com/v1/chat/completions, say) reach
+// OpenPort's stand-in too, as the SDKs do through their base URL settings.
+const httpBase = process.env.OPENPORT_HTTP_BASE;
+if (httpBase) {
+  const send = globalThis.fetch;
+  const origin = httpBase.split("/case/")[0];
+  globalThis.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const target = url.startsWith(origin) ? null
+      : /\/chat\/completions\b/.test(url) ? `${httpBase}/chat/completions`
+      : /\/v1\/messages\b/.test(url) ? `${httpBase}/messages` : null;
+    if (target === null) return send(input, init);
+    return send(input instanceof Request ? new Request(target, input) : target, init);
+  };
+}
+
 async function readStdin() {
   let data = "";
   for await (const chunk of process.stdin) data += chunk;

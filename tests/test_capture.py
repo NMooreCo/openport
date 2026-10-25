@@ -67,7 +67,9 @@ def test_runnable():
     assert draft.runnable(finding(function="Agent.run"))[0] is False
     assert draft.runnable(finding(output="embedding"))[0] is False
     assert draft.runnable(finding(receiver_kind="local", receiver="c"))[0] is True  # its SDK calls are routed
-    assert draft.runnable(finding(sdk="http"))[0] is False
+    assert draft.runnable(finding(sdk="http", receiver="requests", receiver_kind="http"))[0] is True  # redirected to the stand-in
+    assert draft.runnable(finding(sdk="http", api="embeddings"))[0] is False
+    assert draft.runnable(finding(sdk="http", language="typescript", receiver="axios"))[0] is False  # fetch only, under Node
 
 
 def test_typescript_sites_need_their_dependencies_and_an_export(tmp_path):

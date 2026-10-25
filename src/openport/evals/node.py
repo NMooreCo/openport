@@ -141,7 +141,8 @@ def clean_env(base_url: str) -> dict[str, str]:
     env = {name: value for name, value in os.environ.items() if not _SECRET.search(name)}
     placeholder = "openport-placeholder"
     return env | {"OPENAI_BASE_URL": base_url, "OPENAI_API_KEY": placeholder, "NEBIUS_BASE_URL": base_url, "NEBIUS_API_KEY": placeholder,
-                  "ANTHROPIC_BASE_URL": base_url.removesuffix("/v1"), "ANTHROPIC_API_KEY": placeholder}
+                  "ANTHROPIC_BASE_URL": base_url.removesuffix("/v1"), "ANTHROPIC_API_KEY": placeholder,
+                  "OPENPORT_HTTP_BASE": base_url}  # the runner points plain fetch calls to LLM endpoints here too
 
 
 def run_node_case(root: Path, module: str, export: str, args: list[str] | None, case_input: dict, base_url: str, run=subprocess.run) -> Any:

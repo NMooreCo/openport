@@ -183,6 +183,20 @@ CLAUDE_JS = """export async function classify(text) {
 
 
 @needs_node
+def test_a_hard_coded_fetch_to_openai_is_tested_on_nemotron(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "classify.mjs").write_text(CLASSIFY_JS.replace("${process.env.OPENAI_BASE_URL}", "https://api.openai.com/v1"))
+    (tmp_path / "openport.evals.yaml").write_text(SPEC.replace("sdk: openai", "sdk: http").replace("fields: [label, sawKey]", "fields: [label]"))
+    (tmp_path / "cases.jsonl").write_text(json.dumps({"id": "c1", "input": {"text": "refund please"}, "expected": {"label": "billing"}}) + "\n")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    fake = FakeTokenFactory(lambda request: completion(content=json.dumps({"label": "billing"})))
+    spec = load_spec(tmp_path)
+    result = run_site(spec, spec.call_sites[0], "nano", "nvidia/nano-test", client=fake)
+    assert result.pass_rate == 1.0, [case.error for case in result.cases]
+    assert fake.requests[0]["model"] == "nvidia/nano-test"  # it never reached api.openai.com
+
+
+@needs_node
 def test_a_javascript_call_on_anthropics_sdk_runs_on_nemotron(tmp_path, monkeypatch):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "classify.mjs").write_text(CLAUDE_JS)

@@ -51,8 +51,11 @@ def grader_for(output: str, fields: list[str] | None) -> dict:
 def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, str]:
     """Whether the eval runner can call this function and route its SDK calls. Returns (ok, reason-if-not).
     Where the client comes from doesn't matter: the runner intercepts the SDK itself (evals/intercept.py)."""
-    if finding.sdk == "http":
-        return False, "a plain HTTP call: the eval harness runs OpenAI and Anthropic SDK calls"
+    if finding.sdk == "http":  # its requests are redirected to OpenPort's stand-in for the API
+        if finding.api not in ("chat.completions", "messages"):
+            return False, f"a plain HTTP call to the {finding.api} API, which isn't evaluable"
+        if finding.language != "python" and finding.receiver not in ("fetch", "$fetch", "ofetch"):
+            return False, f"a plain HTTP call through {finding.receiver}: the harness redirects fetch, not that"
     if finding.language != "python":
         return _runnable_on_node(finding, root)
     if not finding.module:

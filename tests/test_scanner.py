@@ -297,7 +297,7 @@ def test_http_calls_are_reported_not_rewritten(tmp_path):
     claude = next(f for f in findings if f.function == "ask_claude")
     assert "no Anthropic-style endpoint" in plan[claude.id].reason
     assert "api.tokenfactory.nebius.com/v1" in plan[next(f.id for f in findings if f.function == "classify")].reason
-    assert runnable(claude) == (False, "a plain HTTP call: the eval harness runs OpenAI and Anthropic SDK calls")
+    assert runnable(claude) == (True, "")  # tested through OpenPort's stand-in for the API, though not rewritten
 
 
 def test_only_files_that_could_hold_a_call_are_parsed(tmp_path):

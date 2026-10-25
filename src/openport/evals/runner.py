@@ -10,6 +10,7 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -20,7 +21,7 @@ from .. import tokenfactory
 from ..runtime.openport_llm import AnthropicOnNemotron, SwappedOpenAI, UsageMeter
 from .context import CURRENT_CASE
 from .graders import Judge, grade
-from .intercept import routed
+from .intercept import http_routed, routed
 from .node import EvalProxy, run_node_case
 from .spec import CallSite, Spec
 
@@ -145,13 +146,14 @@ def run_site(
     """
     meter = UsageMeter()
     real = client or tokenfactory.client()
-    swapped = swapped_client(site, model, meter, real, extra_body)
+    # Requests that reach the local proxy (TypeScript, plain HTTP calls) may use either API: code ported off
+    # Anthropic's SDK sends chat completions, for one.
+    chat = SwappedOpenAI(model or (lambda named: named), client=real, meter=meter, extra_body=extra_body)
+    messages = AnthropicOnNemotron(model, client=real, meter=meter, extra_body=extra_body)
+    swapped = messages if site.sdk == "anthropic" else chat
     cases = cases if cases is not None else site.cases(limit)
     cases = [case for case in cases for _ in range(site.samples)]  # every sample is graded and counted
     if site.runs_on_node:
-        # Either API can arrive: code ported off Anthropic's SDK sends chat completions.
-        chat = swapped if site.sdk == "openai" else SwappedOpenAI(model or (lambda named: named), client=real, meter=meter, extra_body=extra_body)
-        messages = swapped if site.sdk == "anthropic" else AnthropicOnNemotron(model, client=real, meter=meter, extra_body=extra_body)
         with EvalProxy(chat, messages) as proxy, ThreadPoolExecutor(max_workers=concurrency) as pool:
             def call(case: dict):
                 return run_node_case(spec.source_root, site.module, site.entry_function, site.args or None, case["input"], proxy.base_url(case["id"]))
@@ -160,18 +162,22 @@ def run_site(
     else:
         prepare_imports(spec)
         function = getattr(importlib.import_module(site.module), site.entry_function)
+        proxy = EvalProxy(chat, messages) if site.sdk == "http" else None  # plain HTTP calls are redirected to it
 
         def call(case: dict):
+            if proxy is not None:
+                with http_routed(proxy.base_url(case["id"])):
+                    return _settle(function(**case["input"]))
             with routed(swapped, passthrough=real):  # the swapped client's own calls to Token Factory pass through
                 return _settle(function(**case["input"]))
 
-        home = None if site.intercept else importlib.import_module(site.client_home)
+        home = None if site.intercept or proxy is not None else importlib.import_module(site.client_home)
         attr = site.client_attr.removesuffix("()")
         original = getattr(home, attr) if home is not None else None
         if home is not None:
             setattr(home, attr, (lambda *args, **kwargs: swapped) if site.client_attr.endswith("()") else swapped)
         try:
-            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            with proxy or nullcontext(), ThreadPoolExecutor(max_workers=concurrency) as pool:
                 results = list(pool.map(lambda case: _run_case(site, call, case, judge), cases))
         finally:
             if home is not None:

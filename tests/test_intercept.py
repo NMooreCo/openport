@@ -64,6 +64,46 @@ def test_calls_through_clients_built_anywhere_are_routed_to_nemotron(tmp_path, m
         sys.modules.pop(name, None)
 
 
+HTTP_APP = '''
+import httpx
+import requests
+
+OPENAI = "https://api.openai.com/v1/chat/completions"
+
+
+def classify(text):
+    reply = requests.post(OPENAI, headers={"Authorization": "Bearer sk-x"}, json={"model": "gpt-5-mini", "messages": [{"role": "user", "content": text}]})
+    reply.raise_for_status()
+    return {"label": reply.json()["choices"][0]["message"]["content"]}
+
+
+def ask(text):
+    reply = httpx.post("https://api.anthropic.com/v1/messages", headers={"x-api-key": "sk-ant-x", "anthropic-version": "2023-06-01"},
+                       json={"model": "claude-sonnet-5-5", "max_tokens": 64, "messages": [{"role": "user", "content": text}]})
+    reply.raise_for_status()
+    return {"label": reply.json()["content"][0]["text"]}
+'''
+
+
+def test_plain_http_calls_are_tested_through_the_stand_in(tmp_path, monkeypatch):
+    (tmp_path / "httpapp").mkdir()
+    (tmp_path / "httpapp" / "__init__.py").write_text("")
+    (tmp_path / "httpapp" / "llm.py").write_text(HTTP_APP)
+    (tmp_path / "cases.jsonl").write_text(json.dumps({"id": "c1", "input": {"text": "hello"}, "expected": {"label": "greeting"}}) + "\n")
+    site = "  - {{id: {id}, file: httpapp/llm.py, module: httpapp.llm, function: {id}, intercept: true, sdk: http, " \
+           "original_model: m, output: json_in_text, dataset: cases.jsonl, grader: {{type: fields, fields: [label]}}}}\n"
+    (tmp_path / "openport.evals.yaml").write_text("target: httpapp\nsource_root: .\ncall_sites:\n" + site.format(id="classify") + site.format(id="ask"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    fake = FakeTokenFactory(lambda request: completion(content="greeting"))
+    spec = load_spec(tmp_path)
+    for call_site in spec.call_sites:  # a hard-coded api.openai.com and api.anthropic.com: neither is reached
+        result = run_site(spec, call_site, "nano", "nvidia/nano-test", client=fake)
+        assert result.pass_rate == 1.0, (call_site.id, [case.error for case in result.cases])
+    assert [r["model"] for r in fake.requests] == ["nvidia/nano-test"] * 2  # Anthropic's request, translated
+    for name in ("httpapp", "httpapp.llm"):
+        sys.modules.pop(name, None)
+
+
 def test_capture_drafts_a_routed_eval_when_no_client_can_be_swapped(tmp_path):
     (tmp_path / "interapp").mkdir()
     (tmp_path / "interapp" / "llm.py").write_text(APP)

@@ -19,6 +19,11 @@ from contextvars import ContextVar
 
 ROUTE: ContextVar[object | None] = ContextVar("openport_route", default=None)
 PASSTHROUGH: "weakref.WeakSet" = weakref.WeakSet()  # OpenPort's own clients: never routed
+# For plain HTTP calls: the eval proxy's URL for the running case (…/case/<id>/v1). A request to an LLM endpoint
+# goes there instead, so httpx and requests calls are tested like SDK calls. The proxy forwards from its own
+# thread, where this isn't set, so its requests to Token Factory go out as they are.
+HTTP_BASE: ContextVar[str | None] = ContextVar("openport_http_base", default=None)
+_http_installed = False
 # (module, class, method, where the same call lives on the swapped client)
 TARGETS = [
     ("openai.resources.chat.completions", "Completions", "create", ("chat", "completions", "create")),
@@ -88,6 +93,81 @@ def install() -> None:
             if original is not None and not hasattr(original, "__openport_original__"):
                 setattr(cls, method_name, _routed(original, path, is_async=class_name.startswith("Async")))
         _installed = True
+
+
+def redirected(url: str) -> str | None:
+    """Where a request to `url` goes during a case: the eval proxy, when it's an LLM endpoint; else None."""
+    from ..scan.findings import http_endpoint
+
+    base = HTTP_BASE.get()
+    if base is None or url.startswith(base.rsplit("/case/", 1)[0]):
+        return None
+    api = http_endpoint(url)
+    if api == "chat.completions" and "/chat/completions" in url:
+        return f"{base}/chat/completions"
+    if api == "messages":
+        return f"{base}/messages"
+    return None
+
+
+def install_http() -> None:
+    """Patch httpx's and requests' send once, so a case's requests to LLM endpoints reach the eval proxy."""
+    global _http_installed
+    with _lock:
+        if _http_installed:
+            return
+        try:
+            import httpx
+
+            for cls in (httpx.Client, httpx.AsyncClient):
+                original = cls.send
+
+                def send(self, request, *args, _original=original, **kwargs):
+                    target = redirected(str(request.url))
+                    if target is not None:
+                        request.url = httpx.URL(target)
+                    return _original(self, request, *args, **kwargs)
+
+                cls.send = send
+        except ImportError:
+            pass
+        try:
+            import requests
+
+            original_send = requests.Session.send
+
+            def session_send(self, request, **kwargs):
+                target = redirected(request.url)
+                if target is not None:
+                    request.url = target
+                return original_send(self, request, **kwargs)
+
+            requests.Session.send = session_send
+        except ImportError:
+            pass
+        try:
+            import aiohttp
+
+            original_request = aiohttp.ClientSession._request
+
+            def session_request(self, method, str_or_url, *args, **kwargs):
+                return original_request(self, method, redirected(str(str_or_url)) or str_or_url, *args, **kwargs)
+
+            aiohttp.ClientSession._request = session_request
+        except ImportError:
+            pass
+        _http_installed = True
+
+
+@contextmanager
+def http_routed(base: str):
+    """While inside, requests to LLM endpoints go to the eval proxy at `base` (…/case/<id>/v1)."""
+    install_http()
+    token = HTTP_BASE.set(base)
+    try:
+        yield
+    finally:
+        HTTP_BASE.reset(token)
 
 
 @contextmanager
