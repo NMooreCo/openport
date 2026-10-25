@@ -299,8 +299,9 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **Calls are testable wherever their client comes from:** while a case runs, the OpenAI and Anthropic SDKs' own calls (sync and async) are routed to the swapped client, and async entry points run. On the study's apps, 82 of 132 SDK calls are testable as written, up from 47.
 - **Anthropic's SDK in TypeScript, end to end:** the Node eval proxy serves Anthropic's Messages API too, and the port turns `new Anthropic()` into OpenPort's `AnthropicOnNemotron` from a copied-in runtime (`openport_llm.mjs`, fetch only; a test checks it translates like the Python one).
 - **Fixed:** `openport check` (and the CI gate) failed on ported TypeScript, because the ported client called Token Factory directly from a process with no key. It reads `NEBIUS_BASE_URL` now, which the harness points at its proxy.
-- Next: rewriting and testing HTTP calls, testing class methods without an adapter.
-- 206 offline tests.
+- **Plain HTTP calls are testable:** during a case, httpx/requests/aiohttp requests (and fetch under Node) to LLM endpoints go to the eval proxy. On the study's apps, 102 of 220 calls are testable as written (83 of 132 SDK, 19 of 88 HTTP).
+- Next: rewriting OpenAI-style HTTP calls in the port, testing class methods without an adapter.
+- 208 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
