@@ -28,8 +28,9 @@ ANTHROPIC_CLIENTS = {
 }
 
 # Plain HTTP calls (requests, httpx, fetch, axios...): the endpoint the URL names, as the SDK API it matches.
+# Feishu's and Lark's chat API sends messages to /im/v1/messages.
 HTTP_ENDPOINTS = [
-    (re.compile(r"/v1/messages\b|api\.anthropic\.com"), "messages"),
+    (re.compile(r"(?<!/im)/v1/messages\b|api\.anthropic\.com"), "messages"),
     (re.compile(r"/v1/responses\b"), "responses"),
     (re.compile(r"/v1/embeddings\b"), "embeddings"),
     (re.compile(r"/chat/completions\b|api\.openai\.com"), "chat.completions"),
@@ -42,8 +43,8 @@ NOT_APP_DIRS = {"test", "tests", "__tests__", "spec", "e2e", "evals", "benchmark
 
 # Features that need a person to look, rather than a mechanical rewrite.
 NEEDS_REVIEW = {
-    "vision", "prefill", "ends_on_assistant", "dynamic_kwargs", "legacy_sdk", "embeddings", "anthropic_streaming",
-    "raw_http", "anthropic_http",
+    "vision", "audio", "web_search", "prefill", "ends_on_assistant", "dynamic_kwargs", "legacy_sdk", "embeddings",
+    "anthropic_streaming", "raw_http", "anthropic_http",
 }
 
 NOTES = {
@@ -57,14 +58,16 @@ NOTES = {
     "streaming": "Streams its response",
     "anthropic_streaming": "Streams an Anthropic response: not supported by the runtime yet",
     "vision": "Sends images: needs a vision model, or stays on the original",
+    "audio": "Sends or returns audio: Nemotron on Token Factory works in text, so it stays on the original",
+    "web_search": "Searches the web as it answers: Nemotron on Token Factory can't, so it stays on the original",
     "prefill": "Assistant prefill: no chat-completions equivalent, so the prompt needs adjusting",
     "prompt_caching": "cache_control hints: no equivalent, dropped",
     "dynamic_kwargs": "Arguments built at runtime: check by hand",
     "base_url_configurable": "Client already takes a base URL",
     "legacy_sdk": "Pre-1.0 OpenAI SDK: upgrade first",
     "embeddings": "Embeddings, not a chat call: out of scope",
-    "raw_http": "Plain HTTP call: point its URL at https://api.tokenfactory.nebius.com/v1 with a Nemotron model and NEBIUS_API_KEY; "
-                "OpenPort doesn't rewrite or test these yet",
+    "raw_http": "Plain HTTP call: its URL, key and model move to Token Factory's where the code spells them out; check for "
+                "request options or response fields only the old API has",
     "anthropic_http": "Plain HTTP call to Anthropic's Messages API: Token Factory has no Anthropic-style endpoint, so it moves to "
                       "the chat-completions format first",
 }

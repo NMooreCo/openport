@@ -3,7 +3,8 @@
 The OpenAI Node SDK talks to Token Factory directly: the client gets Token Factory's base URL and key,
 and each ported call gets its Nemotron model. Token Factory has no Anthropic-compatible API, so an
 Anthropic client becomes an `AnthropicOnNemotron` from OpenPort's runtime (openport_llm.mjs, copied into
-the app), whose `messages.create` translates to chat completions and back.
+the app), whose `messages.create` translates to chat completions and back. Plain HTTP calls (fetch, axios,
+ky, got) to OpenAI-style chat endpoints move to Token Factory's URL and key (see http.py).
 """
 
 import json
@@ -17,9 +18,10 @@ from tree_sitter import Node
 
 from ..runtime.openport_llm import TOKEN_FACTORY_BASE_URL
 from ..scan.findings import CALL_SUFFIXES, CallSiteFinding
-from ..scan.ts_scanner import _parser, _text, _unquote, _walk
+from ..scan.ts_scanner import FETCHES, _parser, _text, _unquote, _walk
 from .clients import decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, newline_style, quoted_like, was_comment
+from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, url_edits, why_kept
 from .plan import SiteDecision
 from .prompts import find_prompt_file, prompt_file_insertion, ts_literal_insertion
 
@@ -191,13 +193,16 @@ def _object_value(obj: Node, key: str) -> Node | None:
     return None
 
 
-def _system_literal(repo: _TsRepo, f: _TsFile, call: Node, sdk: str = "openai") -> tuple[_TsFile, Node] | None:
+def _system_literal(repo: _TsRepo, f: _TsFile, call: Node, sdk: str = "openai",
+                    properties: dict[str, Node] | None = None) -> tuple[_TsFile, Node] | None:
     """Follow a call's system prompt back to the string or template literal it's written in: the first message
-    on OpenAI's SDK, the `system` property on Anthropic's."""
+    on OpenAI's SDK (or in a plain HTTP call's request body, given as `properties`), the `system` property on
+    Anthropic's."""
+    properties = properties if properties is not None else _properties(call)
     if sdk == "anthropic":
-        content = _unwrap(_properties(call).get("system"))
+        content = _unwrap(properties.get("system"))
     else:
-        messages = _unwrap(_properties(call).get("messages"))
+        messages = _unwrap(properties.get("messages"))
         if messages is not None and messages.type in ("identifier", "shorthand_property_identifier"):
             messages = _unwrap(_declared(f, _text(messages), call.start_byte))
         if messages is None or messages.type != "array" or not messages.named_children:
@@ -230,6 +235,11 @@ def _set_number_property(f: _TsFile, call: Node, names: tuple[str, ...], value: 
     """Set a numeric request property (or raise it to `value`, if `floor`). None when it can't be done safely."""
     args = call.child_by_field_name("arguments")
     obj = args.named_children[0] if args is not None and args.named_children else None
+    return _set_number_in(f, obj, names, value, floor)
+
+
+def _set_number_in(f: _TsFile, obj: Node | None, names: tuple[str, ...], value: float, floor: bool) -> list[Edit] | None:
+    """Set a numeric property of an object literal (or raise it to `value`, if `floor`)."""
     if obj is None or obj.type != "object":
         return None
     for name in names:
@@ -285,22 +295,26 @@ def _set_extra_body(f: _TsFile, call: Node, extra_body: dict) -> list[Edit] | No
 
 
 def _arguments_text(f: _TsFile, binding: _TsBinding) -> bytes:
-    """New constructor arguments: Token Factory's URL and key, plus every other option the original passed."""
+    """New constructor arguments: Token Factory's URL and key, plus every other option the original passed. Spread
+    options go first, so they can't override the URL or key."""
     args = binding.new_expr.child_by_field_name("arguments")
     first = args.named_children[0] if args is not None and args.named_children else None
+    spread: list[str] = []
     kept: list[str] = []
     if first is not None and first.type == "object":
         for child in first.named_children:
-            if child.type == "pair" and _unquote(_text(child.child_by_field_name("key"))) in PROVIDER_ONLY:
-                continue
-            kept.append(_text(child) if child.type == "comment" else _text(child) + ",")
+            name = _unquote(_text(child.child_by_field_name("key"))) if child.type == "pair" else _text(child)
+            if child.type in ("pair", "shorthand_property_identifier") and name in PROVIDER_ONLY:
+                continue  # `baseURL` and `{ apiKey }` alike
+            (spread if child.type == "spread_element" else kept).append(_text(child) if child.type == "comment" else _text(child) + ",")
     elif first is not None:  # options passed in as a variable
-        kept.append(f"...{_text(first)},")
+        spread.append(f"...{_text(first)},")
 
-    entries = [c + "," for c in CONNECTION] + kept
+    entries = spread + [c + "," for c in CONNECTION] + kept
     if first is not None and "\n" in _text(first):
         base = indentation(f.source, binding.statement.start_byte).decode()
-        inner = base + "  "
+        own = next((c for c in first.named_children if f.source.rfind(b"\n", 0, c.start_byte) > first.start_byte), None)
+        inner = indentation(f.source, own.start_byte).decode() if own is not None else base + "  "  # the file's own indent
         nl = newline_style(f.source).decode()
         return ("({" + nl + "".join(f"{inner}{e}{nl}" for e in entries) + base + "})").encode()
     return ("({ " + " ".join(entries).rstrip(",") + " })").encode()
@@ -332,9 +346,276 @@ def _import_edit(f: _TsFile, runtime_path: str) -> Edit:
     return Edit(position, position, f'import {{ {ANTHROPIC_STANDIN} }} from "{relative}";'.encode() + newline_style(f.source))
 
 
+# --- plain HTTP calls -------------------------------------------------------------------------------
+
+PUBLIC_PREFIXES = ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_")  # what bundlers need to expose a variable to the browser
+
+
+def _http_call_node(f: _TsFile, site: CallSiteFinding) -> Node | None:
+    for node in _walk(f.root):
+        if node.type == "call_expression" and node.start_point[0] + 1 == site.line:
+            name = re.sub(r"\s+|\?|!", "", _text(node.child_by_field_name("function")))
+            if name.split(".")[-1] in FETCHES or name.endswith(".post"):
+                return node
+    return None
+
+
+def _value_of(repo: _TsRepo, f: _TsFile, node: Node | None) -> tuple[_TsFile, Node | None]:
+    """An identifier's declared value (in this file, or the app module it's imported from); anything else as it is."""
+    node = _unwrap(node)
+    if node is None or node.type not in ("identifier", "shorthand_property_identifier"):
+        return f, node
+    name = _text(node)
+    value = _declared(f, name, node.start_byte) or _declared(f, name)
+    if value is None and (origin := repo.imported(f, name)):
+        f, value = origin[0], _declared(*origin)
+    return f, _unwrap(value)
+
+
+def _ts_reaching(repo: _TsRepo, f: _TsFile, node: Node, depth: int = 3) -> list[tuple[_TsFile, Node]]:
+    """An expression and the values it's built from, each name followed to its declaration."""
+    found = [(f, node)]
+    names: dict[str, Node] = {}
+    for n in _walk(node) if depth else []:
+        if n.type in ("identifier", "shorthand_property_identifier"):
+            names.setdefault(_text(n), n)
+    for name in names.values():
+        target, value = _value_of(repo, f, name)
+        if value is not None:
+            found += _ts_reaching(repo, target, value, depth - 1)
+    return found
+
+
+def _ts_literals(node: Node) -> list[Node]:
+    """The string literals in an expression; a template string counts as one."""
+    if node.type in ("string", "template_string"):
+        return [node]
+    return [literal for child in node.named_children for literal in _ts_literals(child)]
+
+
+def _ts_env_names(node: Node) -> list[Node]:
+    """Where an expression names the environment variables it reads: process.env.X, process.env["X"],
+    import.meta.env.X, Deno.env.get("X")."""
+    found = []
+    for n in _walk(node):
+        target = None
+        if n.type == "member_expression" and re.sub(r"\s", "", _text(n.child_by_field_name("object"))) in ("process.env", "import.meta.env"):
+            target = n.child_by_field_name("property")
+        elif n.type == "subscript_expression" and re.sub(r"\s", "", _text(n.child_by_field_name("object"))) == "process.env":
+            target = n.child_by_field_name("index")
+        elif n.type == "call_expression" and re.sub(r"\s", "", _text(n.child_by_field_name("function"))) == "Deno.env.get":
+            args = n.child_by_field_name("arguments")
+            target = args.named_children[0] if args is not None and args.named_children else None
+        if target is not None and target.type in ("property_identifier", "string"):
+            found.append(target)
+    return found
+
+
+def _variable(node: Node) -> str:
+    return _unquote(_text(node))
+
+
+def _renamed(node: Node, new: str) -> Edit:
+    """Rename the environment variable `node` names, keeping a bundler's prefix (VITE_NEBIUS_API_KEY)."""
+    new = next((p for p in PUBLIC_PREFIXES if _variable(node).startswith(p)), "") + new
+    return Edit(node.start_byte, node.end_byte, new.encode() if node.type == "property_identifier" else quoted_like(node.text, new))
+
+
+def _object_properties(obj: Node | None) -> dict[str, Node]:
+    """An object literal's properties: `key: value` pairs, and `{ headers }` shorthand (as the name)."""
+    properties = {}
+    for child in obj.named_children if obj is not None and obj.type == "object" else []:
+        if child.type == "pair":
+            properties[_unquote(_text(child.child_by_field_name("key")))] = child.child_by_field_name("value")
+        elif child.type == "shorthand_property_identifier":
+            properties[_text(child)] = child
+    return properties
+
+
+def _body(repo: _TsRepo, f: _TsFile, node: Node | None) -> tuple[_TsFile, Node] | None:
+    """A request body as the object literal it's written as: through its variable, and JSON.stringify(...)."""
+    f, node = _value_of(repo, f, node)
+    if node is not None and node.type == "call_expression" and re.sub(r"\s", "", _text(node.child_by_field_name("function"))) == "JSON.stringify":
+        inner = node.child_by_field_name("arguments")
+        f, node = _value_of(repo, f, inner.named_children[0] if inner is not None and inner.named_children else None)
+    return (f, node) if node is not None and node.type == "object" else None
+
+
+@dataclass
+class _TsHttpCall:
+    """A plain HTTP call, and what it's built from."""
+
+    call: Node
+    url: Node
+    body: tuple[_TsFile, Node] | None  # the request body, when it's an object literal
+    url_literals: list[tuple[_TsFile, Node]]  # the strings its URL is made of
+    url_variables: list[tuple[_TsFile, Node]]  # the OpenAI SDK's base URL variables it reads
+    authorization: Node | None  # its Authorization header's value, when OpenPort can see it
+    key_variables: list[tuple[_TsFile, Node]]  # the environment variables that header reads
+
+
+def _ts_unique(pairs: list[tuple[_TsFile, Node]]) -> list[tuple[_TsFile, Node]]:
+    return list({(f.path, n.start_byte, n.end_byte): (f, n) for f, n in pairs}.values())
+
+
+def _ts_http_call(repo: _TsRepo, f: _TsFile, site: CallSiteFinding) -> _TsHttpCall | None:
+    call = _http_call_node(f, site)
+    args = call.child_by_field_name("arguments") if call is not None else None
+    if args is None or not args.named_children:
+        return None
+    url, rest = args.named_children[0], [_value_of(repo, f, arg) for arg in args.named_children[1:]]
+    options = [(t, o) for t, o in rest if o is not None and o.type == "object"]
+
+    # The body: fetch's `body: JSON.stringify(payload)`, axios' payload, or ky's and got's `json: payload`.
+    body = None
+    if re.sub(r"\s+|\?|!", "", _text(call.child_by_field_name("function"))).split(".")[-1] in FETCHES:
+        if rest and rest[0][1] is not None and rest[0][1].type == "object":
+            properties = _object_properties(rest[0][1])
+            body = _body(repo, rest[0][0], properties.get("body") or properties.get("json"))
+    elif rest:
+        properties = _object_properties(rest[0][1])
+        if "json" in properties and "model" not in properties:
+            body = _body(repo, rest[0][0], properties["json"])
+        elif rest[0][1] is not None:
+            body = _body(repo, *rest[0])
+
+    reached = _ts_reaching(repo, f, url)
+    literals = _ts_unique([(t, lit) for t, node in reached for lit in _ts_literals(node)])
+    variables = _ts_unique([(t, n) for t, node in reached for n in _ts_env_names(node) if _variable(n) in BASE_URL_VARIABLES])
+    authorization, keys = None, []
+    for target, obj in options:
+        headers_file, headers = _value_of(repo, target, _object_properties(obj).get("headers"))
+        if headers is not None and headers.type == "new_expression":  # new Headers({...})
+            inner = headers.child_by_field_name("arguments")
+            headers = _unwrap(inner.named_children[0]) if inner is not None and inner.named_children else None
+        authorization = next((value for name, value in _object_properties(headers).items() if name.lower() == "authorization"), None)
+        if authorization is not None:
+            keys = _ts_unique([(t, n) for t, node in _ts_reaching(repo, headers_file, authorization) for n in _ts_env_names(node)])
+            break
+    return _TsHttpCall(call, url, body, literals, variables, authorization, keys)
+
+
+def _split_ts_url(f: _TsFile, url: Node) -> list[Edit]:
+    """Token Factory's URL for a call whose URL also serves calls that stay: a second constant beside the top-level
+    constant it names (CHAT_URL_NEMOTRON), as a shared client is split, or else the URL itself at the call."""
+    name = _text(url) if url.type == "identifier" else None
+    statement = None
+    for node in f.root.named_children if name else []:
+        declaration = node.named_children[0] if node.type == "export_statement" and node.named_children else node
+        if declaration.type in ("lexical_declaration", "variable_declaration") and any(
+                d.type == "variable_declarator" and _text(d.child_by_field_name("name")) == name for d in declaration.named_children):
+            statement = node
+    if statement is None:
+        return [Edit(url.start_byte, url.end_byte, f'"{CHAT_URL}"'.encode())]
+    new = name + ("_NEMOTRON" if name.isupper() else "Nemotron")
+    position = line_end(f.source, statement.end_byte)
+    nl = newline_style(f.source)
+    prefix = nl if position == len(f.source) and not f.source.endswith(b"\n") else b""
+    return [Edit(position, position, prefix + f'const {new} = "{CHAT_URL}";'.encode() + nl), Edit(url.start_byte, url.end_byte, new.encode())]
+
+
+def _port_ts_http(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], edits: dict, const_uses: dict,
+                  text_edits: dict, applied: set) -> None:
+    """Point each ported plain HTTP call at Token Factory: its URL, its key and its model, where the code spells
+    them out. A call whose URL OpenPort can't see stays where it is."""
+    calls = {site.id: _ts_http_call(repo, f, site) if (f := repo.file(site.file)) else None for site in sites}
+
+    def key(f: _TsFile, node: Node) -> tuple[str, int, int]:
+        return f.path, node.start_byte, node.end_byte
+
+    for site in sites:  # first, which calls can move at all
+        decision, http = plan[site.id], calls[site.id]
+        if decision.keep:
+            continue
+        if http is None:
+            decision.keep_because("couldn't locate the call in the source")
+            continue
+        reason = why_kept([_text(node) for _, node in http.url_literals], _text(http.url))
+        if reason:
+            decision.keep_because(reason)
+    shared = {key(f, node) for s in sites if plan[s.id].keep and calls[s.id]  # what calls that stay use too: left alone
+              for f, node in [*calls[s.id].url_literals, *calls[s.id].url_variables, *calls[s.id].key_variables]}
+
+    for site in sites:
+        f, decision, http = repo.file(site.file), plan[site.id], calls[site.id]
+        body_file, body = http.body if http and http.body else (f, None)
+        model = _object_properties(body).get("model")
+        constants = _top_level_strings(body_file) if body is not None else {}
+        if model is not None and model.type == "identifier" and _text(model) in constants:
+            const_uses[(body_file.path, _text(model))].append((decision.model, model))  # kept calls count too (model None)
+        if decision.keep:
+            continue
+
+        # The URL: the strings it's built from, unless calls that stay use them too.
+        texts = [_text(node) for _, node in http.url_literals]
+        changes = url_edits(texts)
+        if any(key(*http.url_literals[i]) in shared for i in changes):
+            edits[f.path] += _split_ts_url(f, http.url)
+        else:
+            for i, text in changes.items():
+                target, node = http.url_literals[i]
+                edits[target.path].append(Edit(node.start_byte, node.end_byte, text.encode()))
+            for target, node in http.url_variables:
+                if key(target, node) not in shared and not any(
+                        target is t and n.start_byte <= node.start_byte and node.end_byte <= n.end_byte
+                        for i, (t, n) in enumerate(http.url_literals) if i in changes):
+                    edits[target.path].append(_renamed(node, BASE_URL_VARIABLE))
+
+        # The key, where it's read from the environment.
+        for target, node in http.key_variables:
+            if key(target, node) in shared:
+                decision.notes.append(f"Its key ({_variable(node)}) is read for calls that stay too: send {KEY_VARIABLE} here by hand")
+            elif not _variable(node).endswith(KEY_VARIABLE):
+                edits[target.path].append(_renamed(node, KEY_VARIABLE))
+        if http.authorization is None:
+            decision.notes.append(f"Send {KEY_VARIABLE} as its bearer token: OpenPort couldn't find its Authorization header")
+        elif not http.key_variables:
+            written = not any(n.type in ("identifier", "member_expression", "call_expression") for n in _walk(http.authorization))
+            source = "is written in the code" if written else f"comes from `{_text(http.authorization)}`"
+            decision.notes.append(f"Its key {source}: send {KEY_VARIABLE} instead")
+
+        # The model and tuned settings, in the request body.
+        if body is None:
+            decision.notes.append(f"OpenPort couldn't see its request body: make sure it sends model {decision.model}")
+            continue
+        if model is None:
+            decision.notes.append(f"No `model` in its request body: make sure {decision.model} is sent")
+        elif model.type == "string":
+            edits[body_file.path].append(Edit(model.start_byte, model.end_byte, quoted_like(model.text, decision.model)))
+            comment = was_comment(body_file.source, model.end_byte, _unquote(_text(model)), b"//")
+            if comment:
+                edits[body_file.path].append(comment)
+        elif not (model.type == "identifier" and _text(model) in constants):
+            decision.notes.append(f"Model comes from `{_text(model)}`: set it to {decision.model}")
+        if decision.extra_body:  # a plain object: no SDK types to tell about Token Factory's options
+            added: list[Edit] | None = None if any(k in _object_properties(body) for k in decision.extra_body) else []
+            for k, v in decision.extra_body.items() if added is not None else []:
+                added += _add_property(body_file, body, f"{k}: {_ts_value(v)}") or []
+            if not added:
+                decision.notes.append(f"Send {decision.extra_body!r} in its request body by hand")
+            else:
+                edits[body_file.path] += added
+        for names, number, floor, label in (
+            (("max_tokens", "max_completion_tokens"), decision.max_tokens, True, "allow at least {} output tokens"),
+            (("temperature",), decision.temperature, False, "temperature {}"),
+        ):
+            if number is None or (floor and not number):
+                continue
+            changed = _set_number_in(body_file, body, names, number, floor)
+            if changed is None:
+                decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
+            else:
+                edits[body_file.path] += changed
+        if decision.system_addendum and not _apply_ts_addendum(repo, body_file, body, "openai", decision, edits, text_edits, applied,
+                                                               _object_properties(body)):
+            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
+
+
 def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, SiteDecision]) -> dict[str, bytes]:
     """Rewrite the TypeScript/JavaScript files under `root` for the ported OpenAI and Anthropic sites in `plan`."""
     repo = _TsRepo(root)
+    http_sites = [site for site in sites if site.sdk == "http"]
+    sites = [site for site in sites if site.sdk != "http"]
     links = {site.id: repo.link(site) for site in sites}
     for site in sites:
         by_hand = [b for b in links[site.id] if b.ctor in BY_HAND]
@@ -434,6 +715,7 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
             while base.type == "member_expression":
                 base = base.child_by_field_name("object")
             edits[f.path].append(Edit(base.start_byte, base.end_byte, split_names[site.id].encode()))
+    _port_ts_http(repo, http_sites, plan, edits, const_uses, text_edits, applied)
 
     for (path, name), uses in const_uses.items():
         f = repo.file(path)
@@ -463,10 +745,10 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
 
 
 def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, sdk: str, decision: SiteDecision, edits: dict, text_edits: dict,
-                       applied: set) -> bool:
+                       applied: set, properties: dict[str, Node] | None = None) -> bool:
     """Write the tuned addendum into the call's system prompt. False if it couldn't be placed."""
     addendum = decision.system_addendum
-    resolved = _system_literal(repo, f, call, sdk)
+    resolved = _system_literal(repo, f, call, sdk, properties)
     if resolved:
         target, literal = resolved
         key = (target.path, literal.start_byte, addendum)

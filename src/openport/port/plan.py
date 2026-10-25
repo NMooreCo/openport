@@ -7,7 +7,12 @@ from pathlib import Path
 from ..scan.findings import NEEDS_REVIEW, NOTES, CallSiteFinding
 
 # Features that keep a call on its original provider unless the plan says otherwise.
-BLOCKERS = {"vision", "legacy_sdk", "embeddings", "anthropic_streaming"}
+BLOCKERS = {"vision", "audio", "web_search", "legacy_sdk", "embeddings", "anthropic_streaming"}
+# Plain HTTP calls the port moves only when they're OpenAI-style chat requests: why the others stay.
+HTTP_KEPT = {
+    "messages": NOTES["anthropic_http"],
+    "responses": "Plain HTTP call to OpenAI's Responses API: Token Factory serves chat completions, so it moves to that format first",
+}
 
 
 @dataclass
@@ -30,6 +35,7 @@ class SiteDecision:
     def keep_because(self, reason: str) -> None:
         self.model = None
         self.reason = reason
+        self.notes = []  # what to check after a port: nothing, when the call stays
 
 
 def load_assignments(path: Path) -> dict[str, dict]:
@@ -60,8 +66,8 @@ def build_plan(
 
         choice = (assigned or {}).get("model")
         blockers = BLOCKERS & set(finding.features)
-        if finding.sdk == "http":  # the port rewrites SDK calls; this one says how to move it by hand
-            decision.keep_because(NOTES["anthropic_http" if "anthropic_http" in finding.features else "raw_http"])
+        if finding.sdk == "http" and finding.api in HTTP_KEPT:
+            decision.keep_because(HTTP_KEPT[finding.api])
         elif choice == "keep":
             decision.keep_because((assigned or {}).get("reason") or "kept by the plan")
         elif choice:

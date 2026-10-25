@@ -180,7 +180,8 @@ class _FileScanner(ast.NodeVisitor):
         keys = {k.value: v for k, v in zip(payload.keys, payload.values) if isinstance(k, ast.Constant)} if isinstance(payload, ast.Dict) else {}
 
         features = http_features(api)
-        searchable = [payload] if payload is not None else []
+        # Look through variables the body uses too (`messages` built with an image before the call).
+        searchable = [payload, *self._assigned({n.id for n in ast.walk(payload) if isinstance(n, ast.Name)})] if payload is not None else []
         if "tools" in keys or "functions" in keys:
             features.append("tools")
         structured_kind = None
@@ -193,6 +194,7 @@ class _FileScanner(ast.NodeVisitor):
             features.append("streaming")
         if _mentions(searchable, {"image_url", "input_image"}) or _has_type(searchable, "image"):
             features.append("vision")
+        features += _audio_and_search(keys, searchable)
 
         model, model_expr = None, None
         model_node = keys.get("model")
@@ -287,6 +289,7 @@ class _FileScanner(ast.NodeVisitor):
             features.append("anthropic_streaming" if sdk == "anthropic" else "streaming")
         if _mentions(searchable, {"image_url", "input_image"}) or _has_type(searchable, "image"):
             features.append("vision")
+        features += _audio_and_search(kwargs, searchable)
         if _mentions(searchable, {"cache_control"}):
             features.append("prompt_caching")
         if _ends_with_assistant(kwargs.get("messages"), self.constants):
@@ -339,15 +342,28 @@ def _mentions(nodes: list[ast.AST], words: set[str]) -> bool:
     return any(isinstance(n, ast.Constant) and n.value in words for root in nodes for n in ast.walk(root))
 
 
-def _has_type(nodes: list[ast.AST], value: str) -> bool:
-    """Is there a dict literal like {"type": "image", ...} anywhere in these nodes?"""
+def _has_type(nodes: list[ast.AST], value: str, prefix: bool = False) -> bool:
+    """Is there a dict literal like {"type": "image", ...} anywhere in these nodes? (Or one whose type starts so.)"""
     for root in nodes:
         for n in ast.walk(root):
             if isinstance(n, ast.Dict):
                 for key, val in zip(n.keys, n.values):
-                    if isinstance(key, ast.Constant) and key.value == "type" and isinstance(val, ast.Constant) and val.value == value:
+                    if isinstance(key, ast.Constant) and key.value == "type" and isinstance(val, ast.Constant) and isinstance(val.value, str) \
+                            and (val.value.startswith(value) if prefix else val.value == value):
                         return True
     return False
+
+
+def _audio_and_search(arguments: dict[str, ast.AST], searchable: list[ast.AST]) -> list[str]:
+    """What a request does that Nemotron can't: audio in or out, and the provider's own web search (OpenAI's
+    web_search_options, or a web search tool like {"type": "web_search"} or Anthropic's web_search_20250305)."""
+    features = []
+    modalities = arguments.get("modalities")
+    if "audio" in arguments or (modalities is not None and _mentions([modalities], {"audio"})) or _mentions(searchable, {"input_audio"}):
+        features.append("audio")
+    if "web_search_options" in arguments or _has_type(searchable, "web_search", prefix=True):
+        features.append("web_search")
+    return features
 
 
 def _ends_with_assistant(messages: ast.AST | None, constants: dict[str, ast.AST]) -> bool:

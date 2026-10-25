@@ -107,7 +107,7 @@ class _FileScanner:
         """The expression's source, and the declarations it's built from, two levels deep."""
         texts, seen, frontier = [_text(node)], set(), [node]
         for _ in range(2):
-            names = {_text(n) for part in frontier for n in _walk(part) if n.type == "identifier"} - seen
+            names = {_text(n) for part in frontier for n in _walk(part) if n.type in ("identifier", "shorthand_property_identifier")} - seen
             seen |= names
             frontier = [self.declarations[name] for name in names if name in self.declarations]
             texts += [_text(part) for part in frontier]
@@ -123,6 +123,8 @@ class _FileScanner:
         url, rest = args.named_children[0], list(args.named_children[1:])
         if any(self._resolve(arg).type in _FUNCTION_TYPES for arg in rest):
             return None  # app.post("/v1/chat/completions", handler): a server's route, not a call
+        if url.type == "object":
+            return None  # client.post({ url: "/api/v1/messages", ... }): a generated client for the app's own API
         callee = name.split(".")[-1]
         if callee in FETCHES:
             options = self._resolve(rest[0]) if rest else None
@@ -162,6 +164,7 @@ class _FileScanner:
             features.append("streaming")
         if re.search(r"image_url|input_image|type\s*:\s*['\"]image['\"]", searchable):
             features.append("vision")
+        features += _audio_and_search(properties, searchable)
 
         model, model_expr = None, None
         model_node = properties.get("model")
@@ -247,6 +250,7 @@ class _FileScanner:
             features.append("anthropic_streaming" if sdk == "anthropic" else "streaming")
         if re.search(r"image_url|input_image|type\s*:\s*['\"]image['\"]", searchable):
             features.append("vision")
+        features += _audio_and_search(properties, searchable)
         if "cache_control" in searchable:
             features.append("prompt_caching")
         if self._ends_with_assistant(properties.get("messages")):
@@ -328,6 +332,17 @@ class _FileScanner:
                 names.insert(0, name)
             current = current.parent
         return ".".join(names) if names else "<module>"
+
+
+def _audio_and_search(properties: dict[str, Node], searchable: str) -> list[str]:
+    """What a request does that Nemotron can't: audio in or out, and the provider's own web search (OpenAI's
+    web_search_options, or a web search tool like { type: "web_search" } or Anthropic's web_search_20250305)."""
+    features = []
+    if "audio" in properties or "input_audio" in searchable or re.search(r"['\"]audio['\"]", _text(properties.get("modalities"))):
+        features.append("audio")
+    if "web_search_options" in properties or re.search(r"type\s*:\s*['\"]web_search", searchable):
+        features.append("web_search")
+    return features
 
 
 _LLM_CALL = re.compile(r"\.(?:chat\.completions|messages|responses|completions)\.(?:create|parse|stream)\s*\(")

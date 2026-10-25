@@ -1,4 +1,5 @@
-"""Rewrite Python code onto the OpenPort runtime: swap SDK clients, and point each ported call at its Nemotron model."""
+"""Rewrite Python code onto the OpenPort runtime: swap SDK clients, and point each ported call at its Nemotron model.
+Plain HTTP calls (requests, httpx, aiohttp) move to Token Factory's URL and key instead (see http.py)."""
 
 import ast
 import re
@@ -9,9 +10,10 @@ from pathlib import Path, PurePosixPath
 from ..runtime.openport_llm import _PROVIDER_ONLY_OPTIONS
 from ..scan import _source_files
 from ..scan.findings import CallSiteFinding
-from ..scan.python_scanner import _constructor_sdk, _match_suffix, _module_name
+from ..scan.python_scanner import HTTP_METHODS, _constructor_sdk, _match_suffix, _module_name
 from .clients import ClientAction, decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
+from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, url_edits, why_kept
 from .plan import SiteDecision
 from .prompts import find_prompt_file, prompt_file_insertion, python_literal_insertion
 
@@ -311,16 +313,15 @@ def _cleanup_sdk_imports(f: _File, replaced: list[tuple[int, int]]) -> list[Edit
     return edits
 
 
-def _insert_kwarg(f: _File, call: ast.Call, text: str) -> list[Edit]:
-    """Add `text` (e.g. "max_tokens=2000") as the call's last argument, matching its layout."""
-    args = [*call.args, *call.keywords]
-    if not args:
+def _insert_last(f: _File, node: ast.AST, items: list[tuple[int, int]], text: str) -> list[Edit]:
+    """Add `text` after the last of `items` (the spans of a call's arguments or a dict's entries), matching the layout."""
+    if not items:
         return []
-    last_start, last_end = max((f.span(a) for a in args), key=lambda s: s[1])
+    last_start, last_end = max(items, key=lambda s: s[1])
     line_start = f.source.rfind(b"\n", 0, last_start) + 1
-    if call.lineno == call.end_lineno or f.source[line_start:last_start].strip():
+    if node.lineno == node.end_lineno or f.source[line_start:last_start].strip():
         return [Edit(last_end, last_end, b", " + text.encode())]
-    # One argument per line: add a line with the same indentation, after any trailing comment.
+    # One per line: add a line with the same indentation, after any trailing comment.
     nl = newline_style(f.source)
     indent = f.source[line_start:last_start]
     after = f.source[last_end:before_newline(f.source, last_end)]
@@ -329,16 +330,25 @@ def _insert_kwarg(f: _File, call: ast.Call, text: str) -> list[Edit]:
     return edits + [Edit(end, end, nl + indent + text.encode() + b",")]
 
 
+def _insert_kwarg(f: _File, call: ast.Call, text: str) -> list[Edit]:
+    """Add `text` (e.g. "max_tokens=2000") as the call's last argument, matching its layout."""
+    return _insert_last(f, call, [f.span(a) for a in [*call.args, *call.keywords]], text)
+
+
+def _set_number(f: _File, current: ast.AST, value: float, floor: bool) -> list[Edit] | None:
+    """Set a number written in the code (or raise it to `value`, if `floor`). None when it's an expression."""
+    if not (isinstance(current, ast.Constant) and isinstance(current.value, (int, float)) and not isinstance(current.value, bool)):
+        return None
+    new = max(current.value, value) if floor else value
+    return [] if new == current.value else [Edit(*f.span(current), repr(new).encode())]
+
+
 def _set_number_kwarg(f: _File, call: ast.Call, names: tuple[str, ...], value: float, floor: bool) -> list[Edit] | None:
     """Set a numeric argument (or raise it to `value`, if `floor`). None when it's set by an expression."""
     keyword = next((k for k in call.keywords if k.arg in names), None)
     if keyword is None:
         return _insert_kwarg(f, call, f"{names[0]}={value!r}") or None
-    current = keyword.value
-    if not (isinstance(current, ast.Constant) and isinstance(current.value, (int, float)) and not isinstance(current.value, bool)):
-        return None
-    new = max(current.value, value) if floor else value
-    return [] if new == current.value else [Edit(*f.span(current), repr(new).encode())]
+    return _set_number(f, keyword.value, value, floor)
 
 
 def _dict_value(node: ast.Dict, key: str) -> ast.AST | None:
@@ -346,6 +356,49 @@ def _dict_value(node: ast.Dict, key: str) -> ast.AST | None:
         if isinstance(k, ast.Constant) and k.value == key:
             return v
     return None
+
+
+def _entries(node: ast.Dict) -> dict[str, ast.AST]:
+    return {k.value: v for k, v in zip(node.keys, node.values) if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+
+
+def _entry_spans(f: _File, node: ast.Dict) -> list[tuple[int, int]]:
+    return [(f.span(k)[0] if k is not None else f.span(v)[0] - 2, f.span(v)[1]) for k, v in zip(node.keys, node.values)]
+
+
+def _key_quote(f: _File, node: ast.Dict) -> str:
+    """The quote character the dict's keys are written with."""
+    first = next((k for k in node.keys if isinstance(k, ast.Constant)), None)
+    return "'" if first is not None and f.source[f.span(first)[0]:][:1] == b"'" else '"'
+
+
+def _py_value(value, quote: str) -> str:
+    """A JSON value as a Python literal, with the code's own quotes: {"enable_thinking": False}."""
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{quote}{k}{quote}: {_py_value(v, quote)}" for k, v in value.items()) + "}"
+    return f"{quote}{value}{quote}" if isinstance(value, str) else repr(value)
+
+
+def _set_number_entry(f: _File, node: ast.Dict, names: tuple[str, ...], value: float, floor: bool) -> list[Edit] | None:
+    """Set a number in a request body written as a dict (or raise it to `value`, if `floor`)."""
+    current = next((v for name in names if (v := _dict_value(node, name)) is not None), None)
+    if current is None:
+        quote = _key_quote(f, node)
+        return _insert_last(f, node, _entry_spans(f, node), f"{quote}{names[0]}{quote}: {value!r}") or None
+    return _set_number(f, current, value, floor)
+
+
+def _add_entries(f: _File, node: ast.Dict, values: dict) -> list[Edit] | None:
+    """Add Token Factory-only options (Nemotron's reasoning switch) to a request body. None if one is already set."""
+    if any(_dict_value(node, key) is not None for key in values):
+        return None
+    quote, edits = _key_quote(f, node), []
+    for key, value in values.items():
+        added = _insert_last(f, node, _entry_spans(f, node), f"{quote}{key}{quote}: {_py_value(value, quote)}")
+        if not added:
+            return None
+        edits += added
+    return edits
 
 
 def _assigned_value(scope: ast.AST, name: str, before_line: int) -> ast.AST | None:
@@ -370,17 +423,16 @@ def _module_value(f: _File | None, name: str) -> ast.AST | None:
     return value
 
 
-def _system_expression(f: _File, call: ast.Call, sdk: str, function: ast.AST | None) -> ast.AST | None:
-    """The expression a call uses as its system prompt."""
-    kwargs = {k.arg: k.value for k in call.keywords if k.arg}
+def _system_expression(f: _File, arguments: dict[str, ast.AST], sdk: str, function: ast.AST | None, line: int) -> ast.AST | None:
+    """The expression a call uses as its system prompt, from its arguments (or a plain HTTP call's request body)."""
     if sdk == "anthropic":
-        system = kwargs.get("system")
+        system = arguments.get("system")
         if isinstance(system, ast.List) and system.elts and isinstance(system.elts[-1], ast.Dict):
             return _dict_value(system.elts[-1], "text")
         return system
-    messages = kwargs.get("messages")
+    messages = arguments.get("messages")
     if isinstance(messages, ast.Name):
-        messages = (_assigned_value(function, messages.id, call.lineno) if function else None) or _module_value(f, messages.id)
+        messages = (_assigned_value(function, messages.id, line) if function else None) or _module_value(f, messages.id)
     if isinstance(messages, ast.List) and messages.elts and isinstance(messages.elts[0], ast.Dict):
         first = messages.elts[0]
         role = _dict_value(first, "role")
@@ -417,11 +469,12 @@ def _resolve_string(repo: "_Repo", f: _File, node: ast.AST, function: ast.AST | 
 
 
 def _apply_addendum(repo: "_Repo", f: _File, call: ast.Call, site: CallSiteFinding, decision: SiteDecision,
-                    edits: dict, text_edits: dict, applied: set) -> bool:
+                    edits: dict, text_edits: dict, applied: set, arguments: dict[str, ast.AST] | None = None) -> bool:
     """Write the tuned addendum into each system prompt the call uses. False if any couldn't be placed."""
     addendum = decision.system_addendum
     function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None)
-    expression = _system_expression(f, call, site.sdk, function)
+    arguments = arguments if arguments is not None else {k.arg: k.value for k in call.keywords if k.arg}
+    expression = _system_expression(f, arguments, site.sdk, function, call.lineno)
     resolved = _resolve_string(repo, f, expression, function, call.lineno) if expression is not None else None
     if resolved:
         target, literal, template = resolved
@@ -465,6 +518,225 @@ def _anthropic_error_names(f: _File) -> list[str]:
     return sorted(found)
 
 
+# --- plain HTTP calls -------------------------------------------------------------------------------
+
+
+def _reaching(repo: _Repo, f: _File, node: ast.AST, function: ast.AST | None, line: int,
+              depth: int = 3) -> list[tuple[_File, ast.AST, ast.AST | None]]:
+    """An expression and the values it's built from: each name followed to its assignment in the function, the
+    module, or the app module it's imported from. (file, value, the function it's assigned in) triples."""
+    found = [(f, node, function)]
+    if depth == 0:
+        return found
+    for name in sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name)}):
+        target, scope = f, function
+        value = _assigned_value(function, name, line) if function else None
+        if value is None:
+            scope, value = None, _module_value(f, name)
+        if value is None:
+            module, original = repo.imports(f)[0].get(name, ("", ""))
+            target = repo.file(repo.modules.get(module))
+            value = _module_value(target, original) if target else None
+        if value is not None:
+            found += _reaching(repo, target, value, scope, value.lineno if scope else 10**9, depth - 1)
+    return found
+
+
+def _string_literals(node: ast.AST) -> list[ast.AST]:
+    """The string literals in an expression; an f-string counts as one."""
+    if isinstance(node, ast.JoinedStr) or isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node]
+    return [literal for child in ast.iter_child_nodes(node) for literal in _string_literals(child)]
+
+
+def _env_names(node: ast.AST) -> list[ast.Constant]:
+    """The names of the environment variables an expression reads: os.environ["X"], os.getenv("X"), environ.get("X")."""
+    names = []
+    for n in ast.walk(node):
+        key = None
+        if isinstance(n, ast.Subscript) and ast.unparse(n.value).endswith("environ"):
+            key = n.slice
+        elif isinstance(n, ast.Call) and n.args and ast.unparse(n.func).endswith(("getenv", "environ.get")):
+            key = n.args[0]
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            names.append(key)
+    return names
+
+
+@dataclass
+class _HttpCall:
+    """A plain HTTP call, and what it's built from."""
+
+    call: ast.Call
+    function: ast.AST | None
+    url: ast.AST
+    kwargs: dict[str, ast.AST]
+    url_literals: list[tuple[_File, ast.AST]]  # the strings its URL is made of
+    url_variables: list[tuple[_File, ast.Constant]]  # the OpenAI SDK's base URL variables it reads
+    authorization: ast.AST | None  # its Authorization header's value, when OpenPort can see it
+    key_variables: list[tuple[_File, ast.Constant]]  # the environment variables that header reads
+
+
+def _unique(pairs: list[tuple[_File, ast.AST]]) -> list[tuple[_File, ast.AST]]:
+    return list({(f.path, f.span(node)): (f, node) for f, node in pairs}.values())
+
+
+def _http_call(repo: _Repo, f: _File, site: CallSiteFinding) -> _HttpCall | None:
+    call = next((n for n in ast.walk(f.tree) if isinstance(n, ast.Call) and n.lineno == site.line
+                 and isinstance(n.func, ast.Attribute) and n.func.attr in HTTP_METHODS), None)
+    if call is None:
+        return None
+    function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None)
+    kwargs = {k.arg: k.value for k in call.keywords if k.arg}
+    position = HTTP_METHODS[call.func.attr]
+    url = kwargs.get("url") or (call.args[position] if len(call.args) > position else None)
+    if url is None:
+        return None
+    reached = _reaching(repo, f, url, function, call.lineno)
+    literals = _unique([(target, literal) for target, node, _ in reached for literal in _string_literals(node)])
+    variables = _unique([(target, name) for target, node, _ in reached for name in _env_names(node) if name.value in BASE_URL_VARIABLES])
+    authorization, keys = None, []
+    headers = kwargs.get("headers")
+    for target, node, scope in _reaching(repo, f, headers, function, call.lineno, depth=1) if headers is not None else []:
+        if isinstance(node, ast.Dict):
+            authorization = next((v for k, v in zip(node.keys, node.values)
+                                  if isinstance(k, ast.Constant) and str(k.value).lower() == "authorization"), None)
+            if authorization is not None:
+                line = authorization.lineno
+                keys = _unique([(t, name) for t, n, _ in _reaching(repo, target, authorization, scope, line) for name in _env_names(n)])
+                break
+    return _HttpCall(call, function, url, kwargs, literals, variables, authorization, keys)
+
+
+def _payload(f: _File, http: _HttpCall) -> ast.Dict | None:
+    """The request body, when the code writes it as a dict: json={...}, or data=json.dumps({...})."""
+    payload = http.kwargs.get("json")
+    body = http.kwargs.get("data") or http.kwargs.get("content")
+    if payload is None and isinstance(body, ast.Call) and body.args and ast.unparse(body.func).endswith("dumps"):
+        payload = body.args[0]
+    if isinstance(payload, ast.Name):
+        payload = (_assigned_value(http.function, payload.id, http.call.lineno) if http.function else None) or _module_value(f, payload.id)
+    return payload if isinstance(payload, ast.Dict) else None
+
+
+def _split_url(f: _File, url: ast.AST) -> list[Edit]:
+    """Token Factory's URL for a call whose URL also serves calls that stay: a second constant beside the module
+    constant it names (CHAT_URL_NEMOTRON), as a shared client is split, or else the URL itself at the call."""
+    statement = None
+    for node in f.tree.body if isinstance(url, ast.Name) else []:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == url.id for t in targets):
+                statement = node
+    if statement is None:
+        return [Edit(*f.span(url), f'"{CHAT_URL}"'.encode())]
+    name = url.id + ("_NEMOTRON" if url.id.isupper() else "_nemotron")
+    position = line_end(f.source, f.span(statement)[1])
+    nl = newline_style(f.source)
+    prefix = nl if position == len(f.source) and not f.source.endswith(b"\n") else b""
+    return [Edit(position, position, prefix + f'{name} = "{CHAT_URL}"'.encode() + nl), Edit(*f.span(url), name.encode())]
+
+
+def _port_http(repo: _Repo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], edits: dict, const_uses: dict,
+               text_edits: dict, applied: set) -> None:
+    """Point each ported plain HTTP call at Token Factory: its URL, its key and its model, where the code spells
+    them out. A call whose URL OpenPort can't see stays where it is."""
+    calls = {site.id: _http_call(repo, f, site) if (f := repo.file(site.file)) else None for site in sites}
+
+    def key(f: _File, node: ast.AST) -> tuple[str, tuple[int, int]]:
+        return f.path, f.span(node)
+
+    def kept_uses() -> set:  # strings and variables calls that stay also use: those aren't edited
+        return {key(f, node) for s in sites if plan[s.id].keep and calls[s.id]
+                for f, node in [*calls[s.id].url_literals, *calls[s.id].url_variables, *calls[s.id].key_variables]}
+
+    for site in sites:  # first, which calls can move at all
+        decision, http = plan[site.id], calls[site.id]
+        if decision.keep:
+            continue
+        if http is None:
+            decision.keep_because("couldn't locate the call in the source")
+            continue
+        texts = [f.source[slice(*f.span(node))].decode("utf-8", errors="replace") for f, node in http.url_literals]
+        reason = why_kept(texts, ast.unparse(http.url))
+        if reason:
+            decision.keep_because(reason)
+    shared = kept_uses()
+
+    for site in sites:
+        f, decision, http = repo.file(site.file), plan[site.id], calls[site.id]
+        payload = _payload(f, http) if http else None
+        model = _dict_value(payload, "model") if payload is not None else None
+        constants = _module_constants(f) if f else {}
+        if isinstance(model, ast.Name) and model.id in constants:
+            const_uses[(f.path, model.id)].append((decision.model, model))  # kept calls count too (model None)
+        if decision.keep:
+            continue
+
+        # The URL: the strings it's built from, unless calls that stay use them too.
+        texts = [t.source[slice(*t.span(node))].decode("utf-8", errors="replace") for t, node in http.url_literals]
+        changes = url_edits(texts)
+        if any(key(*http.url_literals[i]) in shared for i in changes):
+            edits[f.path] += _split_url(f, http.url)
+        else:
+            for i, text in changes.items():
+                target, node = http.url_literals[i]
+                renamed = re.sub(rf"(['\"])({'|'.join(BASE_URL_VARIABLES)})\1", rf"\1{BASE_URL_VARIABLE}\1", text)
+                edits[target.path].append(Edit(*target.span(node), renamed.encode()))
+            changed = [(t.path, *t.span(n)) for i, (t, n) in enumerate(http.url_literals) if i in changes]
+            for target, name in http.url_variables:
+                start, end = target.span(name)
+                if key(target, name) not in shared and not any(p == target.path and a <= start and end <= b for p, a, b in changed):
+                    edits[target.path].append(Edit(start, end, quoted_like(target.source[start:end], BASE_URL_VARIABLE)))
+
+        # The key, where it's read from the environment.
+        for target, name in http.key_variables:
+            if key(target, name) in shared:
+                decision.notes.append(f"Its key ({name.value}) is read for calls that stay too: send {KEY_VARIABLE} here by hand")
+            elif name.value != KEY_VARIABLE:
+                edits[target.path].append(Edit(*target.span(name), quoted_like(target.source[slice(*target.span(name))], KEY_VARIABLE)))
+        if http.authorization is None:
+            decision.notes.append(f"Send {KEY_VARIABLE} as its bearer token: OpenPort couldn't find its Authorization header")
+        elif not http.key_variables:
+            written = all(isinstance(n, (ast.Constant, ast.JoinedStr, ast.FormattedValue)) for n in ast.walk(http.authorization)
+                          if isinstance(n, ast.expr))
+            source = "is written in the code" if written else f"comes from `{ast.unparse(http.authorization)}`"
+            decision.notes.append(f"Its key {source}: send {KEY_VARIABLE} instead")
+
+        # The model and tuned settings, in the request body.
+        if payload is None:
+            decision.notes.append(f"OpenPort couldn't see its request body: make sure it sends model {decision.model}")
+            continue
+        if model is None:
+            decision.notes.append(f"No `model` in its request body: make sure {decision.model} is sent")
+        elif isinstance(model, ast.Constant) and isinstance(model.value, str):
+            edits[f.path].append(Edit(*f.span(model), quoted_like(f.source[slice(*f.span(model))], decision.model)))
+            comment = was_comment(f.source, f.span(model)[1], model.value, b"#")
+            if comment:
+                edits[f.path].append(comment)
+        elif not (isinstance(model, ast.Name) and model.id in constants):
+            decision.notes.append(f"Model comes from `{f.text(model)}`: set it to {decision.model}")
+        if decision.extra_body:
+            added = _add_entries(f, payload, decision.extra_body)
+            if added is None:
+                decision.notes.append(f"Send {decision.extra_body!r} in its request body by hand")
+            else:
+                edits[f.path] += added
+        for names, number, floor, label in (
+            (("max_tokens", "max_completion_tokens"), decision.max_tokens, True, "allow at least {} output tokens"),
+            (("temperature",), decision.temperature, False, "temperature {}"),
+        ):
+            if number is None or (floor and not number):
+                continue
+            changed = _set_number_entry(f, payload, names, number, floor)
+            if changed is None:
+                decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
+            else:
+                edits[f.path] += changed
+        if decision.system_addendum and not _apply_addendum(repo, f, http.call, site, decision, edits, text_edits, applied, _entries(payload)):
+            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
+
+
 def port_python(
     root: Path, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], runtime_source: bytes
 ) -> dict[str, bytes]:
@@ -473,6 +745,8 @@ def port_python(
     Updates `plan` in place: sites that can't be ported mechanically are kept, with the reason.
     """
     repo = _Repo(root)
+    http_sites = [site for site in sites if site.sdk == "http"]
+    sites = [site for site in sites if site.sdk != "http"]
     links = {site.id: repo.link(site) for site in sites}
     actions = decide_client_actions(
         sites,
@@ -565,6 +839,7 @@ def port_python(
             while isinstance(base, ast.Attribute):
                 base = base.value
             edits[f.path].append(Edit(*f.span(base), split_names[site.id].encode()))
+    _port_http(repo, http_sites, plan, edits, const_uses, text_edits, applied)
 
     # Shared model constants: edit the constant once if every call using it moves to the same model,
     # otherwise write the model at each ported call and leave the constant for the calls that stay.
@@ -600,7 +875,8 @@ def port_python(
                 )
 
     changed_files |= set(edits)
-    output = {path: apply_edits(repo.file(path).source, edits[path]) for path in changed_files if edits[path]}
+    # Calls sharing a string each edit it, and settings added after the same last argument each add its comma: keep one.
+    output = {path: apply_edits(repo.file(path).source, list(dict.fromkeys(edits[path]))) for path in changed_files if edits[path]}
     output |= {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()}
     if helpers:
         output[f"{vendor_dir}/{RUNTIME_MODULE}.py".lstrip("/")] = runtime_source

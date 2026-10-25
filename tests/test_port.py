@@ -346,6 +346,211 @@ def test_typescript_anthropic_port(tmp_path):
     assert runtime.startswith("// @ts-nocheck") and "export class AnthropicOnNemotron" in runtime
 
 
+HTTP_PY = {
+    "httpport/__init__.py": "",
+    "httpport/llm.py": '''import json
+import os
+
+import httpx
+import requests
+
+CHAT_URL = "https://api.openai.com/v1/chat/completions"
+BASE = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+MODEL = "gpt-4o-mini"
+
+
+def classify(ticket):
+    response = requests.post(CHAT_URL, headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"}, json={
+        "model": "gpt-4o-mini", "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": "Label the ticket."}, {"role": "user", "content": ticket}]})
+    return json.loads(response.json()["choices"][0]["message"]["content"])
+
+
+async def summarize(text, client: httpx.AsyncClient):
+    key = os.getenv("OPENAI_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"}
+    payload = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": text}],
+        "max_tokens": 200
+    }
+    return await client.post(f"{BASE}/chat/completions", headers=headers, json=payload)
+
+
+def describe(url):  # sends an image, so it stays, on the URL it shares with classify
+    return requests.post(CHAT_URL, headers={"Authorization": "Bearer sk-old"}, json={
+        "model": "gpt-4o", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]})
+
+
+def ask_claude(question):
+    return httpx.post("https://api.anthropic.com/v1/messages", headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"]}, json={
+        "model": "claude-sonnet-5-5", "max_tokens": 512, "messages": [{"role": "user", "content": question}]})
+
+
+class Bot:
+    def reply(self, messages):
+        return requests.post(f"{self.api_base}/chat/completions", headers={"Authorization": f"Bearer {self.api_key}"},
+                             json={"model": self.model, "messages": messages})
+
+
+def wake(host, port, text):  # the app's own server: its host isn't written out, so nothing says it's OpenAI
+    return requests.post(f"http://{host}:{port}/v1/chat/completions", json={"model": "agent", "messages": [{"role": "user", "content": text}]})
+
+
+def local(text):  # a model server on the same machine
+    return requests.post("http://localhost:11434/v1/chat/completions", json={"model": "llama3", "messages": [{"role": "user", "content": text}]})
+''',
+    "openport.evals.yaml": "target: httpport\nsource_root: .\ncall_sites:\n"
+                           "  - {id: llm.classify, file: httpport/llm.py, module: httpport.llm, function: classify, intercept: true, sdk: http,\n"
+                           "     original_model: gpt-4o-mini, output: json_object, dataset: cases.jsonl, grader: {type: fields, fields: [label]}}\n",
+    "cases.jsonl": '{"id": "c1", "input": {"ticket": "I was charged twice"}, "expected": {"label": "billing"}}\n',
+}
+
+
+def test_plain_http_calls_move_to_token_factory(tmp_path, monkeypatch):
+    from openport.evals.runner import run_site
+    from openport.evals.spec import load_spec
+
+    from .fakes import FakeTokenFactory, completion
+
+    root = write(tmp_path / "repo", HTTP_PY)
+    tuned = {"model": "nano", "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}, "variant": {"max_tokens": 500}}
+    result, sites = port(root, tmp_path / "out", llm__summarize=tuned, llm__classify={"model": "super", "variant": {"system_addendum": "One word."}})
+    code = (result.output / "httpport/llm.py").read_text()
+
+    assert sites["llm.classify"].status == sites["llm.summarize"].status == "ported"
+    assert sites["llm.describe"].status == "kept" and "image" in sites["llm.describe"].reason
+    assert "no Anthropic-style endpoint" in sites["llm.ask_claude"].reason
+    assert sites["llm.reply"].status == "kept" and "`f'{self.api_base}/chat/completions'`" in sites["llm.reply"].reason
+    assert sites["llm.wake"].status == "kept" and "can't tell where its URL" in sites["llm.wake"].reason
+    assert sites["llm.local"].status == "kept" and "same machine" in sites["llm.local"].reason
+    assert 'f"http://{host}:{port}/v1/chat/completions"' in code and '"http://localhost:11434/v1/chat/completions"' in code
+    # classify: the URL constant still serves the image call, so it gets one of its own; its key and model move too.
+    assert ('CHAT_URL = "https://api.openai.com/v1/chat/completions"\n'
+            'CHAT_URL_NEMOTRON = "https://api.tokenfactory.nebius.com/v1/chat/completions"\n') in code
+    assert "requests.post(CHAT_URL_NEMOTRON, headers={\"Authorization\": f\"Bearer {os.environ['NEBIUS_API_KEY']}\"}" in code
+    assert "requests.post(CHAT_URL, headers={\"Authorization\": \"Bearer sk-old\"}" in code
+    assert '"model": "nvidia/super-test", "response_format": {"type": "json_object"},  # was "gpt-4o-mini"' in code
+    assert '"content": "Label the ticket.\\n\\nOne word."' in code
+    # summarize: the base URL and its variable, the key's variable, the model constant, and the tuned settings.
+    assert 'BASE = os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1")' in code
+    assert 'key = os.getenv("NEBIUS_API_KEY")' in code and 'MODEL = "nvidia/nano-test"  # was "gpt-4o-mini"' in code
+    assert '        "max_tokens": 500,\n        "chat_template_kwargs": {"enable_thinking": False},\n    }' in code
+    assert "OPENAI_API_KEY" not in code and 'os.environ["ANTHROPIC_API_KEY"]' in code  # Anthropic's call is untouched
+    assert sites["llm.classify"].notes == sites["llm.summarize"].notes  # only the general check for HTTP calls
+    assert not any(path.endswith("openport_llm.py") for path in result.added)  # nothing to import for HTTP calls
+
+    # The ported call runs on the model its code names now, through OpenPort's stand-in for the API.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    fake = FakeTokenFactory(lambda request: completion(content='{"label": "billing"}'))
+    spec = load_spec(result.output)
+    outcome = run_site(spec, spec.call_sites[0], "as written", None, client=fake)
+    assert outcome.pass_rate == 1.0, [case.error for case in outcome.cases]
+    assert fake.requests[0]["model"] == "nvidia/super-test"
+    for name in ("httpport", "httpport.llm"):
+        sys.modules.pop(name, None)
+
+
+HTTP_TS = {
+    "src/llm.ts": '''import axios from "axios";
+import ky from "ky";
+
+const BASE = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+const CHAT_URL = "https://api.openai.com/v1/chat/completions";
+const MODEL = "gpt-4o-mini";
+
+export async function triage(ticket: string) {
+  const res = await fetch(`${BASE}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{ role: "system", content: "Label the ticket." }, { role: "user", content: ticket }]
+    }),
+  });
+  return res.json();
+}
+
+export async function draft(text: string) {
+  const headers = { Authorization: `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}` };
+  const payload = { model: "gpt-4o", messages: [{ role: "user", content: text }], temperature: 0.7 };
+  return axios.post(CHAT_URL, payload, { headers });
+}
+
+export async function describe(image: string) {  // sends an image, so it stays, on the URL it shares with draft
+  const content = [{ type: "image_url", image_url: { url: image } }];
+  return ky.post(CHAT_URL, { json: { model: "gpt-4o", messages: [{ role: "user", content }] }, headers: { Authorization: "Bearer sk-old" } }).json();
+}
+
+export async function ask(question: string) {
+  const body = JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 256, messages: [{ role: "user", content: question }] });
+  return fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": process.env.ANTHROPIC_API_KEY! }, body });
+}
+''',
+}
+
+
+def test_typescript_plain_http_calls_move_to_token_factory(tmp_path):
+    from openport.scan.ts_scanner import _parser
+
+    root = write(tmp_path / "repo", HTTP_TS)
+    tuned = {"model": "super", "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+             "variant": {"max_tokens": 400, "system_addendum": "One word."}}
+    result, sites = port(root, tmp_path / "out", llm__triage=tuned, llm__draft={"model": "nano", "variant": {"temperature": 0.2}})
+    code = (result.output / "src/llm.ts").read_text()
+
+    assert [sites[f"llm.{name}"].status for name in ("triage", "draft", "describe", "ask")] == ["ported", "ported", "kept", "kept"]
+    # triage: the base URL and its variable, the key's variable, the model constant, and the tuned settings.
+    assert 'const BASE = process.env.NEBIUS_BASE_URL ?? "https://api.tokenfactory.nebius.com/v1";' in code
+    assert "Authorization: `Bearer ${process.env.NEBIUS_API_KEY}`" in code
+    assert 'const MODEL = "nvidia/super-test";  // was "gpt-4o-mini"' in code
+    assert ('{ role: "user", content: ticket }],\n'
+            "      chat_template_kwargs: { enable_thinking: false },\n      max_tokens: 400,\n    }),") in code
+    assert 'content: "Label the ticket.\\n\\nOne word."' in code
+    # draft: its URL constant still serves the image call, so it gets one of its own; a Vite variable keeps its prefix.
+    assert ('const CHAT_URL = "https://api.openai.com/v1/chat/completions";\n'
+            'const CHAT_URL_NEMOTRON = "https://api.tokenfactory.nebius.com/v1/chat/completions";\n') in code
+    assert "return axios.post(CHAT_URL_NEMOTRON, payload, { headers });" in code and "ky.post(CHAT_URL, {" in code
+    assert "import.meta.env.VITE_NEBIUS_API_KEY" in code
+    assert 'const payload = { model: "nvidia/nano-test", messages: [{ role: "user", content: text }], temperature: 0.2 };  // was "gpt-4o"' in code
+    assert "OPENAI_API_KEY" not in code and "process.env.ANTHROPIC_API_KEY!" in code  # Anthropic's call is untouched
+    assert not _parser(False).parse(code.encode()).root_node.has_error
+    assert not any("openport_llm" in path for path in result.added)
+
+
+TAB_CLIENT_TS = {
+    "src/endpoint.ts": (
+        'import OpenAI from "openai";\n\n'
+        "export function endpoint(baseURL: string, apiKey: string, defaults: object) {\n"
+        "\tconst openai = new OpenAI({\n\t\t...defaults,\n\t\tapiKey: apiKey || \"sk-\",\n\t\tbaseURL,\n\t\tmaxRetries: 2,\n\t});\n"
+        '\treturn (text: string) => openai.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });\n'
+        "}\n"
+    ),
+    "src/proxy.js": '''const ROUTES = {
+  openai: { url: "https://api.openai.com/v1/chat/completions", key: () => process.env.OPENAI_API_KEY },
+  gemini: { url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", key: () => process.env.GOOGLE_API_KEY },
+};
+
+export async function relay(name, body) {
+  const route = ROUTES[name];
+  return fetch(route.url, { method: "POST", headers: { Authorization: `Bearer ${route.key()}` }, body: JSON.stringify(body) });
+}
+''',
+}
+
+
+def test_typescript_client_options_the_app_spreads_or_shorthands_dont_win(tmp_path):
+    """Like ruflo's: a tab-indented client given `baseURL` by shorthand, and options spread in; and a table of providers."""
+    result, sites = port(write(tmp_path / "repo", TAB_CLIENT_TS), tmp_path / "out")
+    code = (result.output / "src/endpoint.ts").read_text()
+    assert ("\tconst openai = new OpenAI({\n\t\t...defaults,\n"
+            '\t\tbaseURL: process.env.NEBIUS_BASE_URL ?? "https://api.tokenfactory.nebius.com/v1/",\n'
+            '\t\tapiKey: process.env.NEBIUS_API_KEY ?? "",\n\t\tmaxRetries: 2,\n\t});\n') in code
+    assert sites["proxy.relay"].status == "kept"
+    assert "several (api.openai.com, generativelanguage.googleapis.com)" in sites["proxy.relay"].reason
+    assert (result.output / "src/proxy.js").read_text() == TAB_CLIENT_TS["src/proxy.js"]
+
+
 def test_typescript_port(tmp_path):
     root = write(tmp_path / "repo", PROBLY_LIKE)
     result, sites = port(root, tmp_path / "out")

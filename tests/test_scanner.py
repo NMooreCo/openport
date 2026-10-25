@@ -220,6 +220,11 @@ def ping():
     return requests.post("https://example.com/hook", json={"ok": True})  # not an LLM endpoint
 
 
+def notify(chat_id, text):  # Feishu's chat API, not Anthropic's
+    url = "https://open.feishu.cn/open-apis/im/v1/messages"
+    return requests.post(url, params={"receive_id_type": "chat_id"}, json={"receive_id": chat_id, "content": text})
+
+
 @app.post("/v1/chat/completions")  # serves the endpoint rather than calling it
 def serve(body: dict):
     return body
@@ -258,6 +263,12 @@ export async function probe() {
 
 app.post("/v1/chat/completions", (req, res) => res.json({})); // a route the app serves
 router.post("/chat/completions", requireAuth, handleCompletion); // so is this, with imported handlers
+
+export class Messages {  // a generated client for the app's own REST API
+  create(options: any) {
+    return (options.client ?? this.client).post({ url: "/api/v1/messages", ...options });
+  }
+}
 """
 
 
@@ -286,18 +297,81 @@ def test_calls_in_docs_samples_benchmarks_and_e2e_arent_the_apps(tmp_path):
     assert report.portable() == [] and report.summary()["in_tests"] == 9  # found, and listed with --include-tests
 
 
-def test_http_calls_are_reported_not_rewritten(tmp_path):
+def test_only_openai_style_http_calls_are_planned_to_move(tmp_path):
     from openport.capture.draft import runnable
     from openport.port.plan import build_plan
 
     (tmp_path / "llm.py").write_text(HTTP_PY)
-    findings = scan_repo(tmp_path).findings
-    plan = build_plan(findings, {"nano": "n", "super": "s", "ultra": "u"}, assignments={f.id: "nano" for f in findings})
-    assert all(decision.keep for decision in plan.values())  # even when a plan names a model
-    claude = next(f for f in findings if f.function == "ask_claude")
-    assert "no Anthropic-style endpoint" in plan[claude.id].reason
-    assert "api.tokenfactory.nebius.com/v1" in plan[next(f.id for f in findings if f.function == "classify")].reason
+    findings = {f.function: f for f in scan_repo(tmp_path).findings}
+    plan = build_plan(list(findings.values()), {"nano": "n", "super": "s", "ultra": "u"}, assignments={f.id: "nano" for f in findings.values()})
+    assert [plan[findings[name].id].model for name in ("classify", "summarize")] == ["n", "n"]
+    claude = findings["ask_claude"]
+    assert plan[claude.id].keep and "no Anthropic-style endpoint" in plan[claude.id].reason  # even when a plan names a model
     assert runnable(claude) == (True, "")  # tested through OpenPort's stand-in for the API, though not rewritten
+
+
+MEDIA_PY = '''
+import anthropic
+import requests
+from openai import OpenAI
+
+client = OpenAI()
+claude = anthropic.Anthropic()
+
+
+def transcribe(audio_b64):  # speech to text, over chat completions
+    content = [{"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}}]
+    payload = {"model": "voxtral-mini", "messages": [{"role": "user", "content": content}]}
+    return requests.post("https://api.mistral.ai/v1/chat/completions", json=payload)
+
+
+def speak(text):
+    return client.chat.completions.create(model="gpt-4o-audio-preview", modalities=["text", "audio"], audio={"voice": "alloy", "format": "wav"},
+                                          messages=[{"role": "user", "content": text}])
+
+
+def search(query):
+    return requests.post("https://api.perplexity.ai/chat/completions", json={
+        "model": "sonar", "messages": [{"role": "user", "content": query}], "web_search_options": {"search_context_size": "low"}})
+
+
+def research(question):
+    return claude.messages.create(model="claude-sonnet-5-5", max_tokens=1024, tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                                  messages=[{"role": "user", "content": question}])
+
+
+def lookup(question):  # the app's own tool, called web_search: not the provider's search
+    tools = [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}]
+    return client.chat.completions.create(model="gpt-4o", tools=tools, messages=[{"role": "user", "content": question}])
+'''
+
+MEDIA_TS = """
+export async function listen(audio: string) {
+  const body = { model: "gpt-4o-mini-transcribe", messages: [{ role: "user", content: [{ type: "input_audio", input_audio: { data: audio } }] }] };
+  return fetch("https://api.openai.com/v1/chat/completions", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function browse(query: string) {
+  return fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-4o-search-preview", web_search_options: {}, messages: [{ role: "user", content: query }] }),
+  });
+}
+"""
+
+
+def test_audio_and_the_providers_own_web_search_keep_a_call_where_it_is(tmp_path):
+    from openport.port.plan import build_plan
+
+    (tmp_path / "media.py").write_text(MEDIA_PY)
+    (tmp_path / "media.ts").write_text(MEDIA_TS)
+    findings = {f.function: f for f in scan_repo(tmp_path).findings}
+    expected = {"transcribe": "audio", "speak": "audio", "search": "web_search", "research": "web_search", "listen": "audio", "browse": "web_search"}
+    assert {name: feature for name, feature in expected.items() if feature in findings[name].features} == expected
+    assert not {"audio", "web_search"} & set(findings["lookup"].features)
+    plan = build_plan(list(findings.values()), {"nano": "n", "super": "s", "ultra": "u"})
+    assert all(plan[findings[name].id].keep for name in expected) and not plan[findings["lookup"].id].keep
+    assert "works in text" in plan[findings["transcribe"].id].reason and "Searches the web" in plan[findings["search"].id].reason
 
 
 def test_only_files_that_could_hold_a_call_are_parsed(tmp_path):
