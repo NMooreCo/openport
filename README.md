@@ -160,7 +160,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `examples/evalpacks/preflight/` | OpenPort's eval pack for [jsliapark/preflight](https://github.com/jsliapark/preflight), an AI PR reviewer that ships no evals: 119 hand-labelled cases, pinned to a reviewed commit |
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |
-| `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint) and `field_study.py` (the [field study](docs/FIELD-STUDY.md)) |
+| `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the re-measure and recordings that wait on Token Factory credit, as one checked sequence) |
 | `tests/` | Offline tests (no API keys needed) |
 
 ## How OpenPort uses NVIDIA Nemotron and Nebius

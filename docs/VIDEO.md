@@ -72,7 +72,7 @@ on a Serverless Endpoint, and Ultra's answers train a smaller student model."
 
 ## Numbers
 
-Fill these in from the final runs. Cost estimates must come from reports made after Oct 24, 16:00, which
+Fill these in from the final runs: `uv run python scripts/monday.py` lists them in order, and `--run` runs them on Token Factory credit (asking first, keeping every earlier result, stopping past a budget). Cost estimates must come from reports made after Oct 24, 16:00, which
 charge the original model for its prompt and reply only, not Nemotron's reasoning.
 
 | Placeholder | Where it comes from |

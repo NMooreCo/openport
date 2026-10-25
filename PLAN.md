@@ -325,6 +325,8 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **Two lockfiles, one version:** LibreChat names npm and runs `npm ci` in CI, but a `bun.lock` sits beside its `package-lock.json`, and the upgrader would have bumped only the alphabetically first (bun's) while the tests ran with npm: a "proven" upgrade that left npm's install vulnerable. Now the lockfile of the package manager the project names (else npm's, pnpm's, Yarn's, bun's) is the source, every root lockfile holding the version moves too, each step is built from the files as the step before left them, and a second lockfile that can't be updated is named in the PR ("Not updated") rather than sinking the upgrade.
 - 224 offline tests.
 
+**Sun 25: Monday as one command.** `scripts/monday.py` lists, in order, everything that waits on Token Factory credit: the smoke check, SupportDesk's baseline, tune, port and PR, the same for preflight (its reviewed commit) and the TypeScript SupportDesk, the fine-tune's adapter, and live recordings of the SupportDesk, preflight and AuthKit demos. `--run` asks first, sets aside every file it would overwrite, totals the spend each step's reports record and stops past `--budget` (default $10), resumes with `--from`, and copies a recording into `examples/recorded/` only if it holds no local path or key. Tested without spending: every step's command parses against the real CLI. 227 offline tests.
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).
