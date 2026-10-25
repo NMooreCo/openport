@@ -21,7 +21,7 @@ from ..scan.findings import CALL_SUFFIXES, CallSiteFinding
 from ..scan.ts_scanner import FETCHES, _parser, _text, _unquote, _walk
 from .clients import decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, newline_style, quoted_like, was_comment
-from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, url_edits, why_kept
+from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, TOKEN_FACTORY_V1, url_edits, why_kept
 from .plan import SiteDecision
 from .prompts import find_prompt_file, prompt_file_insertion, ts_literal_insertion
 
@@ -72,21 +72,27 @@ class _TsRepo:
         return self._files[path]
 
     def bindings(self, f: _TsFile) -> list[_TsBinding]:
+        """Where clients are built: `const client = new OpenAI()`, `this.client = new OpenAI()` in a constructor, and
+        class fields (`client = new OpenAI()`), the last two named `this.client`."""
         found = []
         for node in _walk(f.root):
-            if node.type != "variable_declarator":
+            if node.type == "variable_declarator":
+                name, value, statement = _text(node.child_by_field_name("name")), node.child_by_field_name("value"), node.parent
+            elif node.type == "assignment_expression" and _text(node.child_by_field_name("left")).startswith("this."):
+                name, value, statement = _text(node.child_by_field_name("left")), node.child_by_field_name("right"), node.parent
+            elif node.type == "public_field_definition":
+                name, value, statement = f"this.{_text(node.child_by_field_name('name'))}", node.child_by_field_name("value"), node
+            else:
                 continue
-            value = node.child_by_field_name("value")
             if value is None or value.type != "new_expression":
                 continue
             ctor = _text(value.child_by_field_name("constructor")).split(".")[-1]
             if ctor not in CLIENTS:
                 continue
-            statement = node.parent
             top = statement.parent.type == "program" or (
                 statement.parent.type == "export_statement" and statement.parent.parent.type == "program"
             )
-            found.append(_TsBinding(f.path, _text(node.child_by_field_name("name")), ctor, value, statement, top))
+            found.append(_TsBinding(f.path, name, ctor, value, statement, top))
         return found
 
     def resolve(self, from_path: str, source: str) -> str | None:
@@ -117,7 +123,18 @@ class _TsRepo:
         if f is None:
             return []
         receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
-        local = [b for b in self.bindings(f) if b.var == receiver]
+        call = _call_node(f, site)
+
+        def serves(binding: _TsBinding) -> bool:  # a function's own client serves its calls only; `this.client`, its class's
+            if binding.ctor.startswith("Anthropic") != (site.sdk == "anthropic"):
+                return False
+            scope = binding.new_expr.parent
+            kinds = ("class_declaration", "class") if binding.var.startswith("this.") else _FUNCTION_NODES
+            while scope is not None and scope.type not in kinds:
+                scope = scope.parent
+            return scope is None or call is not None and scope.start_byte <= call.start_byte and call.end_byte <= scope.end_byte
+
+        local = [b for b in self.bindings(f) if b.var == receiver and serves(b)]
         if local:
             return local
         for node in _walk(f.root):  # a client imported from another module of the app
@@ -128,8 +145,62 @@ class _TsRepo:
                 name, alias = spec.child_by_field_name("name"), spec.child_by_field_name("alias")
                 if _text(alias if alias is not None else name) == receiver:
                     target = self.file(self.resolve(f.path, source))
-                    return [b for b in self.bindings(target) if b.var == _text(name)] if target else []
+                    return [b for b in self.bindings(target) if b.var == _text(name) and b.top_level] if target else []
         return []
+
+
+def _base_url(binding: _TsBinding) -> str:
+    """The base URL a client is built with, as written: `baseURL: ...`, `{ baseURL }`, or none (the SDK's default)."""
+    args = binding.new_expr.child_by_field_name("arguments")
+    first = args.named_children[0] if args is not None and args.named_children else None
+    for child in first.named_children if first is not None and first.type == "object" else []:
+        if child.type == "pair" and _unquote(_text(child.child_by_field_name("key"))) == "baseURL":
+            return _text(child.child_by_field_name("value"))
+        if child.type == "shorthand_property_identifier" and _text(child) == "baseURL":
+            return "baseURL"
+    return "the SDK's default"
+
+
+_FUNCTION_NODES = {"function_declaration", "function_expression", "arrow_function", "method_definition", "generator_function_declaration"}
+_NAMES = ("identifier", "shorthand_property_identifier", "shorthand_property_identifier_pattern")
+
+
+def _ts_chosen_by_caller(binding: _TsBinding) -> str | None:
+    """How a client lets whoever builds it pick the provider: its options, base URL or spread-in options come from
+    the function's parameters (or `this`), directly or through its locals. None when the code fixes it."""
+    function = binding.new_expr.parent
+    while function is not None and function.type not in _FUNCTION_NODES:
+        function = function.parent
+    if function is None:
+        return None
+    declared = function.child_by_field_name("parameters") or function.child_by_field_name("parameter")
+    params = {_text(n) for n in _walk(declared) if n.type in _NAMES} if declared is not None else set()
+    locals_: dict[str, Node] = {}
+    for node in _walk(function):
+        if node.type == "variable_declarator" and node.start_byte < binding.new_expr.start_byte and node.child_by_field_name("value"):
+            for name in _walk(node.child_by_field_name("name")):  # `const x = ...` and `const { a, b } = options`
+                if name.type in _NAMES:
+                    locals_[_text(name)] = node.child_by_field_name("value")
+
+    def from_caller(node: Node, depth: int = 2) -> bool:
+        for n in _walk(node):
+            if n.type == "this" or n.type in _NAMES and (_text(n) in params or depth and _text(n) in locals_
+                                                          and from_caller(locals_[_text(n)], depth - 1)):
+                return True
+        return False
+
+    args = binding.new_expr.child_by_field_name("arguments")
+    first = _unwrap(args.named_children[0]) if args is not None and args.named_children else None
+    if first is None:
+        return None
+    if first.type != "object":
+        return f"`{_text(first)}`" if from_caller(first) else None
+    for child in first.named_children:
+        key = _unquote(_text(child.child_by_field_name("key"))) if child.type == "pair" else _text(child)
+        if child.type in ("pair", "shorthand_property_identifier") and key == "baseURL" or child.type == "spread_element":
+            if from_caller(child.child_by_field_name("value") if child.type == "pair" else child):
+                return f"`{_text(child)}`"
+    return None
 
 
 def _call_node(f: _TsFile, site: CallSiteFinding) -> Node | None:
@@ -626,6 +697,16 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         if anthropic and not plan[site.id].keep and not _imports(repo.file(anthropic[0].file)):
             plan[site.id].keep_because("a CommonJS module, and OpenPort's runtime for Anthropic code is an ES module: port it by hand")
             links[site.id] = []
+        urls = sorted({_base_url(b) for b in links[site.id]}) if len(links[site.id]) > 1 else []
+        chosen = next((how for b in links[site.id] if (how := _ts_chosen_by_caller(b))), None)
+        if plan[site.id].keep:  # where the code picks no single provider, as in the Python port
+            continue
+        if len(urls) > 1:
+            plan[site.id].keep_because(f"its client is one of several, for different providers (base URLs {', '.join(urls)}): "
+                                       "add Token Factory among them by hand")
+        elif chosen:
+            plan[site.id].keep_because(f"its client takes its provider from whoever builds it ({chosen}): point that at "
+                                       f"{TOKEN_FACTORY_V1} with {KEY_VARIABLE} instead")
     actions = decide_client_actions(
         sites,
         plan,

@@ -520,9 +520,13 @@ def test_typescript_plain_http_calls_move_to_token_factory(tmp_path):
 
 TAB_CLIENT_TS = {
     "src/endpoint.ts": (
-        'import OpenAI from "openai";\n\n'
-        "export function endpoint(baseURL: string, apiKey: string, defaults: object) {\n"
-        "\tconst openai = new OpenAI({\n\t\t...defaults,\n\t\tapiKey: apiKey || \"sk-\",\n\t\tbaseURL,\n\t\tmaxRetries: 2,\n\t});\n"
+        'import OpenAI from "openai";\n\nconst DEFAULTS = { timeout: 30_000 };\n\n'
+        "export function endpoint(apiKey: string) {\n"
+        "\tconst openai = new OpenAI({\n\t\t...DEFAULTS,\n\t\tapiKey,\n\t\tmaxRetries: 2,\n\t});\n"
+        '\treturn (text: string) => openai.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });\n'
+        "}\n\n"
+        "export function custom(baseURL: string) {  // whoever calls this picks the provider\n"
+        '\tconst openai = new OpenAI({ baseURL, apiKey: "sk-" });\n'
         '\treturn (text: string) => openai.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });\n'
         "}\n"
     ),
@@ -540,15 +544,110 @@ export async function relay(name, body) {
 
 
 def test_typescript_client_options_the_app_spreads_or_shorthands_dont_win(tmp_path):
-    """Like ruflo's: a tab-indented client given `baseURL` by shorthand, and options spread in; and a table of providers."""
+    """Like ruflo's: a tab-indented client given its key by shorthand, with options spread in; a client whose caller
+    picks the provider; and a table of providers."""
     result, sites = port(write(tmp_path / "repo", TAB_CLIENT_TS), tmp_path / "out")
     code = (result.output / "src/endpoint.ts").read_text()
-    assert ("\tconst openai = new OpenAI({\n\t\t...defaults,\n"
+    assert ("\tconst openai = new OpenAI({\n\t\t...DEFAULTS,\n"
             '\t\tbaseURL: process.env.NEBIUS_BASE_URL ?? "https://api.tokenfactory.nebius.com/v1/",\n'
             '\t\tapiKey: process.env.NEBIUS_API_KEY ?? "",\n\t\tmaxRetries: 2,\n\t});\n') in code
+    assert sites["endpoint.custom"].status == "kept" and "from whoever builds it (`baseURL`)" in sites["endpoint.custom"].reason
+    assert '\tconst openai = new OpenAI({ baseURL, apiKey: "sk-" });' in code
     assert sites["proxy.relay"].status == "kept"
     assert "several (api.openai.com, generativelanguage.googleapis.com)" in sites["proxy.relay"].reason
     assert (result.output / "src/proxy.js").read_text() == TAB_CLIENT_TS["src/proxy.js"]
+
+
+FACTORIES = {
+    "app/__init__.py": "",
+    "app/clients.py": '''import os
+
+from openai import AsyncOpenAI, OpenAI
+
+ROUTER_URL = "https://openrouter.ai/api/v1"
+
+
+def get_client(*, timeout=30):
+    return OpenAI(timeout=timeout)
+
+
+def get_router_client(prefer_router=False):
+    if prefer_router:
+        return AsyncOpenAI(api_key="sk-router", base_url=ROUTER_URL)
+    return AsyncOpenAI()
+
+
+def get_proxied_client():
+    base_url = os.getenv("LLM_PROXY_URL")  # set by the deployment: still the app's own choice
+    return OpenAI(base_url=base_url)
+
+
+class Gateway:
+    def __init__(self, base_url):
+        self.client = OpenAI(base_url=base_url)  # whoever builds a Gateway picks the provider
+
+    def ask(self, text):
+        return self.client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+''',
+    "app/jobs.py": '''from .clients import get_client, get_proxied_client, get_router_client
+
+
+def proxied(text):
+    return get_proxied_client().chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+
+
+def summarize(text):
+    client = get_client(timeout=10)
+    return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+
+
+async def route(text):
+    client = get_router_client(prefer_router=True)
+    return await client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": text}])
+''',
+    "web/agents.ts": '''import OpenAI from "openai";
+
+export class Summarizer {
+  private client: OpenAI;
+
+  constructor() {
+    this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 20 });
+  }
+
+  async summarize(text: string) {
+    return this.client.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: text }] });
+  }
+}
+
+export class Tagger {
+  client = new OpenAI();
+
+  async tag(text: string) {
+    return this.client.chat.completions.create({ model: "gpt-4o-mini", messages: [{ role: "user", content: text }] });
+  }
+}
+''',
+}
+
+
+def test_clients_from_factories_constructors_and_fields_are_found(tmp_path):
+    result, sites = port(write(tmp_path / "repo", FACTORIES), tmp_path / "out")
+    assert sites["jobs.summarize"].status == "ported"  # `client = get_client(timeout=10)`, from another module
+    assert "def get_client(*, timeout=30):\n    return token_factory_client(timeout=timeout)" in (result.output / "app/clients.py").read_text()
+    assert sites["jobs.route"].status == "kept"  # its factory picks a provider: rewriting both branches would hide that
+    assert "one of several, for different providers (base URLs ROUTER_URL, the SDK's default)" in sites["jobs.route"].reason
+    clients = (result.output / "app/clients.py").read_text()
+    assert "return AsyncOpenAI()" in clients
+    assert sites["jobs.proxied"].status == "ported" and "    return token_factory_client()\n" in clients  # an environment variable: fixed
+    assert sites["clients.ask"].status == "kept" and "from whoever builds it (`base_url=base_url`)" in sites["clients.ask"].reason
+    assert "self.client = OpenAI(base_url=base_url)" in clients
+
+    agents = (result.output / "web/agents.ts").read_text()
+    assert sites["agents.summarize"].status == sites["agents.tag"].status == "ported"
+    assert ('this.client = new OpenAI({ baseURL: process.env.NEBIUS_BASE_URL ?? "https://api.tokenfactory.nebius.com/v1/", '
+            'apiKey: process.env.NEBIUS_API_KEY ?? "", timeout: 20 });') in agents
+    assert 'client = new OpenAI({ baseURL: process.env.NEBIUS_BASE_URL ?? "https://api.tokenfactory.nebius.com/v1/", apiKey:' in agents
+    assert "OPENAI_API_KEY" not in agents
 
 
 def test_typescript_port(tmp_path):

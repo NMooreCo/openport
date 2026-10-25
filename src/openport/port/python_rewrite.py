@@ -13,7 +13,7 @@ from ..scan.findings import CallSiteFinding
 from ..scan.python_scanner import HTTP_METHODS, _constructor_sdk, _match_suffix, _module_name
 from .clients import ClientAction, decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
-from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, url_edits, why_kept
+from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, TOKEN_FACTORY_V1, url_edits, why_kept
 from .plan import SiteDecision
 from .prompts import find_prompt_file, prompt_file_insertion, python_literal_insertion
 
@@ -140,6 +140,18 @@ class _Repo:
         ctor = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
         return _Binding(f.path, node, ctor, kind, var, function, classes[0].name if classes else None, statement, not scopes)
 
+    def module_path(self, module: str, importer: str) -> str | None:
+        """Where an app module lives: by its dotted name from the repo root, or from the folder of the project the
+        importing file is in (in a monorepo, platform/backend/app.py imports `backend.util` from platform/backend)."""
+        if module in self.modules:
+            return self.modules[module]
+        parts = _module_name(importer).split(".")
+        for end in range(len(parts) - 1, 0, -1):
+            candidate = ".".join([*parts[:end], module])
+            if candidate in self.modules:
+                return self.modules[candidate]
+        return None
+
     def imports(self, f: _File) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
         """(from-imported name -> (module, original name), module alias -> module)."""
         module = _module_name(f.path).split(".")
@@ -168,7 +180,8 @@ class _Repo:
         if len(parts) == 1:
             if parts[0] in names:
                 module, original = names[parts[0]]
-                return (self.modules[module], original) if module in self.modules else None
+                found = self.module_path(module, f.path)
+                return (found, original) if found else None
             if any(isinstance(n, _FUNCTIONS) and n.name == parts[0] for n in f.tree.body):
                 return f.path, parts[0]
             return None
@@ -179,7 +192,8 @@ class _Repo:
             module = ".".join([*names[head], *middle])
         else:
             return None
-        return (self.modules[module], function) if module in self.modules else None
+        found = self.module_path(module, f.path)
+        return (found, function) if found else None
 
     def link(self, site: CallSiteFinding) -> list[_Binding]:
         """The constructor(s) that build the client this call site uses."""
@@ -199,28 +213,73 @@ class _Repo:
         if kind == "imported":
             names, _ = self.imports(f)
             module, original = names.get(receiver, ("", ""))
-            target = self.file(self.modules.get(module))
+            target = self.file(self.module_path(module, f.path))
             return [b for b in self.bindings(target) if b.kind == "module" and b.var == original] if target else []
         if kind == "factory":
-            match = re.fullmatch(r"([\w.]+)\(\)", receiver)
-            resolved = self.resolve_callable(f, match[1], site.function) if match else None
-            target = self.file(resolved[0]) if resolved else None
-            if target is None:
-                return []
-            function = resolved[1]
-            inside = [b for b in self.bindings(target) if b.function == function]
-            if inside:
-                return inside
-            # A factory that hands back a client built at module level: `return _client`.
-            returned = {
-                ret.value.id
-                for node in ast.walk(target.tree)
-                if isinstance(node, _FUNCTIONS) and node.name == function.split(".")[-1]
-                for ret in ast.walk(node)
-                if isinstance(ret, ast.Return) and isinstance(ret.value, ast.Name)
-            }
-            return [b for b in self.bindings(target) if b.kind == "module" and b.var in returned]
+            match = re.fullmatch(r"([\w.]+)\(.*\)", receiver, re.S)
+            return self.made_by(f, match[1], site.function) if match else []
+        if kind == "other" and re.fullmatch(r"\w+", receiver):  # `client = get_client(...)` earlier in the function
+            call = _call_node(f, site)
+            function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None) if call else None
+            value = _assigned_value(function, receiver, site.line) if function else None
+            value = value.value if isinstance(value, ast.Await) else value
+            if isinstance(value, ast.Call) and not _constructor_sdk(value) and re.fullmatch(r"[\w.]+", ast.unparse(value.func)):
+                return self.made_by(f, ast.unparse(value.func), site.function)
         return []
+
+    def made_by(self, f: _File, dotted: str, caller: str) -> list[_Binding]:
+        """The constructors a factory (`get_client`, `clients.get_client`, `self._client_for`) builds its clients with."""
+        resolved = self.resolve_callable(f, dotted, caller)
+        target = self.file(resolved[0]) if resolved else None
+        if target is None:
+            return []
+        function = resolved[1]
+        inside = [b for b in self.bindings(target) if b.function == function]
+        if inside:
+            return inside
+        # A factory that hands back a client built at module level: `return _client`.
+        returned = {
+            ret.value.id
+            for node in ast.walk(target.tree)
+            if isinstance(node, _FUNCTIONS) and node.name == function.split(".")[-1]
+            for ret in ast.walk(node)
+            if isinstance(ret, ast.Return) and isinstance(ret.value, ast.Name)
+        }
+        return [b for b in self.bindings(target) if b.kind == "module" and b.var in returned]
+
+
+def _chosen_by_caller(f: _File, binding: _Binding) -> str | None:
+    """How a client lets whoever builds it pick the provider: its base URL (or all its options) comes from the
+    function's parameters, its locals, or the object's attributes. None when the code fixes it (no base URL, a
+    literal, an environment variable, a module constant or the app's config)."""
+    function = next((a for a in f.ancestors(binding.node) if isinstance(a, _FUNCTIONS)), None)
+    if function is None:
+        return None
+    args = function.args
+    params = {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a} - {"self", "cls"}
+
+    def from_caller(value: ast.AST, depth: int = 2) -> bool:  # locals are followed to what they're assigned
+        for n in ast.walk(value):
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in ("self", "cls"):
+                return True
+            if isinstance(n, ast.Name) and (n.id in params or depth and (assigned := _assigned_value(function, n.id, binding.node.lineno))
+                                            is not None and from_caller(assigned, depth - 1)):
+                return True
+        return False
+
+    for keyword in binding.node.keywords:
+        if keyword.arg in (None, "base_url") and from_caller(keyword.value):
+            return f"`base_url={ast.unparse(keyword.value)}`" if keyword.arg else f"`**{ast.unparse(keyword.value)}`"
+    return None
+
+
+def _providers(bindings: list[_Binding]) -> list[str]:
+    """The base URLs a call's clients are built with, when it gets one of several: one each means a choice of provider."""
+    def base_url(binding: _Binding) -> str:
+        keyword = next((k for k in binding.node.keywords if k.arg == "base_url"), None)
+        return ast.unparse(keyword.value) if keyword else "the SDK's default"
+
+    return sorted({base_url(b) for b in bindings}) if len(bindings) > 1 else []
 
 
 def _call_node(f: _File, site: CallSiteFinding) -> ast.Call | None:
@@ -458,7 +517,7 @@ def _resolve_string(repo: "_Repo", f: _File, node: ast.AST, function: ast.AST | 
             value = (_assigned_value(function, node.id, line) if function else None) or _module_value(f, node.id)
             if value is None:  # imported from another module of the app
                 module, original = repo.imports(f)[0].get(node.id, ("", ""))
-                f = repo.file(repo.modules.get(module))
+                f = repo.file(repo.module_path(module, f.path))
                 value = _module_value(f, original) if f else None
             if value is None:
                 return None
@@ -535,7 +594,7 @@ def _reaching(repo: _Repo, f: _File, node: ast.AST, function: ast.AST | None, li
             scope, value = None, _module_value(f, name)
         if value is None:
             module, original = repo.imports(f)[0].get(name, ("", ""))
-            target = repo.file(repo.modules.get(module))
+            target = repo.file(repo.module_path(module, f.path))
             value = _module_value(target, original) if target else None
         if value is not None:
             found += _reaching(repo, target, value, scope, value.lineno if scope else 10**9, depth - 1)
@@ -748,6 +807,17 @@ def port_python(
     http_sites = [site for site in sites if site.sdk == "http"]
     sites = [site for site in sites if site.sdk != "http"]
     links = {site.id: repo.link(site) for site in sites}
+    for site in sites:  # where the code picks no single provider, rewriting the client would override a choice made elsewhere
+        urls = _providers(links[site.id])
+        chosen = next((how for b in links[site.id] if (how := _chosen_by_caller(repo.file(b.file), b))), None)
+        if plan[site.id].keep:
+            continue
+        if len(urls) > 1:
+            plan[site.id].keep_because(f"its client is one of several, for different providers (base URLs {', '.join(urls)}): "
+                                       "add Token Factory among them by hand")
+        elif chosen:
+            plan[site.id].keep_because(f"its client takes its provider from whoever builds it ({chosen}): point that at "
+                                       f"{TOKEN_FACTORY_V1} with {KEY_VARIABLE} instead")
     actions = decide_client_actions(
         sites,
         plan,
