@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -616,17 +617,21 @@ def upgrade(
 
     colors = {"upgrade": "green", "partial": "green", "held: fix too new": "yellow", "held: no release dates": "yellow", "no fix available": "red"}
     table = Table(title=f"Vulnerable dependencies in {root.resolve().name}" + (f"/{project}" if project else ""))
-    for column in ("Package", "Installed", "Fix", "Advisories", "Status"):
+    for column in ("Package", "Installed", "Fix", "Advisories", "Status", "Locked in"):
         table.add_column(column)
     for up in plans:
         fix = f"[green]{up.target.version}[/green] ({up.target.age_days}d old)" if up.target else "—"
         color = colors.get(up.status, "white")
         ids = up.advisory_ids
-        table.add_row(up.dep.name, up.dep.version, fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""), f"[{color}]{up.status}[/{color}]")
+        table.add_row(up.dep.name, up.dep.version, fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""),
+                      f"[{color}]{up.status}[/{color}]", up.dep.source)
     console.print(table)
 
     upgradable = sum(up.target is not None for up in plans)
     console.print(f"\n{len(plans)} vulnerable of {len(deps)} dependencies: {upgradable} have a safe fix.")
+    projects = Counter(Path(project, up.dep.source).parent.as_posix() for up in plans if up.target and "/" in up.dep.source)
+    for folder, count in sorted(projects.items()):  # a monorepo: --apply upgrades one project at a time
+        console.print(f"{count} of them locked in {folder}/: upgrade that project with --project {folder}")
     if not apply:
         console.print("Dry run. With --apply, OpenPort upgrades a copy, runs the tests before and after, and fixes what breaks.")
         return
