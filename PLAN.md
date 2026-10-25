@@ -290,6 +290,13 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **The upgrader bumps `poetry.lock` and `pnpm-lock.yaml` too**, so every lockfile it reads, it can upgrade. Poetry pins each package, then puts `pyproject.toml` back and keeps it wherever its constraints allow the new version (else `^1.7.1` becomes `^2.14.0`); pnpm runs the repo's own version, with overrides for transitive packages. Poetry 2.5.1 and pnpm hold back releases under the age cutoff themselves, and every version any lockfile bump adds is now checked against its registry's release date before it's kept. Checked live on lab copies of AuthKit (Poetry: PyJWT, requests and pytest; pnpm: jsonwebtoken), both proven by their tests, with lockfiles that change only what the bumps need. Still to do for upgrades: test runs on Serverless Jobs.
 - 184 offline tests.
 
+**Sat 24 (late): a field study, and what it fixed.** Credits come back Monday, so the weekend goes to work that needs none.
+- **[Field study](docs/FIELD-STUDY.md):** OpenPort's scanner and upgrade dry run over the 20 most-starred open-source AI apps on GitHub, statically. 180 OpenAI and Anthropic SDK calls in 11 of them (50 testable as written; most others sit in class methods), and 746 known-vulnerable dependency versions in 19, 92% with a fix at least a week old. 17 of the 20 also reach models over plain HTTP. `scripts/field_study.py` reproduces it.
+- Fixed because of it: scans parse only files that can hold a call (same findings, 17 minutes down to 27 seconds over 19 repos); OSV is asked in batches of 1,000; the upgrader reads every lockfile in a monorepo, plus `yarn.lock` and `bun.lock` (`--apply` still upgrades root lockfiles it can rewrite, and says why for the rest); clones allow Windows' long paths and never leave a broken folder; a registry that can't be read holds one package, not the run.
+- **Changelog digest (Tavily):** every upgrade PR quotes what changed upstream between the two versions, from the package's own changelog: Extract on the declared changelog or the repo's CHANGELOG/HISTORY file first, then Search, then Map. Super reads those releases in full before fixing anything. Live: PyJWT (18 releases), pytest (from docs.pytest.org) and requests (from HISTORY.md). The README now lists every job Tavily does.
+- Next from the study: plain HTTP calls to OpenAI-compatible endpoints, testing class methods without an adapter, Anthropic's SDK in TypeScript evals, and a weekly upgrade GitHub Action.
+- 194 offline tests.
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).
