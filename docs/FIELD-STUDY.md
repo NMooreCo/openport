@@ -82,7 +82,12 @@ The second round, from running the port itself over the 20 apps and reading ever
 
 ## Reproduce
 
+The study script prints this page's totals and per-app table from its results (the stars are recorded as it runs,
+so they'll differ from the Oct 24 snapshot above).
+
 ```bash
+uv run python scripts/field_study.py --advisories     # the 20 apps, about five minutes, then the report
+uv run python scripts/field_study.py --summary        # the report again, from the saved results in runs/field-study/
 uv run python scripts/field_study.py --advisories NousResearch/hermes-agent lobehub/lobehub   # any repos
 uv run openport scan NousResearch/hermes-agent        # one repo's calls, as a table
 uv run openport upgrade NousResearch/hermes-agent     # its vulnerable dependencies (a dry run: nothing is run)
