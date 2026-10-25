@@ -296,8 +296,9 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **Changelog digest (Tavily):** every upgrade PR quotes what changed upstream between the two versions, from the package's own changelog: Extract on the declared changelog or the repo's CHANGELOG/HISTORY file first, then Search, then Map. Super reads those releases in full before fixing anything. Live: PyJWT (18 releases), pytest (from docs.pytest.org) and requests (from HISTORY.md). The README now lists every job Tavily does.
 - **Plain HTTP calls are found now** (requests/httpx/aiohttp, fetch/axios/ky/got posts to LLM endpoints), and reported with how to move them; the port leaves them alone. Calls in docs' samples, benchmarks, e2e and evals folders count as not the app's, like tests.
 - **`openport upgrade-action`** writes a weekly GitHub Actions workflow: upgrade, prove it, fix, and open or update the PR. Not run on GitHub yet (it installs OpenPort from this repo, private until submission).
+- **Calls are testable wherever their client comes from:** while a case runs, the OpenAI and Anthropic SDKs' own calls (sync and async) are routed to the swapped client, and async entry points run. On the study's apps, 82 of 132 SDK calls are testable as written, up from 47.
 - Next: rewriting and testing HTTP calls, testing class methods without an adapter, Anthropic's SDK in TypeScript evals.
-- 198 offline tests.
+- 200 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
