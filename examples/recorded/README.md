@@ -11,4 +11,4 @@ To record one, run the demo on a local dashboard (`openport serve`), then copy i
 | File | Run |
 |---|---|
 | `upgrade-authkit.json` | AuthKit, Oct 24: PyJWT 1.7.1 → 2.14.0 and requests 2.31.0 → 2.33.0; tests 5 passed → 4 failed → 5 passed after Super's two fixes |
-| `upgrade-authkit-node.json` | AuthKit (Node), Oct 24: jsonwebtoken 8.5.1 → 9.0.0; 5 passed before and after |
+| `upgrade-authkit-node.json` | AuthKit (Node), Oct 24: jsonwebtoken 8.5.1 → 9.0.0, with its changelog's notes; 5 passed before and after |
