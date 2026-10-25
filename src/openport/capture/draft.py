@@ -50,6 +50,8 @@ def grader_for(output: str, fields: list[str] | None) -> dict:
 
 def runnable(finding: CallSiteFinding, root: Path | None = None) -> tuple[bool, str]:
     """Whether the eval runner can import this call and swap its client. Returns (ok, reason-if-not)."""
+    if finding.sdk == "http":
+        return False, "a plain HTTP call: the eval harness runs OpenAI and Anthropic SDK calls"
     if finding.language != "python":
         return _runnable_on_node(finding, root)
     if not finding.module:

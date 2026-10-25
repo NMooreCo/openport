@@ -1,4 +1,5 @@
-"""Find OpenAI and Anthropic SDK calls in TypeScript and JavaScript, using tree-sitter.
+"""Find OpenAI and Anthropic SDK calls in TypeScript and JavaScript, using tree-sitter, and plain HTTP calls
+(fetch, axios, ky, got) to the same endpoints.
 
 The scanner only parses files. It never runs the code it reads.
 """
@@ -9,10 +10,21 @@ from functools import cache
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Node, Parser
 
-from .findings import ANTHROPIC_CLIENTS, CALL_SUFFIXES, OPENAI_CLIENTS, CallSiteFinding, features_for_api, infer_output
+from .findings import (
+    ANTHROPIC_CLIENTS,
+    CALL_SUFFIXES,
+    OPENAI_CLIENTS,
+    CallSiteFinding,
+    features_for_api,
+    http_endpoint,
+    http_features,
+    infer_output,
+)
 
 SDK_PACKAGES = {"openai": "openai", "@anthropic-ai/sdk": "anthropic"}
 _FUNCTION_TYPES = {"function_declaration", "method_definition", "arrow_function", "function_expression", "generator_function_declaration"}
+FETCHES = {"fetch", "$fetch", "ofetch"}
+SERVERS = re.compile(r"(?:^|\.)(?:app|router|server|fastify|hono|routes?|express)$", re.I)  # whose .post(path, ...) serves a route
 
 
 @cache
@@ -82,10 +94,100 @@ class _FileScanner:
         findings = []
         for node in _walk(self.root):
             if node.type == "call_expression":
-                finding = self._finding(node)
+                finding = self._finding(node) or self._http_finding(node)
                 if finding:
                     findings.append(finding)
         return findings
+
+    def _resolve(self, node: Node) -> Node:
+        """An identifier's declared value, when this file declares it."""
+        return self.declarations.get(_text(node), node) if node.type == "identifier" else node
+
+    def _resolved_text(self, node: Node) -> str:
+        """The expression's source, and the declarations it's built from, two levels deep."""
+        texts, seen, frontier = [_text(node)], set(), [node]
+        for _ in range(2):
+            names = {_text(n) for part in frontier for n in _walk(part) if n.type == "identifier"} - seen
+            seen |= names
+            frontier = [self.declarations[name] for name in names if name in self.declarations]
+            texts += [_text(part) for part in frontier]
+        return " ".join(texts)
+
+    def _http_finding(self, call: Node) -> CallSiteFinding | None:
+        """`fetch(url, {method: "POST", body: JSON.stringify(payload)})`, `axios.post(url, payload)` or
+        `ky.post(url, {json: payload})`, where the URL (or what it's built from) names an LLM endpoint."""
+        function, args = call.child_by_field_name("function"), call.child_by_field_name("arguments")
+        if function is None or args is None or not args.named_children:
+            return None
+        name = re.sub(r"\s+|\?|!", "", _text(function))
+        url, rest = args.named_children[0], list(args.named_children[1:])
+        if any(self._resolve(arg).type in _FUNCTION_TYPES for arg in rest):
+            return None  # app.post("/v1/chat/completions", handler): a server's route, not a call
+        callee = name.split(".")[-1]
+        if callee in FETCHES:
+            options = self._resolve(rest[0]) if rest else None
+            props = self._properties(options) if options is not None and options.type == "object" else {}
+            payload = props.get("body") or props.get("json")
+            if payload is None or _unquote(_text(props.get("method"))).upper() not in ("", "POST"):
+                return None  # a GET, or not a POST
+        elif callee == "post" and "." in name and not SERVERS.search(name.rsplit(".", 1)[0]):
+            payload = rest[0] if rest else None
+            options = self._resolve(payload) if payload is not None else None
+            props = self._properties(options) if options is not None and options.type == "object" else {}
+            if "json" in props and "model" not in props:  # ky and got take the body as {json: payload}
+                payload = props["json"]
+        else:
+            return None
+        api = http_endpoint(self._resolved_text(url))
+        if api is None:
+            return None
+
+        payload = self._resolve(payload) if payload is not None else None
+        if payload is not None and payload.type == "call_expression" and _text(payload.child_by_field_name("function")).replace(" ", "") == "JSON.stringify":
+            inner = payload.child_by_field_name("arguments")
+            payload = self._resolve(inner.named_children[0]) if inner is not None and inner.named_children else None
+        properties = self._properties(payload) if payload is not None and payload.type == "object" else {}
+        searchable = self._resolved_text(payload) if payload is not None else ""
+
+        features = http_features(api)
+        if "tools" in properties or "functions" in properties:
+            features.append("tools")
+        structured_kind = None
+        if "response_format" in properties:
+            structured_kind = "json_object" if "json_object" in _text(properties["response_format"]) else "json_schema"
+            features.append("json_mode" if structured_kind == "json_object" else "structured_output")
+        if {"thinking", "reasoning_effort", "reasoning"} & properties.keys():
+            features.append("thinking")
+        if _text(properties.get("stream")) == "true":
+            features.append("streaming")
+        if re.search(r"image_url|input_image|type\s*:\s*['\"]image['\"]", searchable):
+            features.append("vision")
+
+        model, model_expr = None, None
+        model_node = properties.get("model")
+        if model_node is not None:
+            resolved = self._resolve(model_node) if model_node.type != "shorthand_property_identifier" else self.declarations.get(_text(model_node))
+            if resolved is not None and resolved.type == "string":
+                model = _unquote(_text(resolved))
+            else:
+                model_expr = _text(model_node)
+
+        enclosing = self._enclosing_function(call)
+        return CallSiteFinding(
+            file=self.path,
+            line=call.start_point[0] + 1,
+            language="typescript",
+            function=self._function_name(call),
+            sdk="http",
+            api=api,
+            receiver=".".join(name.split(".")[:-1]) or name,
+            receiver_kind="http",
+            model=model,
+            model_expr=model_expr,
+            output=infer_output(api, features, structured_kind, enclosing is not None and _parses_json(enclosing, call)),
+            features=features,
+            in_tests=self.in_tests,
+        )
 
     def _finding(self, call: Node) -> CallSiteFinding | None:
         function = call.child_by_field_name("function")

@@ -17,9 +17,10 @@ SKIP_DIRS = {
 }
 TS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 MAX_FILE_BYTES = 500_000  # skip bundles and minified files
-# Every call the scanners match ends in one of these pairs (findings.CALL_SUFFIXES), so a file without one has
-# nothing to find and isn't parsed: most of a large repo's files.
-MAYBE_A_CALL = re.compile(rb"(?:completions|responses|embeddings|ChatCompletion|messages)(?:\s|\\)*\??\.(?:\s|\\)*(?:create|parse|stream)\b")
+# Every SDK call the scanners match ends in one of these pairs (findings.CALL_SUFFIXES), and every plain HTTP call
+# names one of these endpoints, so a file with neither has nothing to find and isn't parsed: most of a large repo's files.
+MAYBE_A_CALL = re.compile(rb"(?:completions|responses|embeddings|ChatCompletion|messages)(?:\s|\\)*\??\.(?:\s|\\)*(?:create|parse|stream)\b"
+                          rb"|/chat/completions|/v1/messages|/v1/responses|/v1/embeddings|api\.openai\.com|api\.anthropic\.com")
 
 
 @dataclass

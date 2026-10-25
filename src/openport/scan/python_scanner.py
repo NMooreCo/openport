@@ -1,4 +1,5 @@
-"""Find OpenAI and Anthropic SDK calls in Python source, using the standard `ast` module.
+"""Find OpenAI and Anthropic SDK calls in Python source, using the standard `ast` module, and plain HTTP calls
+(requests, httpx, aiohttp) to the same endpoints.
 
 The scanner only parses files. It never imports or runs the code it reads.
 """
@@ -11,10 +12,13 @@ from .findings import (
     OPENAI_CLIENTS,
     CallSiteFinding,
     features_for_api,
+    http_endpoint,
+    http_features,
     infer_output,
 )
 
 SDK_MODULES = {"openai": "openai", "anthropic": "anthropic"}
+HTTP_METHODS = {"post": 0, "request": 1, "stream": 1}  # method -> where its URL is among the positional arguments
 
 
 def _constructor_sdk(node: ast.AST) -> str | None:
@@ -69,6 +73,8 @@ class _FileScanner(ast.NodeVisitor):
         for statement in tree.body:
             self._index_module_statement(statement)
         self.local_clients: dict[int, dict[str, tuple[str, bool]]] = {}  # id(function) -> name -> (sdk, base_url)
+        # `@app.post("/v1/chat/completions")` serves the endpoint rather than calling it.
+        self.decorators = {id(d) for node in ast.walk(tree) if hasattr(node, "decorator_list") for d in node.decorator_list}
 
     # --- module-level indexing -------------------------------------------------------------------
 
@@ -130,9 +136,91 @@ class _FileScanner(ast.NodeVisitor):
         if match:
             sdk, api, receiver = match
             finding = self._finding(node, sdk, api, receiver)
-            if finding:
-                self.findings.append(finding)
+        else:
+            finding = self._http_finding(node)
+        if finding:
+            self.findings.append(finding)
         self.generic_visit(node)
+
+    def _assigned(self, names: set[str]) -> list[ast.AST]:
+        """The values assigned to these names: module constants, and assignments in the enclosing function."""
+        values = [self.constants[name] for name in names if name in self.constants]
+        function = self._current_function()
+        if function is not None:
+            values += [node.value for node in ast.walk(function)
+                       if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)]
+        return values
+
+    def _http_finding(self, call: ast.Call) -> CallSiteFinding | None:
+        """`requests.post(url, json=payload)`, `client.post(...)`, `session.request("POST", url, ...)`, where the URL
+        (or what it's built from) names an LLM endpoint such as /chat/completions or api.anthropic.com."""
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr not in HTTP_METHODS or id(call) in self.decorators:
+            return None
+        kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+        position = HTTP_METHODS[func.attr]
+        if position:  # request("POST", url) and stream("POST", url)
+            method = kwargs.get("method") or (call.args[0] if call.args else None)
+            if not (isinstance(method, ast.Constant) and str(method.value).upper() == "POST"):
+                return None
+        url = kwargs.get("url") or (call.args[position] if len(call.args) > position else None)
+        if url is None:
+            return None
+        names = {n.id for n in ast.walk(url) if isinstance(n, ast.Name)}
+        api = http_endpoint(" ".join(ast.unparse(value) for value in [url, *self._assigned(names)]))
+        if api is None:
+            return None
+
+        payload = kwargs.get("json")
+        body = kwargs.get("data") or kwargs.get("content")
+        if payload is None and isinstance(body, ast.Call) and body.args and ast.unparse(body.func).endswith("dumps"):
+            payload = body.args[0]  # data=json.dumps({...})
+        if isinstance(payload, ast.Name):
+            payload = next(iter(reversed(self._assigned({payload.id}))), payload)
+        keys = {k.value: v for k, v in zip(payload.keys, payload.values) if isinstance(k, ast.Constant)} if isinstance(payload, ast.Dict) else {}
+
+        features = http_features(api)
+        searchable = [payload] if payload is not None else []
+        if "tools" in keys or "functions" in keys:
+            features.append("tools")
+        structured_kind = None
+        if "response_format" in keys:
+            structured_kind = "json_object" if "json_object" in ast.unparse(keys["response_format"]) else "json_schema"
+            features.append("json_mode" if structured_kind == "json_object" else "structured_output")
+        if {"thinking", "reasoning_effort", "reasoning"} & keys.keys():
+            features.append("thinking")
+        if _is_true(keys.get("stream")):
+            features.append("streaming")
+        if _mentions(searchable, {"image_url", "input_image"}) or _has_type(searchable, "image"):
+            features.append("vision")
+
+        model, model_expr = None, None
+        model_node = keys.get("model")
+        if isinstance(model_node, ast.Constant) and isinstance(model_node.value, str):
+            model = model_node.value
+        elif model_node is not None:
+            model_expr = ast.unparse(model_node)
+            resolved = self.constants.get(model_node.id) if isinstance(model_node, ast.Name) else None
+            if isinstance(resolved, ast.Constant) and isinstance(resolved.value, str):
+                model = resolved.value
+
+        function = self._current_function()
+        return CallSiteFinding(
+            file=self.path,
+            line=call.lineno,
+            language="python",
+            function=self._function_name(),
+            sdk="http",
+            api=api,
+            receiver=ast.unparse(func.value),
+            receiver_kind="http",
+            model=model,
+            model_expr=model_expr,
+            output=infer_output(api, features, structured_kind, function is not None and _parses_json(function, call)),
+            features=features,
+            in_tests=self.in_tests,
+            module=_module_name(self.path),
+        )
 
     def _receiver_kind(self, receiver: ast.AST) -> tuple[str, str | None, bool]:
         """(kind, sdk the receiver was built with, whether that client sets a base_url)."""

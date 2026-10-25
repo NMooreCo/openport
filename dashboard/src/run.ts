@@ -32,7 +32,7 @@ export interface Finding {
   file: string;
   line: number;
   function: string;
-  sdk: "openai" | "anthropic";
+  sdk: "openai" | "anthropic" | "http"; // http: a plain HTTP call to an LLM endpoint, found but not ported
   api: string;
   model: string | null;
   model_expr: string | null;

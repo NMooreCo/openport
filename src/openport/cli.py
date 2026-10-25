@@ -156,9 +156,9 @@ def baseline(
 @app.command()
 def scan(
     target: str = typer.Argument(..., help="A local folder, or a GitHub repo (URL or owner/name)"),
-    include_tests: bool = typer.Option(False, help="Also list calls found in test files"),
+    include_tests: bool = typer.Option(False, help="Also list calls found in tests and in documentation's code samples"),
 ) -> None:
-    """Find every OpenAI and Anthropic SDK call in a repo, and what each one needs to run on Token Factory."""
+    """Find every OpenAI and Anthropic call in a repo (SDK or plain HTTP), and what each one needs to run on Token Factory."""
     from .scan import scan_repo
 
     root = _target_root(target)
@@ -186,7 +186,7 @@ def scan(
         f"\n{summary['call_sites']} LLM calls in {report.files_scanned} files: "
         f"{ports.get('auto', 0)} swap as-is, {ports.get('translate', 0)} need translating, "
         f"{ports.get('review', 0)} need review."
-        + (f" ({summary['in_tests']} more in test files; --include-tests to list them.)" if summary["in_tests"] and not include_tests else "")
+        + (f" ({summary['in_tests']} more in tests and docs; --include-tests to list them.)" if summary["in_tests"] and not include_tests else "")
     )
     if report.skipped:
         console.print(f"[yellow]Couldn't parse {len(report.skipped)} files: {', '.join(report.skipped[:5])}[/yellow]")

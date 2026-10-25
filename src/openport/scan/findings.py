@@ -1,5 +1,6 @@
 """What the scanner reports for each LLM call it finds, and what each finding means for the port."""
 
+import re
 from dataclasses import dataclass, field
 
 # Longest suffix first, so "chat.completions.create" wins over "completions.create".
@@ -26,9 +27,23 @@ ANTHROPIC_CLIENTS = {
     "Anthropic", "AsyncAnthropic", "AnthropicBedrock", "AsyncAnthropicBedrock", "AnthropicVertex", "AsyncAnthropicVertex",
 }
 
+# Plain HTTP calls (requests, httpx, fetch, axios...): the endpoint the URL names, as the SDK API it matches.
+HTTP_ENDPOINTS = [
+    (re.compile(r"/v1/messages\b|api\.anthropic\.com"), "messages"),
+    (re.compile(r"/v1/responses\b"), "responses"),
+    (re.compile(r"/v1/embeddings\b"), "embeddings"),
+    (re.compile(r"/chat/completions\b|api\.openai\.com"), "chat.completions"),
+]
+# The rest of OpenAI's API: files, audio, images and so on aren't chat calls.
+NOT_CHAT = re.compile(r"/v1/(?:files|audio|images|fine_tuning|fine-tunes|moderations|models|batches|uploads|vector_stores|"
+                      r"assistants|threads|realtime|organization)\b")
+
+NOT_APP_DIRS = {"test", "tests", "__tests__", "spec", "e2e", "evals", "benchmark", "benchmarks", "docs", "doc", "documentation", "versioned_docs"}
+
 # Features that need a person to look, rather than a mechanical rewrite.
 NEEDS_REVIEW = {
     "vision", "prefill", "ends_on_assistant", "dynamic_kwargs", "legacy_sdk", "embeddings", "anthropic_streaming",
+    "raw_http", "anthropic_http",
 }
 
 NOTES = {
@@ -48,6 +63,10 @@ NOTES = {
     "base_url_configurable": "Client already takes a base URL",
     "legacy_sdk": "Pre-1.0 OpenAI SDK: upgrade first",
     "embeddings": "Embeddings, not a chat call: out of scope",
+    "raw_http": "Plain HTTP call: point its URL at https://api.tokenfactory.nebius.com/v1 with a Nemotron model and NEBIUS_API_KEY; "
+                "OpenPort doesn't rewrite or test these yet",
+    "anthropic_http": "Plain HTTP call to Anthropic's Messages API: Token Factory has no Anthropic-style endpoint, so it moves to "
+                      "the chat-completions format first",
 }
 
 
@@ -57,7 +76,7 @@ class CallSiteFinding:
     line: int
     language: str  # "python" or "typescript"
     function: str  # enclosing function, e.g. "ReviewAgent.run", or "<module>"
-    sdk: str  # "openai" or "anthropic"
+    sdk: str  # "openai" or "anthropic", or "http" for a plain HTTP call to an LLM endpoint
     api: str  # e.g. "chat.completions", "chat.completions.parse", "responses", "messages"
     receiver: str  # the client expression, e.g. "client" or "self.client"
     receiver_kind: str  # module_global | imported | local | attribute | factory | other
@@ -103,6 +122,17 @@ def features_for_api(sdk: str, api: str) -> list[str]:
     return features
 
 
+def http_endpoint(url_text: str) -> str | None:
+    """The API a plain HTTP call's URL (and the values it's built from) names, or None if it isn't an LLM call."""
+    if NOT_CHAT.search(url_text):
+        return None
+    return next((api for pattern, api in HTTP_ENDPOINTS if pattern.search(url_text)), None)
+
+
+def http_features(api: str) -> list[str]:
+    return ["raw_http", *(["anthropic_http"] if api == "messages" else []), *(["embeddings"] if api == "embeddings" else [])]
+
+
 def infer_output(api: str, features: list[str], structured_kind: str | None, parses_json: bool) -> str:
     if api == "embeddings":
         return "embedding"
@@ -116,10 +146,11 @@ def infer_output(api: str, features: list[str], structured_kind: str | None, par
 
 
 def is_test_path(path: str) -> bool:
+    """Tests, benchmarks, and documentation's code samples: calls the app itself doesn't make."""
     parts = path.lower().split("/")
     name = parts[-1]
     return (
-        any(part in ("test", "tests", "__tests__", "spec") for part in parts[:-1])
+        any(part in NOT_APP_DIRS for part in parts[:-1])
         or name.startswith("test_")
         or name == "conftest.py"
         or any(name.endswith(suffix) for suffix in ("_test.py", ".test.ts", ".test.tsx", ".test.js", ".spec.ts", ".spec.js"))

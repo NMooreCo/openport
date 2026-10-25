@@ -51,7 +51,7 @@ export function CallCard({ site, state }: { site: Finding; state: RunState }) {
           <p className="mt-0.5 truncate font-mono text-xs text-muted">{site.file}:{site.line}</p>
         </div>
         <div className="flex shrink-0 gap-1.5 text-xs">
-          <span className="rounded-md bg-line px-2 py-0.5 text-slate-300">{site.sdk === "openai" ? "OpenAI" : "Anthropic"} · {site.output.replace(/_/g, " ")}</span>
+          <span className="rounded-md bg-line px-2 py-0.5 text-slate-300">{{ openai: "OpenAI", anthropic: "Anthropic", http: "HTTP" }[site.sdk]} · {site.output.replace(/_/g, " ")}</span>
           <span className={`rounded-md px-2 py-0.5 ${portability.className}`}>{portability.label}</span>
         </div>
       </header>

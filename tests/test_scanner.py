@@ -181,6 +181,125 @@ def test_typescript_edge_cases(tmp_path):
     assert report.summary()["call_sites"] == 5
 
 
+HTTP_PY = '''
+import json
+import os
+
+import httpx
+import requests
+from fastapi import FastAPI
+
+app = FastAPI()
+CHAT_URL = "https://api.openai.com/v1/chat/completions"
+BASE = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+
+
+def classify(ticket):
+    response = requests.post(CHAT_URL, headers={"Authorization": "Bearer x"}, json={
+        "model": "gpt-4o-mini", "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": ticket}]})
+    return json.loads(response.json()["choices"][0]["message"]["content"])
+
+
+async def summarize(text, client: httpx.AsyncClient):
+    url = f"{BASE}/chat/completions"
+    payload = {"model": MODEL, "messages": [{"role": "user", "content": text}], "stream": True}
+    return await client.post(url, json=payload)
+
+
+def ask_claude(question):
+    return httpx.post("https://api.anthropic.com/v1/messages", json={
+        "model": "claude-sonnet-5-5", "max_tokens": 512, "messages": [{"role": "user", "content": question}]})
+
+
+def upload(path):
+    return requests.post("https://api.openai.com/v1/files", files={"file": open(path, "rb")})  # not a chat call
+
+
+def ping():
+    return requests.post("https://example.com/hook", json={"ok": True})  # not an LLM endpoint
+
+
+@app.post("/v1/chat/completions")  # serves the endpoint rather than calling it
+def serve(body: dict):
+    return body
+'''
+
+HTTP_TS = """
+import axios from "axios";
+import ky from "ky";
+import express from "express";
+
+const app = express();
+const BASE = process.env.LLM_BASE_URL ?? "https://api.openai.com/v1";
+const url = `${BASE}/chat/completions`;
+
+export async function triage(ticket: string) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify({ model: "gpt-4o-mini", tools: [], messages: [{ role: "user", content: ticket }] }),
+  });
+  return res.json();
+}
+
+export async function draft(text: string) {
+  const payload = { model: "claude-sonnet-5-5", max_tokens: 256, messages: [{ role: "user", content: text }] };
+  return axios.post("https://api.anthropic.com/v1/messages", payload);
+}
+
+export async function embed(text: string) {
+  return ky.post("https://api.openai.com/v1/embeddings", { json: { model: "text-embedding-3-small", input: text } }).json();
+}
+
+export async function probe() {
+  return fetch("https://api.openai.com/v1/chat/completions"); // a GET with no body: not a call to the model
+}
+
+app.post("/v1/chat/completions", (req, res) => res.json({})); // a route the app serves
+router.post("/chat/completions", requireAuth, handleCompletion); // so is this, with imported handlers
+"""
+
+
+def test_plain_http_calls_to_llm_endpoints_are_found(tmp_path):
+    (tmp_path / "llm.py").write_text(HTTP_PY)
+    (tmp_path / "llm.ts").write_text(HTTP_TS)
+    sites = {(f.language, f.function): f for f in scan_repo(tmp_path).findings}
+    assert set(sites) == {("python", "classify"), ("python", "summarize"), ("python", "ask_claude"),
+                          ("typescript", "triage"), ("typescript", "draft"), ("typescript", "embed")}
+    classify, summarize, claude = sites["python", "classify"], sites["python", "summarize"], sites["python", "ask_claude"]
+    assert (classify.sdk, classify.api, classify.model, classify.output) == ("http", "chat.completions", "gpt-4o-mini", "json_object")
+    assert (summarize.model_expr, "streaming" in summarize.features) == ("MODEL", True)  # through f"{BASE}/chat/completions"
+    assert (claude.api, claude.model, "anthropic_http" in claude.features) == ("messages", "claude-sonnet-5-5", True)
+    triage, draft, embed = sites["typescript", "triage"], sites["typescript", "draft"], sites["typescript", "embed"]
+    assert (triage.api, triage.model, triage.output, triage.receiver) == ("chat.completions", "gpt-4o-mini", "tools", "fetch")
+    assert (draft.api, draft.model, draft.receiver) == ("messages", "claude-sonnet-5-5", "axios")
+    assert (embed.api, embed.output) == ("embeddings", "embedding")
+    assert {f.portability for f in sites.values()} == {"review"}
+
+
+def test_calls_in_docs_samples_benchmarks_and_e2e_arent_the_apps(tmp_path):
+    for folder in ("docs/examples", "benchmarks", "e2e"):
+        (tmp_path / folder).mkdir(parents=True)
+        (tmp_path / folder / "call.py").write_text(HTTP_PY)
+    report = scan_repo(tmp_path)
+    assert report.portable() == [] and report.summary()["in_tests"] == 9  # found, and listed with --include-tests
+
+
+def test_http_calls_are_reported_not_rewritten(tmp_path):
+    from openport.capture.draft import runnable
+    from openport.port.plan import build_plan
+
+    (tmp_path / "llm.py").write_text(HTTP_PY)
+    findings = scan_repo(tmp_path).findings
+    plan = build_plan(findings, {"nano": "n", "super": "s", "ultra": "u"}, assignments={f.id: "nano" for f in findings})
+    assert all(decision.keep for decision in plan.values())  # even when a plan names a model
+    claude = next(f for f in findings if f.function == "ask_claude")
+    assert "no Anthropic-style endpoint" in plan[claude.id].reason
+    assert "api.tokenfactory.nebius.com/v1" in plan[next(f.id for f in findings if f.function == "classify")].reason
+    assert runnable(claude) == (False, "a plain HTTP call: the eval harness runs OpenAI and Anthropic SDK calls")
+
+
 def test_only_files_that_could_hold_a_call_are_parsed(tmp_path):
     """Most of a big repo has no `completions.create`-style pair, so it isn't parsed; a call split over lines still is."""
     (tmp_path / "split.py").write_text(

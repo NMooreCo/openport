@@ -60,7 +60,9 @@ def build_plan(
 
         choice = (assigned or {}).get("model")
         blockers = BLOCKERS & set(finding.features)
-        if choice == "keep":
+        if finding.sdk == "http":  # the port rewrites SDK calls; this one says how to move it by hand
+            decision.keep_because(NOTES["anthropic_http" if "anthropic_http" in finding.features else "raw_http"])
+        elif choice == "keep":
             decision.keep_because((assigned or {}).get("reason") or "kept by the plan")
         elif choice:
             decision.model = models.get(choice, choice)
