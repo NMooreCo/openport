@@ -15,6 +15,9 @@ from pathlib import Path
 
 from openport import config
 from openport.capture.draft import runnable, ts_exported_params
+from openport.port.plan import build_plan
+from openport.port.python_rewrite import port_python
+from openport.port.ts_rewrite import port_typescript
 from openport.scan import SKIP_DIRS, _source_files, scan_repo
 from openport.workspace import fetch_repo
 
@@ -57,6 +60,12 @@ def study(target: str, advisories: bool) -> dict:
         testable += ok
         if not ok:
             reasons[re.sub(r"\(.*?\)|'.*?'", "…", why)] += 1
+    # What `openport port` would do with each call: the rewriters only read the repo and return what they'd write.
+    plan = build_plan(sites, {"nano": "nano", "super": "super", "ultra": "ultra"})
+    port_python(root, [s for s in sites if s.language == "python"], plan, b"")
+    port_typescript(root, [s for s in sites if s.language == "typescript"], plan)
+    ported = Counter(s.sdk for s in sites if not plan[s.id].keep)
+    kept = Counter(re.sub(r"\(.*?\)|`.*?`|'.*?'", "…", plan[s.id].reason) for s in sites if plan[s.id].keep)
     other = Counter()
     for path in _source_files(root):
         if path.stat().st_size > 500_000:
@@ -78,6 +87,8 @@ def study(target: str, advisories: bool) -> dict:
         "by_portability": dict(Counter(f.portability for f in sites)),
         "testable_as_is": testable,
         "not_testable_because": dict(reasons),
+        "ported": dict(ported),
+        "kept_because": dict(kept),
         "other_llm_access_files": dict(other),
         "lockfiles": lockfiles(root),
         "seconds": {"fetch": round(fetched - started, 1), "scan": round(scanned - fetched, 1)},

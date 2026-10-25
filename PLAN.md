@@ -303,6 +303,16 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - Next: rewriting OpenAI-style HTTP calls in the port, testing class methods without an adapter.
 - 208 offline tests.
 
+**Sat 24 (late night): the port on real code, and the study again.** Still no credit needed.
+- **The port moves plain HTTP calls now** (requests, httpx, aiohttp; fetch, axios, ky, got), where the code spells out their URL, key variable and model; a URL constant shared with calls that stay gets a second one, as a shared client is split. Tested end to end: a ported call's eval runs on the model its code names now.
+- **Then the port ran over the field study's 20 apps**, every change read. That review is why calls now stay put when they send or return audio, use the provider's own web search, post to a placeholder host or a server on the same machine, or pick their URL from a table of providers; and why clients stay when a factory picks between providers or the caller picks the base URL. It also found three bugs in the TypeScript client port (a shorthand `baseURL` or a spread overrode Token Factory's, same-named clients in two functions got confused, tab-indented files came out with spaces) and two false positives (Feishu's `/im/v1/messages`, generated REST clients), all fixed.
+- **Calls in class methods are testable**: each case builds the class (`init:` in the spec when it takes arguments), Python and Node alike. The port also links more clients: factories called with arguments, `this.client` in TypeScript, monorepo imports.
+- **Field study, rerun:** 207 calls (the false positives gone), 144 testable as written (70%, up from 102), and the port moves 71 of them as they are; every other call says why it stays. [docs/FIELD-STUDY.md](docs/FIELD-STUDY.md) has the per-app table and the reasons.
+- **Monorepos upgrade per project:** `openport upgrade --project <folder>` runs the bump and the tests in that folder, in a copy of the whole repo, with a PR and branch of its own; `upgrade-action --project` writes a workflow per project.
+- The AuthKit (Node) demo recording was re-recorded live (no credit needed), so the dashboard's replay quotes jsonwebtoken's changelog.
+- Next: following clients passed in by callers (50 calls stay for that), testing unexported TypeScript functions (32), the dashboard's monorepo picker, then the Monday re-measure once credit is back.
+- 216 offline tests.
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).

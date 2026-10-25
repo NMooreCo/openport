@@ -28,7 +28,7 @@ uv run openport scan examples/supportdesk
 uv run openport scan jsliapark/preflight
 ```
 
-Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Calls that can't move safely (images, for example) stay where they are, with the reason. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`.
+Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Plain HTTP calls to OpenAI-style endpoints move too, where the code spells out where they go: their URL (or base URL), the environment variable their key comes from, and their model are rewritten. Calls that can't move safely stay where they are, with the reason: images, audio, the provider's own web search, or a URL that comes from settings. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`.
 
 ```bash
 uv run openport port jsliapark/preflight
@@ -48,7 +48,7 @@ Measure the "plain swap" baseline for the SupportDesk demo app: what happens if 
 uv run openport baseline examples/supportdesk
 ```
 
-For a repo that has no eval spec yet, draft one. `openport capture` scans the repo and writes a starter `openport.evals.yaml` with a call site, a grader and a dataset per LLM call. The grader is chosen from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text). Point it at recorded calls to fill the datasets, or let Super invent inputs and label them — with Nemotron Ultra by default, or with `--label-with original` to run the app through its original closed model (needs that provider's key). Generated cases are flagged for review, and calls the harness can't run (methods, unexported TypeScript functions, plain HTTP calls) are listed in `CAPTURE_NOTES.md`. Where the client comes from doesn't matter: while a test runs, the OpenAI and Anthropic SDKs' own calls, sync or async, are routed to Nemotron. The result is runnable by `openport tune`.
+For a repo that has no eval spec yet, draft one. `openport capture` scans the repo and writes a starter `openport.evals.yaml` with a call site, a grader and a dataset per LLM call. The grader is chosen from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text). Point it at recorded calls to fill the datasets, or let Super invent inputs and label them — with Nemotron Ultra by default, or with `--label-with original` to run the app through its original closed model (needs that provider's key). Generated cases are flagged for review, and calls the harness can't run (a method whose class needs arguments to build, a TypeScript function that isn't exported) are listed in `CAPTURE_NOTES.md`, with what it would take. Where the client comes from doesn't matter: while a test runs, the OpenAI and Anthropic SDKs' own calls, sync or async, are routed to Nemotron, and so are plain HTTP requests to LLM endpoints. A call in a class's method runs on an instance built for each case; `init:` in the spec gives the arguments, when building one takes some. The result is runnable by `openport tune`.
 
 ```bash
 uv run openport capture examples/supportdesk --logs triage.triage_ticket=logs/triage.jsonl
@@ -119,13 +119,15 @@ uv run openport upgrade examples/authkit --apply    # upgrade a copy, prove it w
 uv run openport upgrade-action path/to/repo         # do it every Monday, as a GitHub Action
 ```
 
+**Monorepos.** A lockfile in a subproject is upgraded with `--project <folder>`: its package manager and tests run in that folder, in a copy of the whole repo, so path dependencies on its neighbours still resolve, and its PR and branch are its own. The dry run says which folder each vulnerable package is locked in. `upgrade-action --project` writes a weekly workflow per project.
+
 **Every week, on its own.** `openport upgrade-action` adds a GitHub Actions workflow that runs the same upgrade every Monday and opens a PR, or updates last week's, only when the repo's tests prove it. When they can't, the run fails, so someone hears about it. It needs a `NEBIUS_API_KEY` repository secret (and `TAVILY_API_KEY` for the changelog quotes). It hasn't run on GitHub yet: it installs OpenPort from this repo, which goes public at submission.
 
 On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5. Its Node twin, `authkit-node`, moves jsonwebtoken 8.5.1 to 9.0.0 (3 advisories) through npm, and its tests pass before and after, so it needs no code change.
 
 ## Field study: 20 popular AI apps
 
-OpenPort's scanner and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. Their own code holds 220 LLM calls in 14 of the apps: 132 through the OpenAI and Anthropic SDKs and 88 over plain HTTP, 102 of them testable as written. They also lock 746 known-vulnerable dependency versions in 19 of the apps, 92% with a fix at least a week old. The study taught OpenPort to find plain HTTP calls, made scans of large repos about 40 times faster, and taught the upgrader to read monorepos and `yarn.lock` and `bun.lock` files. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
+OpenPort's scanner, port and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. Their own code holds 207 LLM calls in 14 of the apps, 132 through the OpenAI and Anthropic SDKs and 75 over plain HTTP. 144 of them (70%) are testable as written, and the port moves 71 to Nemotron as they are; each of the rest stays with its reason, most often a provider chosen outside the code it edits. The apps also lock 746 known-vulnerable dependency versions in 19 of the apps, 92% with a fix at least a week old. The study taught OpenPort to find, test and move plain HTTP calls, to test calls in class methods, to keep calls Nemotron can't serve (audio, the provider's own web search) and clients whose provider is picked elsewhere, to scan large repos about 40 times faster, and to read and upgrade monorepos. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
 
 ## Dashboard
 

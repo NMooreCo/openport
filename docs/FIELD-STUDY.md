@@ -1,54 +1,58 @@
 # Field study: OpenPort on 20 popular open-source AI apps
 
-What OpenPort finds in the AI apps people actually run, how much of it it can test as written, and how much of their dependency tree it can upgrade. Run on Oct 24, 2026.
+What OpenPort finds in the AI apps people actually run, how much of it it can test as written, how much its port moves to Nemotron, and how much of their dependency tree it can upgrade. Run on Oct 24, 2026, and run again after each round of fixes it led to.
 
 ## How the apps were chosen
 
 The 20 most-starred applications and end-user tools on GitHub tagged `openai`, `anthropic`, `claude` or `chatgpt`, written in Python or TypeScript (GitHub search, Oct 24, 2026). Left out: SDKs and frameworks (LangChain, LiteLLM, AutoGen, mem0), model servers and training tools (vLLM, Unsloth), API gateways and unofficial API clients (OmniRoute, gpt4free), and collections of prompts, skills or links.
 
-Everything was static. Each repo was shallow-cloned and read, never run, by OpenPort's own scanner and its upgrade dry run, with OSV.dev's advisories as of that day. [`scripts/field_study.py`](../scripts/field_study.py) reproduces it.
+Everything was static. Each repo was shallow-cloned and read, never run, by OpenPort's own scanner, its port (which worked out each rewrite without writing it) and its upgrade dry run, with OSV.dev's advisories as of that day. [`scripts/field_study.py`](../scripts/field_study.py) reproduces it.
 
 ## What I found
 
-- **220 LLM calls in 14 of the 20 apps' own code:** 132 through the OpenAI and Anthropic SDKs, in 11 apps (72 OpenAI, 60 Anthropic), and 88 plain HTTP calls to OpenAI- or Anthropic-style endpoints, in 9. 161 are in Python and 59 in TypeScript; 51 use tool calling. Another 943 sit in tests, docs' code samples, benchmarks and evals, which OpenPort lists apart.
-- **102 of the 220 calls (46%) can be tested as written**, once the app's own dependencies are installed: 83 of the 132 SDK calls, wherever their client comes from, and 19 of the 88 HTTP calls, whose requests OpenPort redirects to its stand-in for the API. Most of the rest live in class methods (73) or in TypeScript functions that aren't exported (38). Those need a small adapter, like the one in OpenPort's [eval pack for preflight](../examples/evalpacks/preflight).
-- **The HTTP calls are reported with how to move them** (point the URL at Token Factory, pick a Nemotron model), but OpenPort doesn't rewrite them yet. A few more apps name an endpoint in their code but build the call from another file, which the scanner doesn't follow. 3 apps also use LiteLLM, 4 LangChain and 2 the Vercel AI SDK.
+- **207 LLM calls in 14 of the 20 apps' own code:** 132 through the OpenAI and Anthropic SDKs, in 11 apps (72 OpenAI, 60 Anthropic), and 75 plain HTTP calls to OpenAI- or Anthropic-style endpoints, in 9. 151 are in Python and 56 in TypeScript; 51 use tool calling. Another 943 sit in tests, docs' code samples, benchmarks and evals, which OpenPort lists apart.
+- **144 of the 207 calls (70%) can be tested as written**, once the app's own dependencies are installed: wherever their client comes from, in a function or in a class's method, and over plain HTTP too, whose requests OpenPort redirects to its stand-in for the API. Most of the rest are in TypeScript functions that aren't exported (32), or in methods of classes OpenPort can't build on its own (16): their constructors take arguments, which the spec can give as `init:`, or come from a base class it doesn't follow.
+- **`openport port` moves 71 of them (34%) to Nemotron as they are:** 59 SDK calls and 12 HTTP calls. Each of the other 136 stays where it is with the reason, and most reasons are a choice the code makes somewhere OpenPort doesn't rewrite:
+  - 50 get their client from code the port doesn't follow, most often passed in by their caller;
+  - 36 HTTP calls build their URL from settings or variables;
+  - 16 pick their provider at runtime: a factory choosing between providers, a client built from its caller's settings, or a table of endpoints.
+  - The rest are calls Nemotron on Token Factory can't serve as written: images (11), Anthropic's own HTTP format (10), embeddings (7), audio (3), the provider's own web search (1), OpenAI's Responses API over HTTP (1) and a streamed Anthropic response (1).
 - **19 of the 20 lock a dependency version with a known vulnerability:** 746 vulnerable versions out of 27,867 locked, with 3,302 advisories between them. 687 of those (92%) have a release that fixes at least one advisory and is at least a week old, 652 of them fixing every one. 37 are held back because the only fix is newer than a week, which is the supply-chain guard at work, and 22 have no fix yet.
-- **It's fast enough to run on a whim.** The largest repo here, lobehub's 18,195 files, scans in under 10 seconds; checking ruflo's 3,264 locked versions against OSV took two minutes.
+- **Most of these apps are monorepos.** AutoGPT's four `poetry.lock` files, lobehub's and claude-mem's lockfiles, and 20 of ruflo's `package-lock.json` files all sit in subprojects. `openport upgrade --project <folder>` upgrades one, with its own tests and the whole repo there for its path dependencies.
+- **It's fast enough to run on a whim.** The largest repo here, lobehub's 18,195 files, scans in under 10 seconds; checking ruflo's 3,264 locked versions against OSV took two minutes. 3 apps also reach models through LiteLLM, 4 through LangChain and 2 through the Vercel AI SDK, which OpenPort doesn't rewrite.
 
 ## Per app
 
-| Repo | Stars | Files | SDK calls | HTTP calls | Testable as written | Also reaches models via | Locked versions | Vulnerable | With a fix ≥ 7 days old |
-|---|---:|---:|---|---:|---:|---|---:|---:|---:|
-| [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | 256,806 | 15,307 | 14 OpenAI | 4 | 16 | LangChain | 2,627 | 11 | 7 |
-| [microsoft/markitdown](https://github.com/microsoft/markitdown) | 191,973 | 93 | 3 OpenAI | – | 1 | – | 0 | 0 | 0 |
-| [Significant-Gravitas/AutoGPT](https://github.com/Significant-Gravitas/AutoGPT) | 187,729 | 6,988 | 26 OpenAI + 3 Anthropic | 1 | 17 | – | 2,514 | 114 | 107 |
-| [langgenius/dify](https://github.com/langgenius/dify) | 159,437 | 11,629 | – | – | 0 | – | 626 | 11 | 6 |
-| [open-webui/open-webui](https://github.com/open-webui/open-webui) | 156,658 | 421 | – | 5 | 5 | – | 1,600 | 69 | 61 |
-| [langflow-ai/langflow](https://github.com/langflow-ai/langflow) | 155,985 | 8,397 | 2 OpenAI | – | 0 | LiteLLM, LangChain | 3,184 | 41 | 27 |
-| [paperclipai/paperclip](https://github.com/paperclipai/paperclip) | 106,951 | 8,998 | – | 2 | 2 | Vercel AI SDK | 1,795 | 38 | 37 |
-| [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 102,817 | 2,026 | – | – | 0 | – | 795 | 15 | 14 |
-| [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands) | 91,748 | 2,315 | – | – | 0 | – | 1,453 | 32 | 30 |
-| [ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) | 88,890 | 190 | – | – | 0 | – | 1,145 | 51 | 51 |
-| [lobehub/lobehub](https://github.com/lobehub/lobehub) | 83,470 | 18,195 | 12 OpenAI + 4 Anthropic | 4 | 2 | – | 1,732 | 23 | 17 |
-| [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) | 79,159 | 114 | 49 Anthropic | – | 40 | – | 235 | 8 | 8 |
-| [ruvnet/ruflo](https://github.com/ruvnet/ruflo) | 79,038 | 4,341 | 5 OpenAI | 26 | 10 | – | 3,264 | 230 | 227 |
-| [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) | 77,729 | 1,856 | 6 OpenAI + 4 Anthropic | 3 | 7 | LiteLLM, LangChain, Vercel AI SDK | 1,604 | 10 | 10 |
-| [calesthio/OpenMontage](https://github.com/calesthio/OpenMontage) | 71,581 | 447 | – | – | 0 | – | 243 | 6 | 6 |
-| [binary-husky/gpt_academic](https://github.com/binary-husky/gpt_academic) | 71,540 | 293 | 2 OpenAI | – | 0 | – | 21 | 4 | 3 |
-| [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) | 70,313 | 9,515 | – | 1 | 0 | – | 1,575 | 19 | 18 |
-| [Aider-AI/aider](https://github.com/Aider-AI/aider) | 49,739 | 160 | – | – | 0 | LiteLLM | 200 | 30 | 28 |
-| [zhayujie/CowAgent](https://github.com/zhayujie/CowAgent) | 47,562 | 1,133 | 1 OpenAI | 42 | 2 | – | 557 | 31 | 29 |
-| [LibreChat-AI/LibreChat](https://github.com/LibreChat-AI/LibreChat) | 46,258 | 6,580 | 1 OpenAI | – | 0 | LangChain | 2,697 | 3 | 1 |
+| Repo | Stars | Files | SDK calls | HTTP calls | Testable as written | Moved by the port | Also reaches models via | Locked versions | Vulnerable | With a fix ≥ 7 days old |
+|---|---:|---:|---|---:|---:|---:|---|---:|---:|---:|
+| [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | 256,806 | 15,307 | 14 OpenAI | 4 | 16 | 2 | LangChain | 2,627 | 11 | 7 |
+| [microsoft/markitdown](https://github.com/microsoft/markitdown) | 191,973 | 93 | 3 OpenAI | – | 1 | 0 | – | 0 | 0 | 0 |
+| [Significant-Gravitas/AutoGPT](https://github.com/Significant-Gravitas/AutoGPT) | 187,729 | 6,988 | 26 OpenAI + 3 Anthropic | 1 | 19 | 6 | – | 2,514 | 114 | 107 |
+| [langgenius/dify](https://github.com/langgenius/dify) | 159,437 | 11,629 | – | – | 0 | 0 | – | 626 | 11 | 6 |
+| [open-webui/open-webui](https://github.com/open-webui/open-webui) | 156,658 | 421 | – | 5 | 5 | 0 | – | 1,600 | 69 | 61 |
+| [langflow-ai/langflow](https://github.com/langflow-ai/langflow) | 155,985 | 8,397 | 2 OpenAI | – | 2 | 0 | LiteLLM, LangChain | 3,184 | 41 | 27 |
+| [paperclipai/paperclip](https://github.com/paperclipai/paperclip) | 106,951 | 8,998 | – | 2 | 2 | 0 | Vercel AI SDK | 1,795 | 38 | 37 |
+| [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 102,817 | 2,026 | – | – | 0 | 0 | – | 795 | 15 | 14 |
+| [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands) | 91,748 | 2,315 | – | – | 0 | 0 | – | 1,453 | 32 | 30 |
+| [ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) | 88,890 | 190 | – | – | 0 | 0 | – | 1,145 | 51 | 51 |
+| [lobehub/lobehub](https://github.com/lobehub/lobehub) | 83,470 | 18,195 | 12 OpenAI + 4 Anthropic | 1 | 5 | 4 | – | 1,732 | 23 | 17 |
+| [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) | 79,159 | 114 | 49 Anthropic | – | 40 | 45 | – | 235 | 8 | 8 |
+| [ruvnet/ruflo](https://github.com/ruvnet/ruflo) | 79,038 | 4,341 | 5 OpenAI | 26 | 13 | 14 | – | 3,264 | 230 | 227 |
+| [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) | 77,729 | 1,856 | 6 OpenAI + 4 Anthropic | 3 | 7 | 0 | LiteLLM, LangChain, Vercel AI SDK | 1,604 | 10 | 10 |
+| [calesthio/OpenMontage](https://github.com/calesthio/OpenMontage) | 71,581 | 447 | – | – | 0 | 0 | – | 243 | 6 | 6 |
+| [binary-husky/gpt_academic](https://github.com/binary-husky/gpt_academic) | 71,540 | 293 | 2 OpenAI | – | 1 | 0 | – | 21 | 4 | 3 |
+| [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) | 70,313 | 9,515 | – | 1 | 0 | 0 | – | 1,575 | 19 | 18 |
+| [Aider-AI/aider](https://github.com/Aider-AI/aider) | 49,739 | 160 | – | – | 0 | 0 | LiteLLM | 200 | 30 | 28 |
+| [zhayujie/CowAgent](https://github.com/zhayujie/CowAgent) | 47,562 | 1,133 | 1 OpenAI | 32 | 33 | 0 | – | 557 | 31 | 29 |
+| [LibreChat-AI/LibreChat](https://github.com/LibreChat-AI/LibreChat) | 46,258 | 6,580 | 1 OpenAI | – | 0 | 0 | LangChain | 2,697 | 3 | 1 |
 
 Calls count only the app's own code, not its tests, docs' samples, benchmarks or evals. "Vulnerable" counts dependency versions: a package locked at two versions counts twice. markitdown locks nothing (it ships a `pyproject.toml` without a lockfile).
 
 ## What it changed in OpenPort
 
-The study found eight problems in OpenPort, all fixed the same day:
+Each problem the study found was fixed the same day, and the study run again. The first round:
 
-- **Most calls couldn't be tested as written.** The test harness swapped the module attribute a call got its client from, so a client built in a function, kept on `self` or made by a factory was out of reach, async code wasn't run at all, and neither were TypeScript calls on Anthropic's SDK or plain HTTP calls. It now routes the SDKs' own calls, sync and async, while a test runs, and redirects HTTP requests to LLM endpoints to its stand-in for the API: 102 of the 220 calls are testable as written, up from 47.
-
+- **Most calls couldn't be tested as written.** The test harness swapped the module attribute a call got its client from, so a client built in a function, kept on `self` or made by a factory was out of reach, async code wasn't run at all, and neither were TypeScript calls on Anthropic's SDK or plain HTTP calls. It now routes the SDKs' own calls, sync and async, while a test runs, and redirects HTTP requests to LLM endpoints to its stand-in for the API.
 - **It missed the commonest way these apps reach a model: plain HTTP.** The scanners now find requests, httpx and aiohttp posts in Python, and fetch, axios, ky and got posts in TypeScript, whose URL names an LLM endpoint. They read the model, tools, JSON mode and streaming from the payload, and leave out server routes and OpenAI's non-chat paths.
 - **Docs' code samples, benchmarks and evals counted as the app's calls.** Langflow's docs alone held 108 of them. They're listed apart now, like tests.
 - **Scans of large repos took minutes** (hermes-agent's 15,307 files: three). OpenPort now parses only the files that can hold a call. It found the same calls, and the 19 repos it had scanned before the change took 27 seconds instead of 17 minutes.
@@ -57,11 +61,22 @@ The study found eight problems in OpenPort, all fixed the same day:
 - **AutoGPT wouldn't clone on Windows** (paths over 260 characters) and left a broken folder that later scans would have reused. Clones now allow long paths and never leave a half-done folder behind.
 - **The repos' own invalid escape sequences** printed Python warnings during the scan. They're silenced now.
 
+The second round, from running the port itself over the 20 apps and reading every change it made:
+
+- **HTTP calls were found, but the port left them alone.** It now moves an OpenAI-style one where the code spells out where it goes: the URL or base URL, the environment variable the key comes from, and the model, plus the tuned settings. A URL constant that calls staying behind also use gets a second constant, as a shared client is split.
+- **Some of what it moved should never have moved.** Reading the diffs turned up speech to text and text to speech over chat completions (`input_audio`, audio output), a search API that answers from the web, an app posting to its own server (a host built from variables), a model server on the same machine, and a table of providers whose every entry pointed at Token Factory afterwards. Audio and the provider's web search now keep a call where it is, like images, and so do placeholder hosts, local servers and tables of endpoints.
+- **Two other APIs read as Anthropic's.** Feishu's chat API also posts to `/im/v1/messages` (10 of CowAgent's calls), and a generated client for lobehub's own REST API names `/api/v1/messages` (3 more). Neither counts now: 207 calls, not 220.
+- **Calls in class methods couldn't be tested without an adapter.** The harness now builds the class for each case (with `init:` from the spec when it takes arguments), and calls static methods on the class: 144 of the 207 calls are testable as written, up from 102 (and 47 before the first round).
+- **The port didn't find clients made by factories called with arguments, kept on `this` in TypeScript, or imported in a monorepo** (from a project's own folder, not the repo root). It does now, and it keeps clients whose provider is chosen elsewhere: a factory switching between providers, like AutoGPT's OpenRouter-or-OpenAI one, or a client built from its caller's settings. Rewriting those would override a choice made outside the code it edits.
+- **Three bugs in its TypeScript port.** A shorthand `baseURL` or options spread in after Token Factory's settings overrode them, two functions each with their own `const openai` were taken for one call choosing between two clients, and edits came out space-indented in tab-indented files.
+- **A monorepo's subprojects could only be read, not upgraded.** `openport upgrade --project <folder>` (and `upgrade-action --project`) upgrades one, with its own tests, in a copy of the whole repo.
+
 ## What it says to build next
 
-- **Rewriting and testing plain HTTP calls**, now that they're found. An OpenAI-style one moves to Token Factory with a URL and a model name.
-- **Testing calls in class methods without an adapter**, which needs a way to build the object first.
-- **Updating `yarn.lock`, `bun.lock` and subprojects' lockfiles**, not just reading them.
+- **Following clients passed in by the caller**, the most common reason (50 calls) a call stays where it is.
+- **Testing TypeScript functions that aren't exported** (32 calls), say by loading a copy of the module that exports them.
+- **Reading the settings that plain HTTP calls take their URL from** (36 calls), where a project keeps them in its own files.
+- **Updating `yarn.lock` and `bun.lock`**, not just reading them.
 
 ## Reproduce
 
@@ -69,4 +84,5 @@ The study found eight problems in OpenPort, all fixed the same day:
 uv run python scripts/field_study.py --advisories NousResearch/hermes-agent lobehub/lobehub   # any repos
 uv run openport scan NousResearch/hermes-agent        # one repo's calls, as a table
 uv run openport upgrade NousResearch/hermes-agent     # its vulnerable dependencies (a dry run: nothing is run)
+uv run openport port shareAI-lab/learn-claude-code    # a ported copy, its diff, and why each call that stays, stays
 ```
