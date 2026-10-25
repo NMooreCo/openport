@@ -70,6 +70,7 @@ The second round, from running the port itself over the 20 apps and reading ever
 - **The port didn't find clients made by factories called with arguments, kept on `this` in TypeScript, or imported in a monorepo** (from a project's own folder, not the repo root). It does now, and it keeps clients whose provider is chosen elsewhere: a factory switching between providers, like AutoGPT's OpenRouter-or-OpenAI one, or a client built from its caller's settings. Rewriting those would override a choice made outside the code it edits.
 - **Three bugs in its TypeScript port.** A shorthand `baseURL` or options spread in after Token Factory's settings overrode them, two functions each with their own `const openai` were taken for one call choosing between two clients, and edits came out space-indented in tab-indented files.
 - **TypeScript functions their module doesn't export couldn't be tested.** The Node runner now exports one as its module loads, after tsx or Node's type stripping has compiled it: an ES module gets `export { name };`, a CommonJS one `module.exports.name = name;` inside tsx's wrapper. The file is never written.
+- **`yarn.lock` and `bun.lock` could only be read**, and 5 of the 20 apps lock with Yarn or bun. Both are upgraded now, by the repo's own Yarn (1, or 2+ through corepack) or bun, with their own age gates where the version has one, and tested with them.
 - **A monorepo's subprojects could only be read, not upgraded.** `openport upgrade --project <folder>` (and `upgrade-action --project`) upgrades one, with its own tests, in a copy of the whole repo.
 
 ## What it says to build next
@@ -77,7 +78,6 @@ The second round, from running the port itself over the 20 apps and reading ever
 - **Following a client from where it's made to where it's used**, through callers and other modules: the most common reason (50 calls) a call stays where it is.
 - **Building classes that take arguments** (20 calls), from what the app's own tests build them with.
 - **Reading the settings that plain HTTP calls take their URL from** (36 calls), where a project keeps them in its own files.
-- **Updating `yarn.lock` and `bun.lock`**, not just reading them.
 
 ## Reproduce
 

@@ -315,6 +315,12 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - Next: following a client from where it's made through callers (50 calls stay for that), building classes that take arguments from the app's own tests (20), then the Monday re-measure once credit is back.
 - 218 offline tests.
 
+**Sun 25 (early): Yarn and bun upgrades.**
+- **`yarn.lock` and `bun.lock` are upgraded now, not just read** (5 of the field study's 20 apps lock with them). Each runs the repo's own package manager in the Node container: Yarn 2+ through corepack at its `packageManager` or committed release (`yarn up`, lockfile only), Yarn 1 as the image has it, and bun installed from npm at the repo's version (else one that keeps its lockfile's format), so a test script that calls node still runs. Age gates where the version has one: bun's `--minimum-release-age` from 1.3, Yarn's `npmMinimalAgeGate` from 4.10 (in minutes; 4.9 refuses the setting). Transitive packages get `overrides` (bun) or `resolutions` (Yarn), and tests run with `bun run test` or `yarn test` after a frozen or immutable install.
+- **Exact versions under the old range:** a direct dependency is added at the chosen version, then gets its range style back (`^8.5.1` becomes `^9.0.0`) with the lock still at that version, which takes `yarn set resolution` on Yarn 2+, the same edit to a Yarn 1 lockfile, and a re-lock on bun. Without it, bun and Yarn 1 locked jsonwebtoken 9.0.3 where the PR said 9.0.0.
+- Checked live in Docker on AuthKit (Node) as a bun, a Yarn 1 and a Yarn 4 project: proven each time (5 passed before and after), the lockfiles at exactly 9.0.0 under `^9.0.0`, and the diffs touch only `package.json` and the lockfile.
+- 221 offline tests.
+
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
 - Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).

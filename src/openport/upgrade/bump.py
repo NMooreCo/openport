@@ -1,12 +1,14 @@
 """Bump locked dependencies the way their package manager would, in a throwaway container.
 
-requirements.txt pins are edited in place (apply.py). uv.lock, poetry.lock, package-lock.json and
-pnpm-lock.yaml are rewritten by uv, Poetry, npm and pnpm themselves, run in a container with only a scratch
-copy of the upgrade mounted: nothing is installed on the host, and npm and pnpm run no install scripts.
-Each resolves only releases older than the cutoff (uv's --exclude-newer, npm's --before, Poetry's
-solver.min-release-age, pnpm's minimumReleaseAge), so the supply-chain guard covers every package a bump
-pulls in, not just the one being upgraded. Before a new lockfile is kept, every version it adds is checked
-against the registry's release dates too (`too_new`), which also covers pnpm releases older than 10.16.
+requirements.txt pins are edited in place (apply.py). uv.lock, poetry.lock, package-lock.json,
+pnpm-lock.yaml, yarn.lock and bun.lock are rewritten by uv, Poetry, npm, pnpm, Yarn and bun themselves,
+run in a container with only a scratch copy of the upgrade mounted: nothing is installed on the host, and
+the Node package managers run no install scripts. Each resolves only releases older than the cutoff (uv's
+--exclude-newer, npm's --before, Poetry's solver.min-release-age, pnpm's minimumReleaseAge, Yarn's
+npmMinimalAgeGate, bun's --minimum-release-age), so the supply-chain guard covers every package a bump pulls
+in, not just the one being upgraded. Before a new lockfile is kept, every version it adds is checked against
+the registry's release dates too (`too_new`), which also covers the versions of each tool that lack a gate
+(pnpm before 10.16, Yarn 1 and Yarn before 4.10, bun before 1.3).
 """
 
 import json
@@ -22,17 +24,51 @@ from typing import Callable
 import yaml
 
 from .apply import _read
-from .lockfiles import Dependency, parse_package_lock, parse_pnpm_lock, parse_toml_lock
-from .testrun import NODE_IMAGE, POETRY_INSTALL, PYTHON_IMAGE, UV_INSTALL, pnpm_install, pnpm_version
+from .lockfiles import Dependency, parse_bun_lock, parse_package_lock, parse_pnpm_lock, parse_toml_lock, parse_yarn_lock
+from .testrun import (COREPACK, NODE_IMAGE, POETRY_INSTALL, PYTHON_IMAGE, UV_INSTALL, bun_install, bun_version, pnpm_install,
+                      pnpm_version, yarn_berry, yarn_version)
 
-LOCKFILES = ("uv.lock", "poetry.lock", "package-lock.json", "pnpm-lock.yaml")  # what OpenPort can bump, besides requirements.txt pins
+# What OpenPort can bump, besides requirements.txt pins.
+LOCKFILES = ("uv.lock", "poetry.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock")
 NPM_LOCK_ONLY = "npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
 PARSERS = {
     "uv.lock": lambda text: parse_toml_lock(text, "uv.lock"),
     "poetry.lock": lambda text: parse_toml_lock(text, "poetry.lock"),
     "package-lock.json": parse_package_lock,
     "pnpm-lock.yaml": parse_pnpm_lock,
+    "yarn.lock": parse_yarn_lock,
+    "bun.lock": parse_bun_lock,
 }
+
+# Run with node in the container: give package.json's direct dependencies their ranges back ({name: "^9.0.0"}),
+# after the package manager added them at their exact new version. Its own indentation stays.
+_SET_RANGES = '''const fs = require("fs");
+const ranges = JSON.parse(process.argv[1]);
+const text = fs.readFileSync("package.json", "utf8");
+const pkg = JSON.parse(text);
+for (const group of ["dependencies", "devDependencies", "optionalDependencies"])
+  for (const [name, range] of Object.entries(ranges)) if (name in (pkg[group] || {})) pkg[group][name] = range;
+const indent = (text.match(/\\n([ \\t]+)"/) || [null, "  "])[1];
+fs.writeFileSync("package.json", JSON.stringify(pkg, null, indent) + "\\n");
+'''
+
+# Run with node: in a Yarn 1 yarn.lock, the entry that `name@9.0.0` resolved to answers `name@^9.0.0` instead,
+# which is what Yarn would have written had it kept 9.0.0 for the range (it re-resolves a new range to the
+# newest release instead). Keys are quoted the way Yarn quotes them.
+_YARN1_PATTERNS = '''const fs = require("fs");
+const swaps = JSON.parse(process.argv[1]);
+const quote = (key) => /^(true|false)|[:\\s\\\\",\\[\\]]|^[0-9]|^[^a-zA-Z]/.test(key) ? JSON.stringify(key) : key;
+const lines = fs.readFileSync("yarn.lock", "utf8").split("\\n");
+for (let i = 0; i < lines.length; i++) {
+  const cr = lines[i].endsWith("\\r") ? "\\r" : "";
+  const line = cr ? lines[i].slice(0, -1) : lines[i];
+  if (!line || /^[\\s#]/.test(line) || !line.endsWith(":")) continue;
+  const keys = line.slice(0, -1).split(", ").map((key) => key.replace(/^"(.*)"$/, "$1"));
+  if (!keys.some((key) => key in swaps)) continue;
+  lines[i] = [...new Set(keys.map((key) => swaps[key] ?? key))].sort().map(quote).join(", ") + ":" + cr;
+}
+fs.writeFileSync("yarn.lock", lines.join("\\n"));
+'''
 
 # Runs in the container with Poetry installed. Poetry can't move one locked package to a given version, so
 # each is pinned with `poetry add --lock` first; then pyproject.toml goes back as it was and `poetry lock`
@@ -248,7 +284,99 @@ def pnpm_step(folder: Path, bumps: dict[str, str], cutoff: datetime) -> BumpStep
     return BumpStep("pnpm-lock.yaml", NODE_IMAGE, " && ".join(commands), list(bumps), ("package.json", "pnpm-workspace.yaml"), writes)
 
 
-STEPS = {"uv.lock": uv_step, "poetry.lock": poetry_step, "package-lock.json": npm_step, "pnpm-lock.yaml": pnpm_step}
+def _at_least(version: str, *least: int) -> bool:
+    return tuple(int(part) for part in version.split(".")[: len(least)]) >= least
+
+
+def _ranges(package: dict, bumps: dict[str, str]) -> dict[str, str]:
+    """The ranges direct dependencies go back to after an exact add: ^8.5.1 becomes ^9.0.0, ~1.2.0 becomes ~1.3.1."""
+    ranges = {}
+    for group in ("dependencies", "devDependencies", "optionalDependencies"):
+        for name, spec in (package.get(group) or {}).items():
+            if name in bumps and isinstance(spec, str) and spec[:1] in ("^", "~"):
+                ranges.setdefault(name, spec[0] + bumps[name])
+    return ranges
+
+
+def _node(script: str, data: dict) -> str:
+    return f"node -e {shlex.quote(script)} {shlex.quote(json.dumps(data))}"
+
+
+def _transitive(folder: Path, bumps: dict[str, str], field_name: str) -> tuple[dict, dict[str, str], dict[str, str]]:
+    """(package.json, its direct dependencies' groups, the writes that pin the transitive bumps in `field_name`)."""
+    text = _read(Path(folder) / "package.json")
+    package = json.loads(text)
+    direct = _direct(package)
+    pins = {name: target for name, target in bumps.items() if name not in direct}
+    writes = {}
+    if pins:
+        updated = {**package, field_name: {**(package.get(field_name) or {}), **pins}}
+        writes["package.json"] = _dump_like(updated, text)
+    return package, direct, writes
+
+
+def bun_step(folder: Path, bumps: dict[str, str], cutoff: datetime) -> BumpStep:
+    """`bun add` at each direct dependency's exact new version, then its range back (bun keeps the locked version
+    when it still satisfies the range); a transitive one gets an `overrides` entry. Run with the repo's own bun."""
+    folder = Path(folder)
+    version = bun_version(folder)
+    package, direct, writes = _transitive(folder, bumps, "overrides")
+    gate = f" --minimum-release-age={_age(cutoff, 1)}" if _at_least(version, 1, 3) else ""
+    flags = f"--lockfile-only --ignore-scripts{gate}"
+    saves = {"dependencies": "", "devDependencies": " --dev", "optionalDependencies": " --optional"}
+    adds: dict[str, list[str]] = {}
+    for name, target in bumps.items():
+        if name in direct:
+            adds.setdefault(saves[direct[name]], []).append(f"{name}@{target}")
+    commands = [bun_install(version)]
+    commands += [f"bun add {flags}{save} " + " ".join(shlex.quote(spec) for spec in specs) for save, specs in adds.items()]
+    ranges = _ranges(package, bumps)
+    if ranges:
+        commands.append(_node(_SET_RANGES, ranges))
+    if ranges or not adds:
+        commands.append(f"bun install {flags}")
+    return BumpStep("bun.lock", NODE_IMAGE, " && ".join(commands), list(bumps), ("package.json",), writes)
+
+
+def yarn_step(folder: Path, bumps: dict[str, str], cutoff: datetime) -> BumpStep:
+    """Yarn 2+ (`yarn up`, its lockfile only) with the repo's own Yarn, or Yarn 1 (`yarn add`). Each direct
+    dependency is added at its exact new version, then gets its range back with the lock entry kept at that
+    version (`yarn set resolution`, or the same edit to a Yarn 1 lockfile); a transitive one gets a
+    `resolutions` entry. Yarn 4.10 and later hold back new releases themselves (npmMinimalAgeGate)."""
+    folder = Path(folder)
+    package, direct, writes = _transitive(folder, bumps, "resolutions")
+    ranges = _ranges(package, bumps)
+    specs = [shlex.quote(f"{name}@{target}") for name, target in bumps.items() if name in direct]
+    if yarn_berry(folder):
+        version = yarn_version(folder)
+        if version is None:
+            return _failing("yarn.lock", NODE_IMAGE, "error: can't tell which yarn wrote yarn.lock", bumps)
+        commands = [COREPACK]
+        if _at_least(version, 4, 10):  # in minutes; earlier Yarns refuse the setting
+            commands.append(f"export YARN_NPM_MINIMAL_AGE_GATE={_age(cutoff, 60)}")
+        commands.append("yarn up --mode=update-lockfile " + " ".join(specs) if specs else "yarn install --mode=update-lockfile")
+        if ranges:
+            commands.append(_node(_SET_RANGES, ranges))
+            commands += [f"yarn set resolution {shlex.quote(f'{name}@npm:{spec}')} {shlex.quote(f'npm:{bumps[name]}')}"
+                         for name, spec in ranges.items()]
+    else:
+        root = " -W" if package.get("workspaces") else ""  # adding at a workspace's root needs saying so
+        saves = {"dependencies": "", "devDependencies": " --dev", "optionalDependencies": " --optional"}
+        adds: dict[str, list[str]] = {}
+        for name, target in bumps.items():
+            if name in direct:
+                adds.setdefault(saves[direct[name]], []).append(shlex.quote(f"{name}@{target}"))
+        flags = "--ignore-scripts --non-interactive"
+        commands = [f"yarn add {flags}{save}{root} " + " ".join(group) for save, group in adds.items()] or [f"yarn install {flags}"]
+        if ranges:
+            commands.append(_node(_SET_RANGES, ranges))
+            commands.append(_node(_YARN1_PATTERNS, {f"{name}@{bumps[name]}": f"{name}@{spec}" for name, spec in ranges.items()}))
+            commands.append(f"yarn install {flags} --frozen-lockfile")  # the edited lockfile has to satisfy package.json as it is
+    return BumpStep("yarn.lock", NODE_IMAGE, " && ".join(commands), list(bumps), ("package.json",), writes)
+
+
+STEPS = {"uv.lock": uv_step, "poetry.lock": poetry_step, "package-lock.json": npm_step, "pnpm-lock.yaml": pnpm_step,
+         "yarn.lock": yarn_step, "bun.lock": bun_step}
 
 
 def bump_steps(folder: Path, bumps: dict[str, dict[str, str]], cutoff: datetime) -> list[BumpStep]:

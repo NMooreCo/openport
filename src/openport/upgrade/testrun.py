@@ -2,7 +2,7 @@
 
 Fetched code is only ever run inside a container with just a scratch copy of the upgrade mounted,
 never on the host. The command suits the project: pip and pytest for a requirements file, uv or Poetry
-for their projects, npm or pnpm for a Node project with a test script; a repo upgraded in both
+for their projects, npm, pnpm, Yarn or bun for a Node project with a test script; a repo upgraded in both
 ecosystems runs both suites, and every one must pass. Pass another image and command for other stacks.
 """
 
@@ -33,8 +33,14 @@ POETRY_TESTS = (
 NODE_TESTS = "npm ci --no-audit --no-fund && npm test"
 NO_NODE_TESTS = "echo 'package.json has no test script, so the npm upgrades can't be proven' && exit 1"
 NO_PNPM = "echo \"error: can't tell which pnpm wrote pnpm-lock.yaml\" && exit 1"
+NO_YARN = "echo \"error: can't tell which yarn wrote yarn.lock\" && exit 1"
 PNPM_VERSION = "10.34.7"  # for a repo that doesn't name its pnpm; 10.16 added minimumReleaseAge
 PNPM_FOR_LOCKFILE = {"9": PNPM_VERSION, "6": "8.15.9"}  # lockfileVersion's major -> a pnpm that writes that format
+# bun runs inside the Node image (installed from npm), so a test script that calls node still works. A bun.lock
+# with "configVersion" was written by bun 1.3.2 or later; an older one gets a bun that keeps its format and still
+# has --minimum-release-age (added in 1.3.0).
+BUN_VERSION, BUN_OLD_FORMAT = "1.4.0", "1.3.1"
+COREPACK = "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 && corepack enable"  # Yarn 2+ comes from the repo's packageManager
 _SUMMARY = re.compile(r"\d+ (?:passed|failed|errors?)\b|no tests ran|error", re.IGNORECASE)
 _NODE_COUNT = re.compile(r"^(?:#|ℹ)\s*(pass|fail)\s+(\d+)\s*$")  # node --test: "# pass 5" (TAP) or "ℹ pass 5" (spec)
 
@@ -79,6 +85,47 @@ def pnpm_install(version: str) -> str:
     return f"npm install -g --no-audit --no-fund --loglevel=error pnpm@{version}"
 
 
+def _manager(folder: Path, name: str) -> str | None:
+    """The version of `name` that package.json's packageManager names, if it does."""
+    package = Path(folder) / "package.json"
+    manager = json.loads(package.read_text(encoding="utf-8")).get("packageManager") if package.is_file() else None
+    named = re.fullmatch(rf"{name}@(\d+\.\d+\.\d+)(?:\+\S*)?", str(manager or ""))
+    return named[1] if named else None
+
+
+def bun_version(folder: Path) -> str:
+    """The bun a repo uses: the one its package.json names, else one that keeps its bun.lock's format."""
+    lock = Path(folder) / "bun.lock"
+    newer = lock.is_file() and '"configVersion"' in lock.read_text(encoding="utf-8", errors="replace")
+    return _manager(folder, "bun") or (BUN_VERSION if newer else BUN_OLD_FORMAT)
+
+
+def bun_install(version: str) -> str:
+    return f"npm install -g --no-audit --no-fund --no-update-notifier --loglevel=error bun@{version}"
+
+
+def yarn_version(folder: Path) -> str | None:
+    """The Yarn 2+ a repo uses: its package.json's packageManager, or the release .yarnrc.yml points at."""
+    named = _manager(folder, "yarn")
+    rc = Path(folder) / ".yarnrc.yml"
+    path = re.search(r"^yarnPath:\s*['\"]?\S*?yarn-(\d+\.\d+\.\d+)\.c?js", rc.read_text(encoding="utf-8"), re.M) if rc.is_file() else None
+    return named or (path[1] if path else None)
+
+
+def yarn_berry(folder: Path) -> bool:
+    lock = Path(folder) / "yarn.lock"
+    return lock.is_file() and "__metadata:" in lock.read_text(encoding="utf-8", errors="replace")
+
+
+def node_manager(folder: Path) -> str:
+    """Which package manager installs a Node project: the one whose lockfile it has (npm's first)."""
+    folder = Path(folder)
+    for lockfile, manager in (("package-lock.json", "npm"), ("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun")):
+        if (folder / lockfile).is_file():
+            return manager
+    return "npm"
+
+
 def test_setups(folder: Path, ecosystems: set[str]) -> list[tuple[str, str, str]]:
     """(name, image, command) for each test suite the upgraded ecosystems need: npm's or pnpm's for npm
     packages, Python's for PyPI ones. A Node project without a test script can't prove its upgrade."""
@@ -87,15 +134,22 @@ def test_setups(folder: Path, ecosystems: set[str]) -> list[tuple[str, str, str]
     if "npm" in ecosystems:
         package = folder / "package.json"
         scripts = (json.loads(package.read_text(encoding="utf-8")).get("scripts") or {}) if package.is_file() else {}
-        pnpm = (folder / "pnpm-lock.yaml").is_file() and not (folder / "package-lock.json").is_file()
-        version = pnpm_version(folder) if pnpm else None
+        manager = node_manager(folder)
+        # Each install refuses a lockfile that's stale for package.json, as the repo's own CI would.
         if not scripts.get("test"):
             command = NO_NODE_TESTS
-        elif pnpm:  # --frozen-lockfile fails if pnpm-lock.yaml is stale for package.json, as in CI
+        elif manager == "pnpm":
+            version = pnpm_version(folder)
             command = f"{pnpm_install(version)} && pnpm install --frozen-lockfile && pnpm test" if version else NO_PNPM
+        elif manager == "bun":
+            command = f"{bun_install(bun_version(folder))} && bun install --frozen-lockfile && bun run test"
+        elif manager == "yarn" and yarn_berry(folder):
+            command = f"{COREPACK} && yarn install --immutable && yarn test" if yarn_version(folder) else NO_YARN
+        elif manager == "yarn":  # Yarn 1 comes with the Node image
+            command = "yarn install --frozen-lockfile --non-interactive && yarn test"
         else:
             command = NODE_TESTS
-        setups.append(("pnpm test" if pnpm else "npm test", NODE_IMAGE, command))
+        setups.append((f"{manager} test", NODE_IMAGE, command))
     if "PyPI" in ecosystems or not setups:
         pinned = any(folder.glob("requirements*.txt"))
         if not pinned and (folder / "poetry.lock").is_file():

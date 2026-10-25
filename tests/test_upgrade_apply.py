@@ -255,6 +255,54 @@ def test_pnpm_11_keeps_overrides_in_its_workspace_file(tmp_path):
     assert step.command.endswith(" -w jsonwebtoken@9.0.2")  # adding at a workspace's root says so
 
 
+def test_bun_adds_exactly_then_puts_the_range_back(tmp_path):
+    from openport.upgrade.bump import bump_steps
+    from openport.upgrade.testrun import BUN_OLD_FORMAT, BUN_VERSION
+
+    package = {"dependencies": {"jsonwebtoken": "^8.5.1", "left-pad": "1.3.0"}, "devDependencies": {"mocha": "~9.0.0"}}
+    (tmp_path / "package.json").write_text(json.dumps(package, indent=2))
+    (tmp_path / "bun.lock").write_text('{\n  "lockfileVersion": 1,\n  "workspaces": {},\n}\n')
+    step, = bump_steps(tmp_path, {"bun.lock": {"jsonwebtoken": "9.0.0", "mocha": "9.2.2", "semver": "7.5.4"}}, CUTOFF)
+    install, prod, dev, ranges, relock = step.command.split(" && ")
+    assert install.endswith(f"bun@{BUN_OLD_FORMAT}")  # no configVersion: a bun that keeps the lockfile's format
+    flags = r"--lockfile-only --ignore-scripts --minimum-release-age=\d+"
+    assert re.fullmatch(rf"bun add {flags} jsonwebtoken@9\.0\.0", prod) and re.fullmatch(rf"bun add {flags} --dev mocha@9\.2\.2", dev)
+    assert json.loads(shlex.split(ranges)[-1]) == {"jsonwebtoken": "^9.0.0", "mocha": "~9.2.2"} and re.fullmatch(rf"bun install {flags}", relock)
+    assert json.loads(step.writes["package.json"])["overrides"] == {"semver": "7.5.4"} and step.lockfile == "bun.lock"
+    (tmp_path / "bun.lock").write_text('{\n  "lockfileVersion": 1,\n  "configVersion": 1,\n}\n')
+    assert bump_steps(tmp_path, {"bun.lock": {"semver": "7.5.4"}}, CUTOFF)[0].command.split(" && ")[0].endswith(f"bun@{BUN_VERSION}")
+    (tmp_path / "package.json").write_text('{"packageManager": "bun@1.2.23", "dependencies": {"jsonwebtoken": "^8.5.1"}}')
+    old, = bump_steps(tmp_path, {"bun.lock": {"jsonwebtoken": "9.0.0"}}, CUTOFF)
+    assert "bun@1.2.23" in old.command and "--minimum-release-age" not in old.command  # added in bun 1.3; the date check still guards
+
+
+def test_yarn_1_and_yarn_2_plus_keep_the_new_version_under_the_old_range(tmp_path):
+    from openport.upgrade.bump import bump_steps
+
+    (tmp_path / "package.json").write_text('{"dependencies": {"jsonwebtoken": "^8.5.1"}, "workspaces": ["packages/*"]}')
+    (tmp_path / "yarn.lock").write_text("# yarn lockfile v1\n\njsonwebtoken@^8.5.1:\n  version \"8.5.1\"\n")
+    classic, = bump_steps(tmp_path, {"yarn.lock": {"jsonwebtoken": "9.0.0", "semver": "7.5.4"}}, CUTOFF)
+    add, ranges, patterns, check = classic.command.split(" && ")
+    assert add == "yarn add --ignore-scripts --non-interactive -W jsonwebtoken@9.0.0"  # a workspace's root, said so
+    assert json.loads(shlex.split(patterns)[-1]) == {"jsonwebtoken@9.0.0": "jsonwebtoken@^9.0.0"} and check.endswith("--frozen-lockfile")
+    assert json.loads(classic.writes["package.json"])["resolutions"] == {"semver": "7.5.4"}  # transitive: a resolution
+
+    (tmp_path / "yarn.lock").write_text('__metadata:\n  version: 8\n\n"jsonwebtoken@npm:^8.5.1":\n  version: 8.5.1\n')
+    (tmp_path / "package.json").write_text('{"packageManager": "yarn@4.10.3", "dependencies": {"jsonwebtoken": "^8.5.1"}}')
+    berry, = bump_steps(tmp_path, {"yarn.lock": {"jsonwebtoken": "9.0.0"}}, CUTOFF)
+    _, corepack, gate, up, ranges, resolution = berry.command.split(" && ")
+    assert corepack == "corepack enable"  # the Yarn package.json names
+    assert re.fullmatch(r"export YARN_NPM_MINIMAL_AGE_GATE=\d+", gate) and up == "yarn up --mode=update-lockfile jsonwebtoken@9.0.0"
+    assert resolution == "yarn set resolution 'jsonwebtoken@npm:^9.0.0' npm:9.0.0"
+    (tmp_path / "package.json").write_text('{"packageManager": "yarn@4.9.4", "dependencies": {"jsonwebtoken": "^8.5.1"}}')
+    assert "MINIMAL_AGE_GATE" not in bump_steps(tmp_path, {"yarn.lock": {"jsonwebtoken": "9.0.0"}}, CUTOFF)[0].command  # 4.9 refuses it
+    (tmp_path / "package.json").write_text('{"dependencies": {"jsonwebtoken": "^8.5.1"}}')
+    unknown, = bump_steps(tmp_path, {"yarn.lock": {"jsonwebtoken": "9.0.0"}}, CUTOFF)
+    assert "which yarn" in unknown.command and unknown.command.endswith("exit 1")
+    (tmp_path / ".yarnrc.yml").write_text("yarnPath: .yarn/releases/yarn-3.6.4.cjs\n")
+    assert "yarn up" in bump_steps(tmp_path, {"yarn.lock": {"jsonwebtoken": "9.0.0"}}, CUTOFF)[0].command  # the release it commits
+
+
 def test_every_version_a_bump_adds_must_be_older_than_the_cutoff():
     from openport.upgrade.bump import added_versions, too_new
 
@@ -299,6 +347,21 @@ def test_poetry_and_pnpm_projects_test_their_own_way(tmp_path):
     (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
     name, _, command = test_setups(tmp_path, {"npm"})[0]
     assert name == "pnpm test" and command.endswith(f"pnpm@{PNPM_VERSION} && pnpm install --frozen-lockfile && pnpm test")
+
+
+def test_yarn_and_bun_projects_test_their_own_way(tmp_path):
+    from openport.upgrade.testrun import BUN_OLD_FORMAT, test_setups
+
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "node --test"}}')
+    (tmp_path / "bun.lock").write_text('{"lockfileVersion": 1}')
+    name, image, command = test_setups(tmp_path, {"npm"})[0]
+    assert (name, image) == ("bun test", "node:22.23.4-slim")  # the Node image, so a test script that calls node works
+    assert command.endswith(f"bun@{BUN_OLD_FORMAT} && bun install --frozen-lockfile && bun run test")
+    (tmp_path / "yarn.lock").write_text("# yarn lockfile v1\n")
+    assert test_setups(tmp_path, {"npm"})[0][1:] == ("node:22.23.4-slim", "yarn install --frozen-lockfile --non-interactive && yarn test")
+    (tmp_path / "yarn.lock").write_text("__metadata:\n  version: 8\n")
+    (tmp_path / "package.json").write_text('{"packageManager": "yarn@4.10.3", "scripts": {"test": "node --test"}}')
+    assert test_setups(tmp_path, {"npm"})[0][2].endswith("corepack enable && yarn install --immutable && yarn test")
 
 
 def test_every_suite_must_pass(tmp_path):
@@ -348,14 +411,14 @@ def test_only_root_lockfiles_openport_can_rewrite_are_upgraded(tmp_path):
     root.mkdir()
     (root / "package.json").write_text('{"dependencies": {}, "scripts": {"test": "node --test"}}')
     (root / "package-lock.json").write_text("{}")
-    plans = [upgrade("flask", "2.0.1", "2.3.3", source="api/uv.lock"), upgrade("lodash", "4.17.15", "4.17.21", source="yarn.lock"),
+    plans = [upgrade("flask", "2.0.1", "2.3.3", source="api/uv.lock"), upgrade("lodash", "4.17.15", "4.17.21", source="bun.lockb"),
              upgrade("semver", "5.7.1", "5.7.2", source="package-lock.json"), upgrade("semver", "7.5.1", "7.5.4", source="package-lock.json")]
     run = upgrade_repo(root, tmp_path / "out", plans=plans, run_tests=lambda folder: passing(),
                        run_container=lambda *args: TestRun(True, 0, "", "", 1.0))
     assert [(p.dep.name, p.dep.version) for p in run.upgraded] == [("semver", "5.7.1")]
     assert [why for _, why in run.skipped] == [
         "locked in api/uv.lock: upgrade that project with --project api",
-        "yarn.lock can't be updated by OpenPort yet: update it with its package manager",
+        "bun.lockb can't be updated by OpenPort yet: update it with its package manager",  # bun's old binary format
         "semver 7.5.1 is also locked here; this upgrade moves the other one only",  # one override can't serve both
     ]
 
