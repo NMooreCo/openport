@@ -1,7 +1,9 @@
-"""Rewrite TypeScript/JavaScript OpenAI SDK code onto Token Factory.
+"""Rewrite TypeScript/JavaScript OpenAI and Anthropic SDK code onto Token Factory.
 
-The OpenAI Node SDK talks to Token Factory directly, so no runtime file is needed: the client gets
-Token Factory's base URL and key, and each ported call gets its Nemotron model.
+The OpenAI Node SDK talks to Token Factory directly: the client gets Token Factory's base URL and key,
+and each ported call gets its Nemotron model. Token Factory has no Anthropic-compatible API, so an
+Anthropic client becomes an `AnthropicOnNemotron` from OpenPort's runtime (openport_llm.mjs, copied into
+the app), whose `messages.create` translates to chat completions and back.
 """
 
 import json
@@ -21,8 +23,13 @@ from .edits import Edit, apply_edits, before_newline, indentation, line_end, new
 from .plan import SiteDecision
 from .prompts import find_prompt_file, prompt_file_insertion, ts_literal_insertion
 
-PROVIDER_ONLY = {"apiKey", "baseURL", "organization", "project"}
+PROVIDER_ONLY = {"apiKey", "baseURL", "organization", "project", "authToken"}
 EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+TS_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts")
+CLIENTS = {"OpenAI", "AzureOpenAI", "Anthropic", "AnthropicBedrock", "AnthropicVertex"}
+BY_HAND = {"AzureOpenAI", "AnthropicBedrock", "AnthropicVertex"}  # their own auth: a person ports these
+RUNTIME = Path(__file__).parents[1] / "runtime" / "openport_llm.mjs"
+ANTHROPIC_STANDIN = "AnthropicOnNemotron"
 # `?? ""` matters: with apiKey undefined, the SDK would fall back to OPENAI_API_KEY and send it to Nebius.
 # NEBIUS_BASE_URL overrides the URL, as in the Python runtime; OpenPort's own evals of the ported code use it.
 CONNECTION = [f'baseURL: process.env.NEBIUS_BASE_URL ?? "{TOKEN_FACTORY_BASE_URL}"', 'apiKey: process.env.NEBIUS_API_KEY ?? ""']
@@ -71,7 +78,7 @@ class _TsRepo:
             if value is None or value.type != "new_expression":
                 continue
             ctor = _text(value.child_by_field_name("constructor")).split(".")[-1]
-            if ctor not in ("OpenAI", "AzureOpenAI"):
+            if ctor not in CLIENTS:
                 continue
             statement = node.parent
             top = statement.parent.type == "program" or (
@@ -184,18 +191,22 @@ def _object_value(obj: Node, key: str) -> Node | None:
     return None
 
 
-def _system_literal(repo: _TsRepo, f: _TsFile, call: Node) -> tuple[_TsFile, Node] | None:
-    """Follow a call's system message back to the string or template literal it's written in."""
-    messages = _unwrap(_properties(call).get("messages"))
-    if messages is not None and messages.type in ("identifier", "shorthand_property_identifier"):
-        messages = _unwrap(_declared(f, _text(messages), call.start_byte))
-    if messages is None or messages.type != "array" or not messages.named_children:
-        return None
-    first = messages.named_children[0]
-    role = _object_value(first, "role") if first.type == "object" else None
-    if role is None or _unquote(_text(role)) not in ("system", "developer"):
-        return None
-    content = _unwrap(_object_value(first, "content"))
+def _system_literal(repo: _TsRepo, f: _TsFile, call: Node, sdk: str = "openai") -> tuple[_TsFile, Node] | None:
+    """Follow a call's system prompt back to the string or template literal it's written in: the first message
+    on OpenAI's SDK, the `system` property on Anthropic's."""
+    if sdk == "anthropic":
+        content = _unwrap(_properties(call).get("system"))
+    else:
+        messages = _unwrap(_properties(call).get("messages"))
+        if messages is not None and messages.type in ("identifier", "shorthand_property_identifier"):
+            messages = _unwrap(_declared(f, _text(messages), call.start_byte))
+        if messages is None or messages.type != "array" or not messages.named_children:
+            return None
+        first = messages.named_children[0]
+        role = _object_value(first, "role") if first.type == "object" else None
+        if role is None or _unquote(_text(role)) not in ("system", "developer"):
+            return None
+        content = _unwrap(_object_value(first, "content"))
     for _ in range(4):
         if content is None:
             return None
@@ -266,7 +277,7 @@ def _set_extra_body(f: _TsFile, call: Node, extra_body: dict) -> list[Edit] | No
         return None
     edits: list[Edit] = []
     for key, value in extra_body.items():
-        added = _add_property(f, obj, f"{key}: {_ts_value(value)}", "@ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the OpenAI types")
+        added = _add_property(f, obj, f"{key}: {_ts_value(value)}", "@ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the SDK's types")
         if added is None:
             return None
         edits += added
@@ -295,14 +306,44 @@ def _arguments_text(f: _TsFile, binding: _TsBinding) -> bytes:
     return ("({ " + " ".join(entries).rstrip(",") + " })").encode()
 
 
+def _imports(f: _TsFile) -> list[Node]:
+    return [node for node in f.root.named_children if node.type == "import_statement"]
+
+
+def _runtime(paths: list[str]) -> tuple[str, bytes]:
+    """Where the runtime goes, and its text: next to the first file that needs it, as TypeScript (left unchecked)
+    in a TypeScript file's folder, else as an ES module."""
+    folder = posixpath.dirname(paths[0])
+    source = RUNTIME.read_bytes()
+    if paths[0].endswith(TS_EXTENSIONS):
+        return posixpath.join(folder, "openport_llm.ts"), b"// @ts-nocheck: OpenPort's runtime, written as plain JavaScript\n" + source
+    return posixpath.join(folder, "openport_llm.mjs"), source
+
+
+def _import_edit(f: _TsFile, runtime_path: str) -> Edit:
+    """`import { AnthropicOnNemotron } from "./openport_llm";` after the file's last import. The path has an
+    extension where ES modules need one, and where the file's own relative imports use `.js`."""
+    relative = posixpath.relpath(runtime_path, posixpath.dirname(f.path) or ".")
+    relative = relative if relative.startswith(".") else "./" + relative
+    if relative.endswith(".ts"):
+        own = [_unquote(_text(node.child_by_field_name("source"))) for node in _imports(f)]
+        relative = relative[: -len(".ts")] + (".js" if any(s.startswith(".") and s.endswith(".js") for s in own) else "")
+    position = line_end(f.source, _imports(f)[-1].end_byte)
+    return Edit(position, position, f'import {{ {ANTHROPIC_STANDIN} }} from "{relative}";'.encode() + newline_style(f.source))
+
+
 def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, SiteDecision]) -> dict[str, bytes]:
-    """Rewrite the TypeScript/JavaScript files under `root` for the ported OpenAI sites in `plan`."""
+    """Rewrite the TypeScript/JavaScript files under `root` for the ported OpenAI and Anthropic sites in `plan`."""
     repo = _TsRepo(root)
     links = {site.id: repo.link(site) for site in sites}
     for site in sites:
-        azure = [b for b in links[site.id] if b.ctor != "OpenAI"]
-        if azure and not plan[site.id].keep:
-            plan[site.id].keep_because(f"built with {azure[0].ctor}: port by hand")
+        by_hand = [b for b in links[site.id] if b.ctor in BY_HAND]
+        if by_hand and not plan[site.id].keep:
+            plan[site.id].keep_because(f"built with {by_hand[0].ctor}: port by hand")
+            links[site.id] = []
+        anthropic = [b for b in links[site.id] if b.ctor == "Anthropic"]
+        if anthropic and not plan[site.id].keep and not _imports(repo.file(anthropic[0].file)):
+            plan[site.id].keep_because("a CommonJS module, and OpenPort's runtime for Anthropic code is an ES module: port it by hand")
             links[site.id] = []
     actions = decide_client_actions(
         sites,
@@ -314,11 +355,18 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
 
     edits: dict[str, list[Edit]] = defaultdict(list)
     split_names: dict[str, str] = {}
+    standins: set[str] = set()  # files whose Anthropic client becomes OpenPort's stand-in
     for action in actions.values():
         binding: _TsBinding = action.binding
         f = repo.file(binding.file)
         arguments = _arguments_text(f, binding)
+        anthropic = binding.ctor == "Anthropic"
+        if anthropic:
+            standins.add(f.path)
         if action.action == "replace":
+            if anthropic:
+                ctor = binding.new_expr.child_by_field_name("constructor")
+                edits[f.path].append(Edit(ctor.start_byte, ctor.end_byte, ANTHROPIC_STANDIN.encode()))
             args = binding.new_expr.child_by_field_name("arguments")
             if args is not None:
                 edits[f.path].append(Edit(args.start_byte, args.end_byte, arguments))
@@ -330,7 +378,7 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
             keyword = _text(binding.statement).split()[0]  # const / let / var
             nl = newline_style(f.source)
             indent = indentation(f.source, binding.statement.start_byte)
-            line = indent + f"{keyword} {new_var} = new OpenAI".encode() + arguments + b";" + nl
+            line = indent + f"{keyword} {new_var} = new {ANTHROPIC_STANDIN if anthropic else 'OpenAI'}".encode() + arguments + b";" + nl
             position = line_end(f.source, binding.statement.end_byte)
             edits[f.path].append(Edit(position, position, line))
             for site in action.ported:
@@ -379,7 +427,7 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
                 decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
             else:
                 edits[f.path] += changed
-        if decision.system_addendum and not _apply_ts_addendum(repo, f, call, decision, edits, text_edits, applied):
+        if decision.system_addendum and not _apply_ts_addendum(repo, f, call, site.sdk, decision, edits, text_edits, applied):
             decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
         if site.id in split_names:
             base = call.child_by_field_name("function")
@@ -402,15 +450,23 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
                 if model is not None:
                     edits[path].append(Edit(node.start_byte, node.end_byte, f'"{model}"'.encode()))
 
+    runtime: dict[str, bytes] = {}
+    if standins:  # the stand-in comes from OpenPort's runtime, copied in once
+        path, text = _runtime(sorted(standins))
+        runtime[path] = text
+        for standin in standins:
+            edits[standin].append(_import_edit(repo.file(standin), path))
+
     # Settings added after the same last property each add its missing comma: keep one.
     output = {path: apply_edits(repo.file(path).source, list(dict.fromkeys(file_edits))) for path, file_edits in edits.items() if file_edits}
-    return output | {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()}
+    return output | {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()} | runtime
 
 
-def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, decision: SiteDecision, edits: dict, text_edits: dict, applied: set) -> bool:
+def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, sdk: str, decision: SiteDecision, edits: dict, text_edits: dict,
+                       applied: set) -> bool:
     """Write the tuned addendum into the call's system prompt. False if it couldn't be placed."""
     addendum = decision.system_addendum
-    resolved = _system_literal(repo, f, call)
+    resolved = _system_literal(repo, f, call, sdk)
     if resolved:
         target, literal = resolved
         key = (target.path, literal.start_byte, addendum)

@@ -68,8 +68,6 @@ def build_plan(
             decision.model = models.get(choice, choice)
         elif blockers:
             decision.keep_because("; ".join(NOTES[b] for b in sorted(blockers)))
-        elif finding.language == "typescript" and finding.sdk == "anthropic":
-            decision.keep_because("Anthropic SDK in TypeScript: the runtime doesn't cover it yet")
         if not decision.keep:  # ported anyway: carry the scanner's warnings into the port report
             decision.notes += [NOTES[f] for f in finding.features if f in NEEDS_REVIEW - BLOCKERS]
             variant = (assigned or {}).get("variant") or {}

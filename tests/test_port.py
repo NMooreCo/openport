@@ -176,7 +176,7 @@ def test_typescript_reasoning_switch_and_settings_go_into_the_call(tmp_path):
     triage = (result.output / "src/triage.ts").read_text()
     assert (
         '    response_format: { type: "json_object" },\n'
-        "    // @ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the OpenAI types\n"
+        "    // @ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the SDK's types\n"
         "    chat_template_kwargs: { enable_thinking: false },\n"
         "    max_tokens: 512,\n"
         "    temperature: 0,\n"
@@ -310,6 +310,40 @@ export async function vision(image: string, model: string = "gpt-4o") {
 }
 ''',
 }
+
+
+CLAUDE_TS = {
+    "src/claude.ts": '''import Anthropic from "@anthropic-ai/sdk";
+import { first } from "./helper.js";
+
+const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
+
+export async function label(text: string) {
+  const message = await claude.messages.create({
+    model: "claude-sonnet-5-5",
+    max_tokens: 64,
+    system: "Label the message.",
+    messages: [{ role: "user", content: text }],
+  });
+  return first(message);
+}
+''',
+    "src/helper.ts": "export const first = (message: any) => message.content[0].text;\n",
+}
+
+
+def test_typescript_anthropic_port(tmp_path):
+    root = write(tmp_path / "repo", CLAUDE_TS)
+    result, sites = port(root, tmp_path / "out", claude__label={"model": "super", "variant": {"system_addendum": "One word."}})
+    assert sites["claude.label"].status == "ported"
+    code = (result.output / "src/claude.ts").read_text()
+    assert 'import { AnthropicOnNemotron } from "./openport_llm.js";' in code  # .js, like the file's own imports
+    assert "const claude = new AnthropicOnNemotron({ baseURL: process.env.NEBIUS_BASE_URL ??" in code and "maxRetries: 3" in code
+    assert "ANTHROPIC_API_KEY" not in code and 'model: "nvidia/super-test",' in code
+    assert 'system: "Label the message.\\n\\nOne word."' in code  # the tuned addendum, in Anthropic's own system property
+    assert "src/openport_llm.ts" in result.added
+    runtime = (result.output / "src/openport_llm.ts").read_text()
+    assert runtime.startswith("// @ts-nocheck") and "export class AnthropicOnNemotron" in runtime
 
 
 def test_typescript_port(tmp_path):

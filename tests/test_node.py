@@ -253,6 +253,76 @@ def test_ported_typescript_still_passes_its_evals(tmp_path, monkeypatch):
     assert fake.requests[0]["model"] == "nvidia/super-test"  # the model the ported code names
 
 
+ANTHROPIC_STUB = {  # only imported: the ported code calls OpenPort's runtime instead
+    "node_modules/@anthropic-ai/sdk/package.json": '{"name": "@anthropic-ai/sdk", "type": "module", "exports": "./index.mjs"}',
+    "node_modules/@anthropic-ai/sdk/index.mjs": "export default class Anthropic {}\nexport { Anthropic };\n",
+}
+CLAUDE_APP_JS = """import Anthropic from "@anthropic-ai/sdk";
+
+const claude = new Anthropic();
+
+export async function classify(text) {
+  const message = await claude.messages.create({ model: "claude-sonnet-5-5", max_tokens: 64, system: "Label the message.", messages: [{ role: "user", content: text }] });
+  return { label: message.content[0].text };
+}
+"""
+
+
+@needs_node
+def test_javascript_ported_off_anthropics_sdk_passes_its_evals(tmp_path, monkeypatch):
+    from openport.port import build_plan, port_repo
+    from openport.scan import scan_repo
+
+    root = tmp_path / "app"
+    spec_text = SPEC.replace("sdk: openai", "sdk: anthropic").replace("fields: [label, sawKey]", "fields: [label]")
+    files = {**ANTHROPIC_STUB, "src/classify.mjs": CLAUDE_APP_JS, "openport.evals.yaml": spec_text,
+             "cases.jsonl": json.dumps({"id": "c1", "input": {"text": "refund please"}, "expected": {"label": "billing"}}) + "\n"}
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    report = scan_repo(root)
+    port_repo(root, report, build_plan(report.findings, MODELS, "super"), tmp_path / "out")
+    assert 'import { AnthropicOnNemotron } from "./openport_llm.mjs";' in (tmp_path / "out" / "src" / "classify.mjs").read_text()
+    shutil.copytree(root / "node_modules", tmp_path / "out" / "node_modules")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = load_spec(tmp_path / "out")
+    fake = FakeTokenFactory(lambda request: completion(content="billing"))
+    gate = run_site(spec, spec.call_sites[0], "as written", None, client=fake)
+    assert gate.pass_rate == 1.0, [case.error for case in gate.cases]
+    request = fake.requests[0]  # the runtime's translation, as Token Factory receives it
+    assert request["model"] == "nvidia/super-test" and request["messages"][0] == {"role": "system", "content": "Label the message."}
+
+
+@needs_node
+def test_the_javascript_runtime_translates_like_the_python_one(tmp_path):
+    import subprocess
+
+    from openport.port.ts_rewrite import RUNTIME
+    from openport.runtime.openport_llm import anthropic_to_openai
+
+    params = {
+        "model": "m", "max_tokens": 256, "system": [{"type": "text", "text": "Be brief."}], "temperature": 0.2,
+        "tools": [{"name": "lookup", "description": "Find an order", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}}}],
+        "tool_choice": {"type": "any", "disable_parallel_tool_use": True}, "stop_sequences": ["END"], "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Where is "}, {"type": "text", "text": "order 7?"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Checking."}, {"type": "tool_use", "id": "t1", "name": "lookup", "input": {"id": "7"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "shipped"}]},
+                                         {"type": "image", "source": {"type": "url", "url": "https://example.com/box.png"}}]},
+        ],
+    }
+    script = tmp_path / "translate.mjs"
+    script.write_text(f"import {{ anthropicToOpenAI }} from {json.dumps(RUNTIME.as_uri())};\n"
+                      f"process.stdout.write(JSON.stringify(anthropicToOpenAI({json.dumps(params)})));\n")
+    javascript = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    python = anthropic_to_openai(**params)
+    python.update(python.pop("extra_body"))  # Python passes the reasoning switch through the SDK's extra_body; on the wire it's top-level
+    for request in (javascript, python):  # the same JSON, spaced differently by json.dumps and JSON.stringify
+        for call in (call for message in request["messages"] for call in message.get("tool_calls") or []):
+            call["function"]["arguments"] = json.loads(call["function"]["arguments"])
+    assert javascript == python
+
+
 SUPPORTDESK_TS = Path(__file__).parents[1] / "examples" / "supportdesk-ts"
 needs_ts_example = pytest.mark.skipif(
     shutil.which("node") is None or not (SUPPORTDESK_TS / "node_modules" / "openai").is_dir(),
