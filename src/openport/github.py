@@ -5,6 +5,7 @@ maintainers aren't notified. Pass `upstream=True` to propose it to the original 
 """
 
 import functools
+import os
 import re
 import subprocess
 import tempfile
@@ -73,12 +74,22 @@ def plan_pr(ported: Path, title: str, body_file: Path, login: str, upstream: boo
 
 
 def github_login() -> str:
+    """Your GitHub login. In GitHub Actions, the repo's owner: the branch and the PR stay in the repo itself."""
+    if os.getenv("GITHUB_ACTIONS") == "true" and os.getenv("GITHUB_REPOSITORY_OWNER"):
+        return os.environ["GITHUB_REPOSITORY_OWNER"]
     return _run(["gh", "api", "user", "--jq", ".login"])
 
 
 def execute(plan: PrPlan, ported: Path) -> str:
-    """Run the plan's commands in the ported copy. Returns the PR URL."""
+    """Run the plan's commands in the ported copy. Returns the PR URL: the branch's open PR if it already has one
+    (a weekly upgrade force-pushes its branch, which updates that PR), else the new one."""
     output = ""
     for command in plan.commands:
-        output = _run(command, cwd=ported)
+        try:
+            output = _run(command, cwd=ported)
+        except subprocess.CalledProcessError as error:
+            existing = re.search(r"https://github\.com/\S+/pull/\d+", error.stderr or "")
+            if command[:3] == ["gh", "pr", "create"] and "already exists" in (error.stderr or "") and existing:
+                return existing[0]
+            raise
     return output.splitlines()[-1] if output else ""

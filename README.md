@@ -116,7 +116,10 @@ The same "prove it, then ship it" idea, pointed at a second kind of PR: patch vu
 ```bash
 uv run openport upgrade examples/authkit            # dry run: what's vulnerable, and the safe version
 uv run openport upgrade examples/authkit --apply    # upgrade a copy, prove it with the tests
+uv run openport upgrade-action path/to/repo         # do it every Monday, as a GitHub Action
 ```
+
+**Every week, on its own.** `openport upgrade-action` adds a GitHub Actions workflow that runs the same upgrade every Monday and opens a PR, or updates last week's, only when the repo's tests prove it. When they can't, the run fails, so someone hears about it. It needs a `NEBIUS_API_KEY` repository secret (and `TAVILY_API_KEY` for the changelog quotes). It hasn't run on GitHub yet: it installs OpenPort from this repo, which goes public at submission.
 
 On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5. Its Node twin, `authkit-node`, moves jsonwebtoken 8.5.1 to 9.0.0 (3 advisories) through npm, and its tests pass before and after, so it needs no code change.
 

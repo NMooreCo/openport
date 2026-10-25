@@ -683,8 +683,9 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
 
     run = upgrade_repo(root, out_dir, plans=plans, min_age_days=min_age, rounds=rounds, researcher=researcher, changelog=changelog,
                        fixer=fixer, on_event=event, run_tests=tests)
-    if not run.upgraded:
-        _fail("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
+    if not run.upgraded:  # not an error: a weekly run with nothing safe to do yet just says why
+        console.print("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
+        return
     config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
     diff_path = config.RUNS_DIR / f"upgrade-{name}.diff"
     diff_path.write_text(run.diff, encoding="utf-8")
@@ -697,6 +698,19 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
         _open_or_show_pr(pr_folder.resolve(), upgrade_report.TITLE, body_path.resolve(), open_pr, upstream, UPGRADE_BRANCH)
     elif open_pr:
         _fail("Not opening a PR: the tests don't prove this upgrade.")
+
+
+@app.command("upgrade-action")
+def upgrade_action(folder: Path = typer.Argument(Path("."), help="The repo to add the workflow to")) -> None:
+    """Add a GitHub Actions workflow that runs `openport upgrade --apply --open` every Monday."""
+    from .upgrade.action import WORKFLOW_FILE, workflow
+
+    path = folder / WORKFLOW_FILE
+    if path.exists():
+        _fail(f"{path} already exists; delete it first to write a fresh one")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(workflow(config.OPENPORT_SOURCE).encode("utf-8"))
+    console.print(f"Wrote {path}. Commit it, and add a NEBIUS_API_KEY repository secret (TAVILY_API_KEY too, for the changelog quotes).")
 
 
 @app.command()

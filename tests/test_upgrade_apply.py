@@ -115,6 +115,38 @@ def test_a_proven_upgrade_opens_from_the_original_git_plus_the_changed_files(tmp
         github.plan_pr(pr, "Upgrade vulnerable dependencies", tmp_path / "body.md", "me", branch=github.UPGRADE_BRANCH)
 
 
+def test_a_weekly_workflow_keeps_a_repo_current(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from openport import cli, github
+    from openport.upgrade.action import WORKFLOW_FILE
+
+    result = CliRunner().invoke(cli.app, ["upgrade-action", str(tmp_path)])
+    assert result.exit_code == 0
+    flow = yaml.safe_load((tmp_path / WORKFLOW_FILE).read_text(encoding="utf-8"))
+    triggers = flow.get("on", flow.get(True))  # PyYAML reads the key `on` as YAML 1.1's True; GitHub reads "on"
+    assert triggers["schedule"] == [{"cron": "17 6 * * 1"}] and "workflow_dispatch" in triggers
+    assert flow["permissions"] == {"contents": "write", "pull-requests": "write"}
+    step = flow["jobs"]["upgrade"]["steps"][-1]
+    assert step["run"].endswith("openport upgrade . --apply --open") and step["env"]["NEBIUS_API_KEY"] == "${{ secrets.NEBIUS_API_KEY }}"
+    assert CliRunner().invoke(cli.app, ["upgrade-action", str(tmp_path)]).exit_code == 1  # never overwrites one
+
+    # In GitHub Actions the branch and the PR stay in the repo, and next week's run updates the open PR.
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "acme")
+    assert github.github_login() == "acme"
+
+    def run(command, cwd=None):
+        if command[:3] == ["gh", "pr", "create"]:
+            raise subprocess.CalledProcessError(1, command, stderr='a pull request for branch "openport/security-upgrades" into '
+                                                                  'branch "main" already exists:\nhttps://github.com/acme/app/pull/12\n')
+        return ""
+
+    monkeypatch.setattr(github, "_run", run)
+    plan = github.PrPlan("acme/app", "acme/app", "acme/app", [["git", "push"], ["gh", "pr", "create", "--repo", "acme/app"]])
+    assert github.execute(plan, tmp_path) == "https://github.com/acme/app/pull/12"
+
+
 def test_the_tests_never_run_in_the_upgrade_itself(tmp_path):
     """Whatever a repo's tests write, in a scratch copy, can't reach the diff."""
     seen = []
