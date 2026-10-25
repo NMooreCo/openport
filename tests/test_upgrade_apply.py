@@ -446,6 +446,11 @@ def test_a_monorepos_project_is_upgraded_in_its_own_folder_with_the_whole_repo_t
     assert commands[0].startswith("cd platform/backend && npm ") and all(neighbours)
     assert run.changed == ["platform/backend/package-lock.json", "platform/backend/package.json"]
     assert "+++ b/platform/backend/package-lock.json" in run.diff and (root / "platform/backend/package-lock.json").read_text() == "{}"
+    body = render(run)  # the PR names the project's own files, and how each changed
+    assert "- `platform/backend/package-lock.json`: rewritten by npm" in body and "held back releases under 7 days old" in body
+    from openport.upgrade.report import _changed_by
+
+    assert [_changed_by(name) for name in ("yarn.lock", "web/bun.lock")] == ["rewritten by Yarn", "rewritten by bun"]
 
 
 def test_a_bump_that_pulls_in_a_brand_new_release_is_turned_away(tmp_path):

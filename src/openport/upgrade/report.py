@@ -11,6 +11,8 @@ CHANGED_BY = {  # each dependency file an upgrade can change, and how
     "poetry.lock": "rewritten by Poetry",
     "package-lock.json": "rewritten by npm",
     "pnpm-lock.yaml": "rewritten by pnpm",
+    "yarn.lock": "rewritten by Yarn",
+    "bun.lock": "rewritten by bun",
     "pyproject.toml": "a version constraint raised where the old one ruled out the fix",
     "package.json": "the new version ranges, or an override for a package that another one pulls in",
     "pnpm-workspace.yaml": "an override for a package that another one pulls in",
@@ -18,7 +20,9 @@ CHANGED_BY = {  # each dependency file an upgrade can change, and how
 
 
 def _changed_by(path: str) -> str | None:
-    return "the pins, edited in place" if re.fullmatch(r"requirements[^/]*\.txt", path) else CHANGED_BY.get(path)
+    """How an upgrade changed a dependency file, at the root or in a monorepo's project (apps/api/uv.lock)."""
+    name = path.rsplit("/", 1)[-1]
+    return "the pins, edited in place" if re.fullmatch(r"requirements[^/]*\.txt", name) else CHANGED_BY.get(name)
 
 
 def _advisory_link(key: str) -> str:
@@ -51,7 +55,7 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
     files = [(path, why) for path in re.findall(r"^\+\+\+ b/(.+)$", run.diff, re.M) if (why := _changed_by(path))]
     if files:
         lines += ["", "### Dependency files", ""] + [f"- `{path}`: {why}" for path, why in files]
-        if any(path in LOCKFILES for path, _ in files):
+        if any(path.rsplit("/", 1)[-1] in LOCKFILES for path, _ in files):
             lines += ["", f"Lockfiles were resolved in a throwaway container that held back releases under {min_age_days} days old, "
                           "and every version they add was checked against its registry's release date."]
 
