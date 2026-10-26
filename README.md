@@ -30,7 +30,7 @@ uv run openport scan examples/supportdesk
 uv run openport scan jsliapark/preflight
 ```
 
-Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Plain HTTP calls to OpenAI-style endpoints move too, where the code spells out where they go: their URL (or base URL), the environment variable their key comes from, and their model are rewritten. Calls that can't move safely stay where they are, with the reason: images, audio, the provider's own web search, or a URL that comes from settings. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`.
+Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Plain HTTP calls to OpenAI-style endpoints move too, where the code spells out where they go: their URL (or base URL), the environment variable their key comes from, and their model are rewritten. A call that sends images moves to Nemotron 3.5 Super VL, the Nemotron that reads them. Calls that can't move safely stay where they are, with the reason: audio, the provider's own web search, or a URL that comes from settings. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`.
 
 ```bash
 uv run openport port jsliapark/preflight
@@ -57,7 +57,7 @@ uv run openport capture examples/supportdesk --logs triage.triage_ticket=logs/tr
 uv run openport capture jsliapark/preflight --generate 10   # needs NEBIUS_API_KEY
 ```
 
-Tune each call. OpenPort starts it on Nemotron Nano exactly as written. If it misses the target, Nemotron Ultra reads the failures and proposes a fix (extra prompt instructions, reasoning on or off, a higher token limit, temperature), and it tries again, moving up to Super and then Ultra if needed. About 30% of each call's cases are held out: Ultra never sees them, and a fix only counts if it passes those too. The result is a plan for `openport port`.
+Tune each call. OpenPort starts it on Nemotron Nano exactly as written. If it misses the target, Nemotron Ultra reads the failures and proposes a fix (extra prompt instructions, reasoning on or off, a higher token limit, temperature), and it tries again, moving up to Super and then Ultra if needed. About 30% of each call's cases are held out: Ultra never sees them, and a fix only counts if it passes those too. The result is a plan for `openport port`. A call that sends images is tuned on Nemotron 3.5 Super VL alone, since a text tier can't see them, and `--tiers` can add Nemotron 3.5 Lightning, which has Nano's size and price (`--tiers nano,lightning,super,ultra`).
 
 ```bash
 uv run openport tune examples/supportdesk
@@ -129,7 +129,7 @@ On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. Th
 
 ## Field study: 20 popular AI apps
 
-OpenPort's scanner, port and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. Their own code holds 207 LLM calls in 14 of the apps, 132 through the OpenAI and Anthropic SDKs and 75 over plain HTTP. 160 of them (77%) are testable as written, and the port moves 73 to Nemotron as they are; each of the rest stays with its reason, most often a provider chosen outside the code it edits. They also lock 746 known-vulnerable dependency versions, in 19 of the apps, 92% with a fix at least a week old. The study taught OpenPort to find, test and move plain HTTP calls, to test calls in class methods and in TypeScript functions their module doesn't export, to keep calls Nemotron can't serve (audio, the provider's own web search) and clients whose provider is picked elsewhere, to scan large repos about 40 times faster, and to read and upgrade monorepos. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
+OpenPort's scanner, port and upgrade dry run ran over the 20 most-starred open-source AI apps on GitHub, statically: nothing was run. Their own code holds 207 LLM calls in 14 of the apps, 132 through the OpenAI and Anthropic SDKs and 75 over plain HTTP. 160 of them (77%) are testable as written, and the port moves 74 to Nemotron as they are; each of the rest stays with its reason, most often a provider chosen outside the code it edits. They also lock 746 known-vulnerable dependency versions, in 19 of the apps, 92% with a fix at least a week old. The study taught OpenPort to find, test and move plain HTTP calls, to test calls in class methods and in TypeScript functions their module doesn't export, to keep calls Nemotron can't serve (audio, the provider's own web search) and clients whose provider is picked elsewhere, to send images to Nemotron 3.5 Super VL, to scan large repos about 40 times faster, and to read and upgrade monorepos. [Per-app numbers and what it says to build next](docs/FIELD-STUDY.md).
 
 ## Dashboard
 

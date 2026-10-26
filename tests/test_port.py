@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from openport.port import build_plan, port_repo
@@ -263,13 +264,35 @@ def mystery(text):
 }
 
 
+def test_an_image_call_moves_to_the_nemotron_that_reads_images(tmp_path):
+    root = write(tmp_path / "repo", SHARED_CLIENT)
+    report = scan_repo(root)
+    plan = build_plan(report.findings, {**MODELS, "vision": "nvidia/vl-test"}, "super", {})
+    result = port_repo(root, report, plan, tmp_path / "out")
+    sites = {s.id: s for s in result.sites}
+    app = (result.output / "app.py").read_text()
+
+    assert sites["app.describe"].status == "ported" and sites["app.describe"].now == "nvidia/vl-test"
+    assert any("the Nemotron that reads them; check it on your own images" in note for note in sites["app.describe"].notes)
+    assert sites["app.summarize"].now == "nvidia/super-test" and not sites["app.summarize"].notes
+    # Both calls move, so the client is swapped rather than split, and each call names its own model.
+    assert "client = token_factory_client(timeout=30)" in app and "client_nemotron" not in app
+    assert 'model="nvidia/vl-test"' in app and 'model="nvidia/super-test"' in app
+
+    tuned = build_plan(report.findings, {**MODELS, "vision": "nvidia/vl-test"}, "super", {"app.describe": {"model": "nvidia/vl-test"}})
+    assert tuned["app.describe"].notes == []  # tested by its evals: nothing left to check by hand
+    image = next(f for f in report.findings if f.id == "app.describe")
+    audio = build_plan([replace(image, features=[*image.features, "audio"])], {**MODELS, "vision": "nvidia/vl-test"})
+    assert audio["app.describe"].keep and "audio" in audio["app.describe"].reason  # it reads images, but doesn't hear
+
+
 def test_shared_client_is_split_not_swapped(tmp_path):
     root = write(tmp_path / "repo", SHARED_CLIENT)
     result, sites = port(root, tmp_path / "out")
     app = (result.output / "app.py").read_text()
 
     assert sites["app.summarize"].status == "ported"
-    assert sites["app.describe"].status == "kept" and "vision" in sites["app.describe"].reason
+    assert sites["app.describe"].status == "kept" and "Sends images" in sites["app.describe"].reason
     assert sites["app.mystery"].status == "kept" and "couldn't find where its client" in sites["app.mystery"].reason
     assert sites["app.summarize"].notes == []
 

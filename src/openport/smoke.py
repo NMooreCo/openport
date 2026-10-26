@@ -1,11 +1,15 @@
-"""Smoke tests: what each Nemotron tier on Token Factory actually supports.
+"""Smoke tests: what each Nemotron tier on Token Factory actually supports, Lightning and the model that reads
+images included.
 
 Each check returns (ok, detail). Results feed the tuning loop's defaults and FEEDBACK.md.
 """
 
+import base64
 import json
 import os
+import struct
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Literal
@@ -50,6 +54,21 @@ ORDER_QUESTION = [{"role": "user", "content": "Where is my order FH-100233?"}]
 
 # Generous, because reasoning tokens can count against max_tokens.
 MAX_TOKENS = 4096
+
+
+def square_png(size: int = 64, color: tuple[int, int, int] = (220, 30, 30)) -> bytes:
+    """A PNG of a colored square on white, drawn here so the image check needs no file or library."""
+    inside = range(size // 4, size * 3 // 4)
+    rows = b"".join(
+        b"\x00" + b"".join(bytes(color if x in inside and y in inside else (255, 255, 255)) for x in range(size))
+        for y in range(size)
+    )
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)  # 8-bit RGB
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 def _describe(message) -> str:
@@ -132,6 +151,35 @@ def _checks(client: OpenAI, model: str) -> dict[str, Callable[[], tuple[bool, st
         content = second.choices[0].message.content or ""
         return "tuesday" in content.lower(), content[:80]
 
+    def image_input():  # only a model that reads images should pass; a text tier shows what happens to one
+        url = "data:image/png;base64," + base64.b64encode(square_png()).decode()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": "What color is the square in this image? Reply with one word."},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]}],
+            max_tokens=MAX_TOKENS,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        return "red" in content.lower(), f"{content[:60]!r} | {response.usage.prompt_tokens} prompt tokens"
+
+    def sampling():  # the catalog lists no sampling parameters for some models (Nemotron 3.5 Super VL)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with exactly one word: pong"}],
+            temperature=0.2,
+            top_p=0.9,
+            max_tokens=MAX_TOKENS,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        return "pong" in content.lower(), f"{content[:60]!r} at temperature 0.2, top_p 0.9"
+
+    def responses_api():  # documented at POST /v1/responses; OpenPort's evals test chat completions only
+        response = client.responses.create(model=model, input="Reply with exactly one word: pong", max_output_tokens=MAX_TOKENS)
+        text = (response.output_text or "").strip()
+        return "pong" in text.lower(), f"{text[:60]!r} | {response.usage.output_tokens if response.usage else '?'} output tokens"
+
     return {
         "chat": chat,
         "reasoning off": lambda: chat(tokenfactory.reasoning(False)),
@@ -140,6 +188,9 @@ def _checks(client: OpenAI, model: str) -> dict[str, Callable[[], tuple[bool, st
         "tools (auto)": lambda: tool_call("auto"),
         "tools (forced)": lambda: tool_call({"type": "function", "function": {"name": "get_order_status"}}),
         "tool round-trip": tool_round_trip,
+        "image input": image_input,
+        "sampling settings": sampling,
+        "responses API": responses_api,
     }
 
 

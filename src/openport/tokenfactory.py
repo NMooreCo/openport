@@ -76,10 +76,25 @@ def pick_tier(tier: str, model_ids: list[str]) -> str | None:
     return candidates[0] if candidates else None
 
 
+def reads_images(info: ModelInfo) -> bool:
+    """Does the catalog say this model takes images in ("text+image->text")?"""
+    modality = str((info.raw.get("architecture") or {}).get("modality") or "").lower()
+    return "image" in modality.split("->")[0]
+
+
+def pick_vision(models: dict[str, ModelInfo]) -> str | None:
+    """The Nemotron that reads images, for calls that send them (Nemotron 3.5 Super VL, from Oct 12)."""
+    candidates = [m.id for m in models.values() if "nemotron" in m.id.lower() and reads_images(m)]
+    candidates.sort(key=lambda m: ("vl" not in m.lower(), len(m)))
+    return candidates[0] if candidates else None
+
+
 @cache
 def tiers() -> dict[str, str]:
-    """Map each tier (nano, super, ultra) to a Token Factory model ID."""
-    ids = list(catalog())
+    """Map each tier (nano, super, ultra) to a Token Factory model ID, and each extra rung Token Factory has
+    (lightning, vision) to its model."""
+    models = catalog()
+    ids = list(models)
     resolved = {}
     for tier in config.TIERS:
         model = config.pinned_model(tier) or pick_tier(tier, ids)
@@ -89,7 +104,9 @@ def tiers() -> dict[str, str]:
                 f"Set OPENPORT_MODEL_{tier.upper()} in .env (see `openport models`)."
             )
         resolved[tier] = model
-    return resolved
+    extras = {"lightning": config.pinned_model("lightning") or pick_tier("lightning", ids),
+              "vision": config.pinned_model("vision") or pick_vision(models)}
+    return resolved | {tier: model for tier, model in extras.items() if model}
 
 
 def model_info(model_id: str) -> ModelInfo | None:

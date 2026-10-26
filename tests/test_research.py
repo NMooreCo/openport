@@ -24,7 +24,16 @@ def test_model_family_uses_nvidias_names():
     assert model_family("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B") == "NVIDIA Nemotron 3 Nano"
     assert model_family("nvidia/nemotron-3-super-120b-a12b") == "NVIDIA Nemotron 3 Super"
     assert model_family("nvidia/Nemotron-3_5-Lightning") == "NVIDIA Nemotron 3.5 Lightning"
+    assert model_family("nvidia/Nemotron-3.5-Super-VL") == "NVIDIA Nemotron 3.5 Super VL"
     assert model_family("some/other-model") == "other-model"
+
+
+def test_the_vision_models_sources_must_be_about_it_not_its_text_sibling():
+    vl = "nvidia/Nemotron-3.5-Super-VL"
+    assert about_model(vl, "Get Started with NVIDIA-Nemotron-3.5-Super-VL-120B-A12B — NVIDIA NIM")
+    assert about_model(vl, "NVIDIA Nemotron 3.5 Super VL model card")
+    assert not about_model(vl, "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 · Hugging Face")
+    assert not about_model(vl, "Nemotron 3.5 Super: reasoning settings")
 
 
 def test_sources_must_be_about_the_exact_model():

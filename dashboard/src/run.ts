@@ -47,7 +47,7 @@ export interface Attempt {
   title: string;
   file: string;
   function: string;
-  tier: "nano" | "super" | "ultra";
+  tier: string; // nano, super or ultra; lightning when asked for; vision for calls that send images
   model: string;
   round: number;
   variant: string;
@@ -213,4 +213,5 @@ export const pct = (value: number | null | undefined) => (value == null ? "–" 
 export const usd = (value: number | null | undefined) =>
   value == null ? "–" : value >= 0.1 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
 
-export const tierName = (tier: string) => ({ nano: "Nano", super: "Super", ultra: "Ultra" })[tier] ?? tier;
+export const tierName = (tier: string) =>
+  ({ nano: "Nano", super: "Super", ultra: "Ultra", lightning: "Lightning", vision: "Super VL" } as Record<string, string>)[tier] ?? tier;

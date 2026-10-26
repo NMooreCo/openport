@@ -11,6 +11,9 @@ load_dotenv()
 
 TOKEN_FACTORY_BASE_URL = os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
 TIERS = ("nano", "super", "ultra")
+# Rungs used where they fit, not on every call's ladder: Nemotron 3.5 Lightning (Nano's size and price) for
+# `--tiers` to try, and the Nemotron that reads images, for the calls that send them.
+EXTRA_TIERS = ("lightning", "vision")
 RUNS_DIR = Path(os.getenv("OPENPORT_RUNS_DIR", "runs"))
 # Where CI installs OpenPort from (the generated GitHub Action uses it).
 OPENPORT_SOURCE = os.getenv("OPENPORT_SOURCE", "git+https://github.com/NMooreCo/openport")

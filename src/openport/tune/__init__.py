@@ -27,6 +27,7 @@ from ..evals.graders import Judge
 from ..evals.runner import CaseResult, make_judge, run_site
 from ..evals.spec import CallSite, Spec, load_spec
 from ..runtime.openport_llm import UsageMeter
+from ..scan.findings import CallSiteFinding
 from .engineer import Engineer, make_engineer
 from .research import Guidance, Researcher, make_researcher
 from .variant import Variant, VariantClient
@@ -182,11 +183,25 @@ def tune_site(
     return finish(None)
 
 
-def _finding_ids(spec: Spec) -> dict[tuple[str, str], str]:
-    """Map eval call sites to the scanner's call-site IDs (which `openport port` plans use)."""
+def _findings(spec: Spec) -> dict[tuple[str, str], CallSiteFinding]:
+    """The scanner's finding for each eval call site, by (file, function)."""
     from ..scan import scan_repo
 
-    return {(f.file, f.function): f.id for f in scan_repo(spec.source_root).portable()}
+    return {(f.file, f.function): f for f in scan_repo(spec.source_root).portable()}
+
+
+def _finding_ids(spec: Spec) -> dict[tuple[str, str], str]:
+    """Map eval call sites to the scanner's call-site IDs (which `openport port` plans use)."""
+    return {key: f.id for key, f in _findings(spec).items()}
+
+
+def tiers_for(site: CallSite, findings: dict[tuple[str, str], CallSiteFinding], tiers: tuple[str, ...],
+              models: dict[str, str]) -> tuple[str, ...]:
+    """The rungs a call climbs. One that sends images goes to the Nemotron that reads them: a text tier can't."""
+    finding = findings.get((site.file, site.function))
+    if finding is not None and "vision" in finding.features and "vision" in models:
+        return ("vision",)
+    return tiers
 
 
 def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
@@ -254,11 +269,13 @@ def tune_spec(
     engineer = make_engineer(client, meter=helper_meter)
     judge = make_judge(helper_meter, client=client) if use_judge else None
     researcher = make_researcher() if use_research and os.getenv("TAVILY_API_KEY") else None
+    findings = _findings(spec)
+    ladders = {site.id: tiers_for(site, findings, tiers, models) for site in sites}
 
     results = [
         tune_site(
             spec, site, models, client=client, engineer=engineer, judge=judge, target=target, rounds=rounds,
-            tiers=tiers, concurrency=concurrency, limit=limit, on_attempt=on_attempt,
+            tiers=ladders[site.id], concurrency=concurrency, limit=limit, on_attempt=on_attempt,
             researcher=researcher, on_research=on_research, clients=clients,
         )
         for site in sites
@@ -274,7 +291,7 @@ def tune_spec(
         "target": spec.target,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "target_pass_rate": target,
-        "models": {tier: models[tier] for tier in tiers},
+        "models": {tier: models[tier] for ladder in (tiers, *ladders.values()) for tier in ladder},
         "helper_cost_usd": helper_cost,
         "results": [json.loads(json.dumps(asdict(r), default=str)) for r in results],
     }

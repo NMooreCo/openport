@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,7 +8,7 @@ from openport import tokenfactory
 from openport.evals.spec import load_spec
 from openport.port.plan import build_plan
 from openport.scan import scan_repo
-from openport.tune import export_plan, split_cases, tune_site
+from openport.tune import export_plan, split_cases, tiers_for, tune_site
 from openport.tune.engineer import parse_variant
 from openport.tune.variant import Variant, apply_variant
 
@@ -161,6 +162,14 @@ def test_apply_variant():
     no_system = apply_variant(Variant(system_addendum="JSON only."), {"messages": [{"role": "user", "content": "hi"}]})
     assert no_system["messages"][0] == {"role": "system", "content": "JSON only."}
     assert apply_variant(Variant(max_tokens=100), {"messages": [], "max_tokens": 4000})["max_tokens"] == 4000  # a floor
+
+
+def test_a_call_that_sends_images_climbs_only_the_vision_rung():
+    findings = {(TRIAGE.file, TRIAGE.function): SimpleNamespace(features=["json_mode", "vision"])}
+    ladder = ("nano", "super", "ultra")
+    assert tiers_for(TRIAGE, findings, ladder, {**MODELS, "vision": "nvidia/vl-test"}) == ("vision",)
+    assert tiers_for(TRIAGE, findings, ladder, MODELS) == ladder  # no Nemotron reads images: the usual ladder, which fails
+    assert tiers_for(TRIAGE, {}, ladder, {**MODELS, "vision": "nvidia/vl-test"}) == ladder  # a text call
 
 
 def test_split_is_stable_and_disjoint():

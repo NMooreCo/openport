@@ -11,7 +11,7 @@ BLOCKERS = {"vision", "audio", "web_search", "legacy_sdk", "embeddings", "anthro
 # Plain HTTP calls the port moves only when they're OpenAI-style chat requests: why the others stay.
 HTTP_KEPT = {
     "messages": NOTES["anthropic_http"],
-    "responses": "Plain HTTP call to OpenAI's Responses API: Token Factory serves chat completions, so it moves to that format first",
+    "responses": "Plain HTTP call to OpenAI's Responses API: Token Factory documents /v1/responses, but OpenPort moves chat-completions requests only",
 }
 
 
@@ -50,7 +50,8 @@ def build_plan(
     default_tier: str = "super",
     assignments: dict[str, dict | str] | None = None,
 ) -> dict[str, SiteDecision]:
-    """Decide each call site's target. `models` maps tiers (nano, super, ultra) to Token Factory model IDs.
+    """Decide each call site's target. `models` maps tiers (nano, super, ultra, and vision when Token Factory has
+    a Nemotron that reads images) to Token Factory model IDs.
 
     An assignment is a tier, a model ID, "keep", or a dict with "model" and optional "extra_body".
     """
@@ -66,6 +67,11 @@ def build_plan(
 
         choice = (assigned or {}).get("model")
         blockers = BLOCKERS & set(finding.features)
+        if "vision" in blockers and "vision" in models:  # a Nemotron reads images: the call moves to it, not to a text tier
+            blockers.discard("vision")
+            decision.model = models["vision"]
+            if not choice:
+                decision.notes.append(f"Sends images: moved to {models['vision']}, the Nemotron that reads them; check it on your own images")
         if finding.sdk == "http" and finding.api in HTTP_KEPT:
             decision.keep_because(HTTP_KEPT[finding.api])
         elif choice == "keep":

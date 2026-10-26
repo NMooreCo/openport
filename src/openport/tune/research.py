@@ -41,15 +41,16 @@ class Guidance:
 Researcher = Callable[[CallSite, str, list[tuple[dict, CaseResult]]], Guidance | None]
 
 
-_FAMILY = re.compile(r"nemotron[-_ ]?(\d+(?:[._]\d+)?)[-_ ](nano|super|ultra|lightning)", re.IGNORECASE)
+_FAMILY = re.compile(r"nemotron[-_ ]?(\d+(?:[._]\d+)?)[-_ ](nano|super|ultra|lightning)([-_ ]vl\b)?", re.IGNORECASE)
 
 
 def model_family(model: str) -> str:
-    """"nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B" -> "NVIDIA Nemotron 3 Nano", the way NVIDIA's docs name it."""
+    """"nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B" -> "NVIDIA Nemotron 3 Nano", the way NVIDIA's docs name it
+    ("nvidia/Nemotron-3.5-Super-VL" -> "NVIDIA Nemotron 3.5 Super VL")."""
     match = _FAMILY.search(model)
     if not match:
         return model.split("/")[-1]
-    return f"NVIDIA Nemotron {match.group(1).replace('_', '.')} {match.group(2).capitalize()}"
+    return f"NVIDIA Nemotron {match.group(1).replace('_', '.')} {match.group(2).capitalize()}{' VL' if match.group(3) else ''}"
 
 
 def about_model(model: str, text: str) -> bool:
@@ -59,7 +60,8 @@ def about_model(model: str, text: str) -> bool:
         return True  # not a Nemotron name that can be checked
     version = re.escape(match.group(1).replace("_", ".")).replace(r"\.", r"[._]")
     size = match.group(2)
-    sep, variant = r"[\s_-]*", r"(?![\s_-]*(?:omni|vl\b|vision))"
+    # The vision model's pages must say VL; a text model's pages mustn't be about its Omni or VL sibling.
+    sep, variant = r"[\s_-]*", (r"[\s_-]*(?:vl\b|vision)" if match.group(3) else r"(?![\s_-]*(?:omni|vl\b|vision))")
     patterns = (
         rf"nemotron{sep}{version}(?![._]?\d){sep}(?:\d+b{sep}(?:a\d+b{sep})?)?{size}{variant}",  # Nemotron-3-Nano(-30B-A3B)
         rf"nemotron{sep}{size}{sep}v?{version}(?![._]?\d){variant}",  # Nemotron Nano v3

@@ -58,14 +58,14 @@ def models() -> None:
 
     try:
         for tier, model in tokenfactory.tiers().items():
-            console.print(f"  {tier:>5} -> [bold]{model}[/bold]")
+            console.print(f"  {tier:>9} -> [bold]{model}[/bold]")
     except RuntimeError as error:
         console.print(f"[yellow]{error}[/yellow]")
 
 
 @app.command()
 def smoke() -> None:
-    """Check what each Nemotron tier supports: JSON modes, tool calling, reasoning on and off."""
+    """Check what each Nemotron tier supports: JSON modes, tool calling, reasoning on and off, images, sampling settings and the Responses API."""
     from .smoke import run_model_checks, run_tavily_check
 
     try:
@@ -90,7 +90,7 @@ def smoke() -> None:
 
     for check in checks:
         style = "dim" if check.ok else "red"
-        console.print(f"[{style}]{check.tier:>5} | {check.name:<16} | {check.detail}[/{style}]")
+        console.print(f"[{style}]{check.tier:>9} | {check.name:<17} | {check.detail}[/{style}]")
     if tavily:
         console.print(f"Tavily search: {'[green]pass[/green]' if tavily.ok else '[red]FAIL[/red]'} ({tavily.detail})")
     else:
@@ -106,7 +106,7 @@ def smoke() -> None:
 @app.command()
 def baseline(
     target: Path = typer.Argument(..., help="Target app folder, or its openport.evals.yaml"),
-    tiers: str = typer.Option("nano,super,ultra", help="Comma-separated Nemotron tiers to try"),
+    tiers: str = typer.Option("nano,super,ultra", help="Comma-separated Nemotron tiers to try (also lightning; calls that send images use vision)"),
     concurrency: int = typer.Option(8, help="Cases to run in parallel"),
     limit: int | None = typer.Option(None, help="Only run the first N cases of each call site"),
     judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
@@ -115,7 +115,7 @@ def baseline(
     from .baseline import run_baseline
 
     tier_list = [t.strip() for t in tiers.split(",") if t.strip()]
-    unknown = set(tier_list) - set(config.TIERS)
+    unknown = set(tier_list) - set(config.TIERS) - set(config.EXTRA_TIERS)
     if unknown:
         _fail(f"Unknown tiers: {', '.join(sorted(unknown))}")
 
@@ -270,7 +270,7 @@ def tune(
     sites: str | None = typer.Option(None, help="Comma-separated eval call-site IDs (default: all)"),
     target_rate: float = typer.Option(0.9, "--target", help="Pass rate a call must reach on both tuning and held-out cases"),
     rounds: int = typer.Option(3, help="Attempts per tier before moving up"),
-    tiers: str = typer.Option("nano,super,ultra", help="Comma-separated tiers, cheapest first"),
+    tiers: str = typer.Option("nano,super,ultra", help="Comma-separated tiers, cheapest first (also lightning; calls that send images use vision)"),
     concurrency: int = typer.Option(8, help="Cases to run in parallel"),
     limit: int | None = typer.Option(None, help="Only use the first N cases of each call site"),
     judge: bool = typer.Option(True, help="Score free-text outputs with a Nemotron Ultra judge"),
@@ -294,7 +294,7 @@ def tune(
             _fail(f"--model wants NAME=MODEL_ID[@BASE_URL], got {item!r}")
         extra[name.strip()] = (model_id.strip(), base_url.strip() or None)
     tier_list = tuple(t.strip() for t in tiers.split(",") if t.strip())
-    if set(tier_list) - set(config.TIERS) - set(extra):
+    if set(tier_list) - set(config.TIERS) - set(config.EXTRA_TIERS) - set(extra):
         _fail(f"Unknown tiers in {tiers!r}; add a tier with --model NAME=MODEL_ID")
 
     if jobs:

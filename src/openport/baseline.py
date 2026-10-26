@@ -26,15 +26,19 @@ def run_baseline(
     use_judge: bool = True,
     on_result: Callable[[SiteResult], None] | None = None,
 ) -> tuple[list[SiteResult], Path]:
+    from .tune import _findings, tiers_for
+
     spec = load_spec(target)
     models = tokenfactory.tiers()
     client = tokenfactory.client()
     judge_meter = UsageMeter()
     judge = make_judge(judge_meter, client=client) if use_judge else None
+    findings = _findings(spec)
+    ladders = {site.id: tiers_for(site, findings, tuple(tiers), models) for site in spec.call_sites}  # images: the vision model
 
     results = []
     for site in spec.call_sites:
-        for tier in tiers:
+        for tier in ladders[site.id]:
             result = run_site(spec, site, tier, models[tier], concurrency=concurrency, limit=limit, judge=judge, client=client)
             results.append(result)
             if on_result:
@@ -44,7 +48,7 @@ def run_baseline(
         "kind": "baseline",
         "target": spec.target,
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "models": {tier: models[tier] for tier in tiers},
+        "models": {tier: models[tier] for ladder in (tiers, *ladders.values()) for tier in ladder},
         "judge_usage": {model: asdict(usage) for model, usage in judge_meter.by_model.items()},
         "results": [
             {**asdict(result), "pass_rate": result.pass_rate, "mean_score": result.mean_score} for result in results

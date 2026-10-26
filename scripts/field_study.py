@@ -2,7 +2,8 @@
 dry run over popular open-source AI apps, then print what docs/FIELD-STUDY.md reports: the totals and the per-app
 table.
 
-Static only: repos are shallow-cloned and read, never run. Results go to runs/field-study/<owner>__<name>.json.
+Static only: repos are shallow-cloned and read, never run. Results go to runs/field-study/<owner>__<name>.json;
+without --advisories, each app keeps the upgrade results an earlier run saved there.
 Usage: uv run python scripts/field_study.py [--advisories] [owner/name ...]   (no repos: the study's 20)
        uv run python scripts/field_study.py --summary                         (the report, from the saved results)
 """
@@ -60,7 +61,7 @@ KEPT = [
     ("serve", "embeddings", "Embeddings"),
     ("serve", "audio", "returns audio"),
     ("serve", "the provider's own web search", "Searches the web"),
-    ("serve", "OpenAI's Responses API over HTTP", "Responses API"),
+    ("other", "OpenAI's Responses API over HTTP, which the port doesn't rewrite", "Responses API"),
     ("serve", "a streamed Anthropic response", "Streams an Anthropic"),
     ("other", "a server on the same machine", "same machine"),
     ("other", "Azure OpenAI", "Azure"),
@@ -104,16 +105,16 @@ def study(target: str, advisories: bool) -> dict:
     testable, reasons = 0, Counter()
     for site in sites:
         if site.language == "python":
-            ok, why = runnable(site, root)
+            ok, untestable = runnable(site, root)
         else:  # dependencies aren't installed here, so ask only whether the harness could call it once they are
-            ok, why = runnable(site, None)
+            ok, untestable = runnable(site, None)
             if ok and ts_entry_params(root, site) is None:
-                ok, why = False, "not at the top of its module, where the harness can call it"
+                ok, untestable = False, "not at the top of its module, where the harness can call it"
         testable += ok
         if not ok:
-            reasons[re.sub(r"\(.*?\)|'.*?'", "…", why)] += 1
+            reasons[re.sub(r"\(.*?\)|'.*?'", "…", untestable)] += 1
     # What `openport port` would do with each call: the rewriters only read the repo and return what they'd write.
-    plan = build_plan(sites, {"nano": "nano", "super": "super", "ultra": "ultra"})
+    plan = build_plan(sites, {"nano": "nano", "super": "super", "ultra": "ultra", "vision": "vision"})  # images: Nemotron 3.5 Super VL
     port_python(root, [s for s in sites if s.language == "python"], plan, b"")
     port_typescript(root, [s for s in sites if s.language == "typescript"], plan)
     ported = Counter(s.sdk for s in sites if not plan[s.id].keep)
@@ -208,9 +209,12 @@ def summary(results: list[dict]) -> str:
         kept.update(_kept(r))
     for group, heading in GROUPS.items():
         labels = [(label, n) for (g, label), n in kept.most_common() if g == group]
-        if labels:  # a group with one reason needs no list
-            listed = ": " + "; ".join(f"{label} ({n})" for label, n in labels) if len(labels) > 1 else ""
-            lines.append(f"  - {sum(n for _, n in labels)} {heading}{listed}")
+        total = sum(n for _, n in labels)
+        if group == "other" and total == 1:
+            lines.append(f"  - 1 stays for another reason: {labels[0][0]}")
+        elif labels:  # a group with one reason needs no list
+            listed = ": " + "; ".join(f"{label} ({n})" for label, n in labels) if len(labels) > 1 or group == "other" else ""
+            lines.append(f"  - {total} {heading}{listed}")
     upgrades = [r["upgrade"] for r in done if "upgrade" in r]
     if upgrades:
         status: Counter = Counter()
@@ -239,6 +243,7 @@ def summary(results: list[dict]) -> str:
 
 
 def main(argv: list[str]) -> None:
+    sys.stdout.reconfigure(encoding="utf-8")  # the report has ≥ and en dashes, which a Windows console can't print
     saved = lambda: [json.loads(p.read_text(encoding="utf-8")) for p in sorted(OUT.glob("*.json"))]  # noqa: E731
     if "--summary" in argv:
         print(summary(saved()))
@@ -254,6 +259,11 @@ def main(argv: list[str]) -> None:
             result = study(target, advisories)
         except Exception as error:
             result = {"repo": target, "error": f"{type(error).__name__}: {error}", "trace": traceback.format_exc()[-1500:]}
+        earlier = OUT / f"{name}.json"
+        if not advisories and "error" not in result and earlier.exists():  # a scan-only rerun keeps the saved upgrade results
+            saved_upgrade = json.loads(earlier.read_text(encoding="utf-8")).get("upgrade")
+            if saved_upgrade:
+                result["upgrade"] = saved_upgrade
         (OUT / f"{name}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         results.append(result)
         line = result.get("error") or (f"{result['call_sites']} calls ({result['testable_as_is']} testable), "

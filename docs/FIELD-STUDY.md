@@ -12,11 +12,14 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 
 - **207 LLM calls in 14 of the 20 apps' own code:** 132 through the OpenAI and Anthropic SDKs, in 11 apps (72 OpenAI, 60 Anthropic), and 75 plain HTTP calls to OpenAI- or Anthropic-style endpoints, in 9. 151 are in Python and 56 in TypeScript; 51 use tool calling. Another 943 sit in tests, docs' code samples, benchmarks and evals, which OpenPort lists apart.
 - **160 of the 207 calls (77%) can be tested as written**, once the app's own dependencies are installed: wherever their client comes from, in a function or in a class's method, and over plain HTTP too, whose requests OpenPort redirects to its stand-in for the API. Most of the rest are in methods of classes OpenPort can't build on its own (20): their constructors take arguments, which the spec can give as `init:`, or come from a base class it doesn't follow. Another 16 are in TypeScript functions inside other functions or objects, where the harness can't reach them.
-- **`openport port` moves 73 of them (35%) to Nemotron as they are:** 61 SDK calls and 12 HTTP calls. Each of the other 134 stays where it is with the reason, and most reasons are a choice the code makes somewhere OpenPort doesn't rewrite:
-  - 46 get their client from code the port doesn't rewrite: 26 are handed it, by their caller (22) or as their object is built (4); 11 use a client of another class, such as Groq's SDK; 5 inherit it from a class outside the app; the port can't trace the last 4;
-  - 36 HTTP calls build their URL from settings or variables;
-  - 18 pick their provider at runtime: a factory choosing between providers, a client built from its caller's settings, or a table of endpoints.
-  - The rest are calls Nemotron on Token Factory can't serve as written: images (11), Anthropic's own HTTP format (10), embeddings (7), audio (3), the provider's own web search (1), OpenAI's Responses API over HTTP (1) and a streamed Anthropic response (1).
+- **`openport port` moves 74 of them (36%) to Nemotron as they are:** 61 SDK calls and 13 HTTP calls. Each of the other 133 stays where it is with the reason, and most reasons are a choice the code makes somewhere OpenPort doesn't rewrite:
+  - 50 get their client from code the port doesn't rewrite: 29 are handed it, by their caller (24) or as their object is built (5); 12 use a client of another class, such as Groq's SDK; 5 inherit it from a class outside the app; the port can't trace the last 4;
+  - 42 HTTP calls build their URL from settings or variables;
+  - 18 pick their provider at runtime: a factory choosing between providers, a client built from its caller's settings, or a table of endpoints;
+  - 22 are calls Nemotron on Token Factory can't serve as written: Anthropic's own HTTP format (10), embeddings (7), audio (3), the provider's own web search (1) and a streamed Anthropic response (1);
+  - 1 is a plain HTTP call to OpenAI's Responses API, which Token Factory documents but the port doesn't rewrite yet.
+
+  Images no longer keep a call where it is: a call that sends them goes to Nemotron 3.5 Super VL, the Nemotron that reads images. Of the 11 here, 1 moved (CowAgent's); the other 10 also get their client or URL from somewhere the port doesn't rewrite, and are counted above.
 - **19 of the 20 lock a dependency version with a known vulnerability:** 746 vulnerable versions out of 27,867 locked, with 3,302 advisories between them. 687 of those (92%) have a release that fixes at least one advisory and is at least a week old, 652 of them fixing every one. 37 are held back because the only fix is newer than a week, which is the supply-chain guard at work, and 22 have no fix yet.
 - **Most of these apps are monorepos.** AutoGPT's four `poetry.lock` files, lobehub's and claude-mem's lockfiles, and 20 of ruflo's `package-lock.json` files all sit in subprojects. `openport upgrade --project <folder>` upgrades one, with its own tests and the whole repo there for its path dependencies.
 - **It's fast enough to run on a whim.** The largest repo here, lobehub's 18,195 files, scans in under 10 seconds; checking ruflo's 3,264 locked versions against OSV took two minutes. 3 apps also reach models through LiteLLM, 4 through LangChain and 2 through the Vercel AI SDK, which OpenPort doesn't rewrite.
@@ -43,7 +46,7 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 | [binary-husky/gpt_academic](https://github.com/binary-husky/gpt_academic) | 71,540 | 293 | 2 OpenAI | – | 1 | 0 | – | 21 | 4 | 3 |
 | [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) | 70,313 | 9,515 | – | 1 | 0 | 0 | – | 1,575 | 19 | 18 |
 | [Aider-AI/aider](https://github.com/Aider-AI/aider) | 49,739 | 160 | – | – | 0 | 0 | LiteLLM | 200 | 30 | 28 |
-| [zhayujie/CowAgent](https://github.com/zhayujie/CowAgent) | 47,562 | 1,133 | 1 OpenAI | 32 | 33 | 0 | – | 557 | 31 | 29 |
+| [zhayujie/CowAgent](https://github.com/zhayujie/CowAgent) | 47,562 | 1,133 | 1 OpenAI | 32 | 33 | 1 | – | 557 | 31 | 29 |
 | [LibreChat-AI/LibreChat](https://github.com/LibreChat-AI/LibreChat) | 46,258 | 6,580 | 1 OpenAI | – | 1 | 0 | LangChain | 2,697 | 3 | 1 |
 
 Calls count only the app's own code, not its tests, docs' samples, benchmarks or evals. "Vulnerable" counts dependency versions: a package locked at two versions counts twice. markitdown locks nothing (it ships a `pyproject.toml` without a lockfile).
@@ -74,11 +77,15 @@ The second round, from running the port itself over the 20 apps and reading ever
 - **Too many calls stayed with only "couldn't find where its client is created"** (29 of them). The port now moves a client wrapped on the way (`instrument(OpenAI())`), follows `client.with_options(...)` back to its client, and finds a `self._client` from a function inside a method or a parent class in the same file. For the rest it says why: the client is another class, it's handed in when the object is built, or a class from outside the app sets it up. 4 are left without a precise reason.
 - **A monorepo's subprojects could only be read, not upgraded.** `openport upgrade --project <folder>` (and `upgrade-action --project`) upgrades one, with its own tests, in a copy of the whole repo.
 
+The third round (Oct 25), from Token Factory's own model list:
+
+- **Calls that send images stayed where they were, though a Nemotron now reads them.** Nemotron 3.5 Super VL arrived on Token Factory on Oct 12. A call that sends images now moves to it: its tuning ladder is that one model, since a text tier can't see the image, and the research step reads the VL model's own pages rather than its text sibling's. In the study that moved 1 call of 11, because the other 10 are held back by their client or URL too; in probly, one of the demo repos, it makes 4 of 4.
+
 ## What it says to build next
 
-- **Following a client from where it's made to where it's used**, through callers and other modules: the most common reason (46 calls) a call stays where it is.
+- **Following a client from where it's made to where it's used**, through callers and other modules: the most common reason (50 calls) a call stays where it is.
 - **Building classes that take arguments** (20 calls), from what the app's own tests build them with.
-- **Reading the settings that plain HTTP calls take their URL from** (36 calls), where a project keeps them in its own files.
+- **Reading the settings that plain HTTP calls take their URL from** (42 calls), where a project keeps them in its own files.
 
 ## Reproduce
 

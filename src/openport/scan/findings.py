@@ -49,7 +49,7 @@ NEEDS_REVIEW = {
 
 NOTES = {
     "anthropic": "Anthropic SDK: translated, since Token Factory has no Anthropic-compatible API",
-    "responses_api": "OpenAI Responses API: rewritten as chat completions",
+    "responses_api": "OpenAI Responses API: Token Factory documents /v1/responses, but OpenPort's evals test chat completions only, so check it by hand",
     "structured_output": "Structured output: needs JSON-schema support on the chosen model",
     "json_mode": "JSON mode: needs json_object support on the chosen model",
     "ends_on_assistant": "Conversation ends on an assistant turn: models handle this differently, check by hand",
@@ -57,7 +57,7 @@ NOTES = {
     "thinking": "Extended thinking / reasoning effort: mapped to Nemotron's reasoning switch",
     "streaming": "Streams its response",
     "anthropic_streaming": "Streams an Anthropic response: not supported by the runtime yet",
-    "vision": "Sends images: needs a vision model, or stays on the original",
+    "vision": "Sends images: needs a Nemotron that reads images, or stays on the original",
     "audio": "Sends or returns audio: Nemotron on Token Factory works in text, so it stays on the original",
     "web_search": "Searches the web as it answers: Nemotron on Token Factory can't, so it stays on the original",
     "prefill": "Assistant prefill: no chat-completions equivalent, so the prompt needs adjusting",
