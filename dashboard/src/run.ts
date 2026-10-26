@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { follow } from "./api";
 
 export const STAGES = ["fetch", "scan", "capture", "tune", "port", "pr"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -173,22 +174,17 @@ export function reduce(state: RunState, event: RunEvent): RunState {
   }
 }
 
-/** Follow a run's live event stream, folding each event into the state. */
+/** Follow a run's live event stream (or its recording's replay), folding each event into the state. */
 export function useEvents<T>(runId: string | null, init: (id: string) => T, reducer: (state: T, event: RunEvent) => T, types: string[]): T | null {
   const [state, setState] = useState<T | null>(null);
   useEffect(() => {
     if (!runId) return;
     let current = init(runId);
     setState(current);
-    const source = new EventSource(`/api/runs/${runId}/events`);
-    const onEvent = (message: MessageEvent) => {
-      const event = JSON.parse(message.data) as RunEvent;
-      current = reducer(current, event);
+    return follow(runId, types, (event) => {
+      current = reducer(current, event as RunEvent);
       setState(current);
-      if (event.type === "done" || event.type === "failed") source.close();
-    };
-    for (const type of types) source.addEventListener(type, onEvent);
-    return () => source.close();
+    });
   }, [runId]);
   return state;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import * as api from "./api";
 import { Launcher, type Mode } from "./components/Launcher";
 import { PortView } from "./components/PortView";
 import { UpgradeView } from "./components/UpgradeView";
@@ -27,8 +28,7 @@ export default function App() {
   useEffect(() => {
     if (!runId) return;
     let current = true;
-    fetch(`/api/runs/${runId}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
+    api.run(runId)
       .then((data) => current && setRun({
         id: data.id, label: data.label, kind: data.kind === "upgrade" ? "upgrade" : "port",
         target: data.target, recorded: Boolean(data.recorded), created: data.created,
@@ -40,18 +40,11 @@ export default function App() {
   }, [runId]);
 
   const start = async (target: string, mode: Mode, live = false) => {
-    const response = await fetch(mode === "upgrade" ? "/api/upgrades" : "/api/runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, live }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail ?? "Couldn't start the run");
-    location.hash = `run=${data.id}`;
+    location.hash = `run=${await api.start(target, mode, live)}`;
   };
 
   if (!runId) return <Launcher onStart={start} />;
   if (run?.id !== runId) return null; // the run's details are still loading
-  const runLive = () => start(run.target, run.kind, true);
+  const runLive = api.STATIC ? undefined : () => start(run.target, run.kind, true); // a static page can't run anything
   return run.kind === "upgrade" ? <UpgradeView run={run} onRunLive={runLive} /> : <PortView run={run} onRunLive={runLive} />;
 }

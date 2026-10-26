@@ -140,7 +140,7 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 
 - **Video:** 3 minutes or shorter, a **public YouTube** video showing the project working and how it uses Token Factory and Nemotron.
 - **Code:** a **public** repository with an open-source license visible at the top (MIT is in place; the repo is private until I submit).
-- **Working demo:** a URL to a hosted app or test build. The dashboard needs to be deployed (a Nebius Serverless Endpoint is encouraged).
+- **Working demo:** a URL to a hosted app or test build. The dashboard needs to be deployed (a Nebius Serverless Endpoint is encouraged). Backup that never expires: the static replay on GitHub Pages (`scripts/static_replay.py`, `.github/workflows/pages.yml`); when the repo goes public, set Settings > Pages > Source to GitHub Actions and run the `pages` workflow.
 - **README:** setup instructions, how OpenPort uses Nemotron, where Token Factory helped, and any other Nebius tools used.
 - **Feedback** on Token Factory, AI Cloud and the NVIDIA models (FEEDBACK.md).
 - **Credits:** $25 of Token Factory credits via the [promo form](https://nebius.com/promo-code?utm_promo_event_code=2026-devpost-global-ai-hack&utm_promo_code_type=Token_Factory&utm_promo_activation_code=NEBIUS-DEVPOST-GLOBAL26) (activation code `NEBIUS-DEVPOST-GLOBAL26`), plus another $25 (and Tavily credits) by joining the free [Nebius Builders Program](https://dev.nebius.com/builders).
@@ -338,7 +338,8 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - Fixed before Monday: `scripts/monday.py` crashed listing its steps on a Windows console (the ⟨placeholders⟩), and the field study's reasons broke on a rerun (a variable shadowed the function that groups them). A scan-only rerun of the study now keeps each app's saved upgrade results.
 - **The port follows a client handed in back to where it's built** (Python): through the callers of the function a call is in, or the code building its object, up to three calls back, its tests' mocks left out. The call moves when every caller hands it a client the port can rewrite; a function also passed around as a callback, or a method also called from elsewhere, stays. The field study now moves 79 of 207 (38%): headroom +3, learn-claude-code +2.
 - **Fixed on the way: a call that stayed could have its client swapped by one that moved.** learn-claude-code's context compactor stayed while the agent's own calls moved, on the same client, which the port swapped. Clients a staying call is handed are now split or left alone. Re-porting SupportDesk and preflight with their plans changes nothing in their code.
-- 239 offline tests.
+- **A static replay of the dashboard** (`scripts/static_replay.py`): the demos' recorded runs, played in the browser at the server's own pace, with no server, key or credit. The dashboard reaches OpenPort through one small module, so the same build serves both; `.github/workflows/pages.yml` publishes the replay on GitHub Pages once the repo is public (it skips itself while private). Checked in the browser at desktop and phone width, and the served dashboard still replays through its event stream.
+- 242 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.

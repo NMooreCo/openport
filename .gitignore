@@ -22,3 +22,6 @@ src/openport/server/static/
 Thumbs.db
 .vscode/
 .idea/
+
+# The static replay of the dashboard (scripts/static_replay.py)
+site/

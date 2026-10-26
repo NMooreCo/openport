@@ -7,7 +7,7 @@ import { Shell } from "./Shell";
 import { Stages } from "./Stages";
 
 /** A port run: the calls found, each one's tuning on Nemotron, and the pull request. */
-export function PortView({ run, onRunLive }: { run: RunInfo; onRunLive: () => Promise<void> }) {
+export function PortView({ run, onRunLive }: { run: RunInfo; onRunLive?: () => Promise<void> }) {
   const state = useRun(run.id);
   if (!state) return null;
 

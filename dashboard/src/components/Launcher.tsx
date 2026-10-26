@@ -1,22 +1,15 @@
 import { useEffect, useState } from "react";
-
-interface Preset {
-  id: string;
-  label: string;
-  detail: string;
-  tested?: boolean; // false on a public server that won't run this repo's code
-}
+import * as api from "../api";
 
 export type Mode = "port" | "upgrade";
 
-const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: string; presets: string; placeholder: string }> = {
+const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: string; placeholder: string }> = {
   port: {
     tab: "Port to Nemotron",
     title: "Prove it, then port it.",
     blurb: "OpenPort finds every OpenAI and Anthropic call in a repo, tests each one on open NVIDIA Nemotron models " +
       "served by Nebius Token Factory, tunes the prompt until it passes, and writes the pull request with the evidence.",
     action: "Port it",
-    presets: "/api/presets",
     placeholder: "owner/repo on GitHub",
   },
   upgrade: {
@@ -26,7 +19,6 @@ const MODES: Record<Mode, { tab: string; title: string; blurb: string; action: s
       "at least a week old, runs the repo's own tests in a container, has Nemotron Super fix whatever the upgrade broke, " +
       "and writes the pull request with the test results.",
     action: "Upgrade it",
-    presets: "/api/upgrade-presets",
     placeholder: "owner/repo, or a monorepo project's GitHub folder URL",
   },
 };
@@ -35,7 +27,7 @@ export const modeFromHash = (): Mode => (location.hash === "#upgrade" ? "upgrade
 
 export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) => Promise<void> }) {
   const [mode, setMode] = useState<Mode>(modeFromHash);
-  const [presets, setPresets] = useState<Preset[]>([]);
+  const [presets, setPresets] = useState<api.Preset[]>([]);
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -43,7 +35,7 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
   const copy = MODES[mode];
 
   useEffect(() => {
-    fetch("/api/info").then((r) => r.json()).then((data) => setVettedOnly(Boolean(data.vetted_only))).catch(() => {});
+    api.info().then((data) => setVettedOnly(Boolean(data.vetted_only))).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -55,12 +47,11 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
   useEffect(() => {
     let current = true;
     setPresets([]);
-    fetch(copy.presets)
-      .then((r) => r.json())
+    api.presets(mode)
       .then((data) => current && setPresets(data))
       .catch(() => current && setPresets([]));
     return () => { current = false; };
-  }, [copy.presets]);
+  }, [mode]);
 
   const choose = (next: Mode) => {
     setMode(next);
@@ -99,6 +90,12 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
       <h1 className="mt-6 text-4xl font-semibold tracking-tight text-white sm:text-5xl">{copy.title}</h1>
       <p className="mt-5 text-lg leading-relaxed text-muted">{copy.blurb}</p>
 
+      {api.STATIC ? (
+        <p className="mt-10 rounded-lg border border-sky-500/30 bg-sky-500/5 px-4 py-3 text-sm leading-relaxed text-sky-100">
+          This page replays recorded runs of OpenPort's demos, with no server behind it. To run OpenPort on your own
+          repo, install it from <a className="underline" href="https://github.com/NMooreCo/openport">GitHub</a>.
+        </p>
+      ) : (
       <form
         className="mt-10 flex flex-col gap-3 sm:flex-row"
         onSubmit={(e) => {
@@ -121,6 +118,7 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
           {copy.action}
         </button>
       </form>
+      )}
       {error && <p className="mt-3 text-sm text-fail">{error}</p>}
       {vettedOnly && mode === "port" && (
         <p className="mt-3 text-xs leading-relaxed text-muted">
@@ -130,7 +128,8 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
       )}
 
       <div className="mt-10">
-        <p className="text-xs font-medium uppercase tracking-wider text-muted">Or try one</p>
+        <p className="text-xs font-medium uppercase tracking-wider text-muted">{api.STATIC ? "Pick one" : "Or try one"}</p>
+        {api.STATIC && presets.length === 0 && <p className="mt-3 text-sm text-muted">No recorded runs of this kind yet.</p>}
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           {presets.map((preset) => (
             <button

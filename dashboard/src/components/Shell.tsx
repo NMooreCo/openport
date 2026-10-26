@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { RunInfo } from "../App";
 
-function RecordedBanner({ created, onRunLive }: { created: number; onRunLive: () => Promise<void> }) {
+function RecordedBanner({ created, onRunLive }: { created: number; onRunLive?: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const day = new Date(created * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -9,7 +9,7 @@ function RecordedBanner({ created, onRunLive }: { created: number; onRunLive: ()
     setBusy(true);
     setError("");
     try {
-      await onRunLive();
+      await onRunLive?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
@@ -20,13 +20,17 @@ function RecordedBanner({ created, onRunLive }: { created: number; onRunLive: ()
       <p>A recorded run from {day}, replayed faster than it ran. Nothing is calling Token Factory now.</p>
       <div className="flex flex-wrap items-center gap-3">
         {error && <span role="alert" className="text-xs text-red-300">{error}</span>}
-        <button
-          disabled={busy}
-          onClick={runLive}
-          className="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-emerald-400 disabled:opacity-40"
-        >
-          Run it live
-        </button>
+        {onRunLive ? (
+          <button
+            disabled={busy}
+            onClick={runLive}
+            className="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-emerald-400 disabled:opacity-40"
+          >
+            Run it live
+          </button>
+        ) : (
+          <a className="text-xs underline" href="https://github.com/NMooreCo/openport#quickstart">Run it yourself</a>
+        )}
       </div>
     </div>
   );
@@ -38,7 +42,7 @@ export function Shell({ run, status, home, tagline, onRunLive, children }: {
   status: string;
   home: string;
   tagline: string;
-  onRunLive: () => Promise<void>;
+  onRunLive?: () => Promise<void>; // none on a static page, which can only replay
   children: ReactNode;
 }) {
   const live = status === "running" || status === "queued";

@@ -1,0 +1,52 @@
+# The static replay of the dashboard on GitHub Pages: the demos' recorded runs, playable with no server, key or
+# credit, so the demo keeps working whatever happens to the hosted endpoint. It needs the repo public and Pages set
+# to deploy from GitHub Actions (Settings > Pages); until then the job skips itself. Actions are pinned to commits of
+# releases at least a week old, as in tests.yml.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["dashboard/**", "examples/recorded/**", "scripts/static_replay.py", "src/openport/server/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.12.18"
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "22"
+      - name: Install
+        run: uv sync --frozen && npm ci --no-audit --no-fund --prefix dashboard
+      - name: Build the replay
+        run: uv run --no-sync python scripts/static_replay.py
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

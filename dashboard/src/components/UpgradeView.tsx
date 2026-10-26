@@ -218,7 +218,7 @@ function Tests({ state }: { state: UpgradeState }) {
 }
 
 /** An upgrade run: the vulnerable packages, the versions chosen, the test proof and the pull request. */
-export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive: () => Promise<void> }) {
+export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive?: () => Promise<void> }) {
   const state = useUpgrade(run.id);
   if (!state) return null;
 
