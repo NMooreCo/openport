@@ -72,6 +72,12 @@ uv run openport tune examples/supportdesk-ts
 uv run openport port examples/supportdesk-ts --plan runs/plan-supportdesk-ts.json
 ```
 
+Calls that send images are tested the same way, on Nemotron 3.5 Super VL. `examples/receipts` is a receipt reader on gpt-4o-mini's vision: it reads the order number, date and total off a photo of a store receipt, and its 24 receipts are drawn from numbers chosen in advance, so every label is right by construction, with the traps real receipts have (subtotals, discounts, cash tendered and change).
+
+```bash
+uv run openport tune examples/receipts
+```
+
 With `TAVILY_API_KEY` set, before proposing a fix the tuner looks up NVIDIA's own guidance for the exact model it's tuning on (Nemotron 3 Nano, Super or Ultra, not a sibling like Nano Omni). Ultra cites the pages it relied on, and the PR links them next to the change.
 
 Tune every call at once on **Nebius Serverless Jobs**: each call site runs in its own container job, built from this repo's Dockerfile, and the results merge into one report and plan. API keys reach the jobs only as MysteryBox secrets. It needs the `nebius` CLI (Linux or macOS; on Windows, set `OPENPORT_NEBIUS_CLI` to run it through WSL).
@@ -159,6 +165,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `dashboard/` | Dashboard frontend (Vite, React, Tailwind); builds into `src/openport/server/static/` |
 | `examples/supportdesk/` | Demo target: a small support-desk app with five LLM calls on the OpenAI and Anthropic SDKs, plus hand-labelled eval sets |
 | `examples/supportdesk-ts/` | SupportDesk's three OpenAI calls in TypeScript (JSON mode, JSON schema, a tool-calling agent), tested on the same cases |
+| `examples/receipts/` | A call that sends images: gpt-4o-mini reads photos of store receipts (order number, date, total), with 24 receipt images whose labels are right by construction (`tools/make_receipts.py` draws them) |
 | `examples/evalpacks/preflight/` | OpenPort's eval pack for [jsliapark/preflight](https://github.com/jsliapark/preflight), an AI PR reviewer that ships no evals: 119 hand-labelled cases, pinned to a reviewed commit |
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |

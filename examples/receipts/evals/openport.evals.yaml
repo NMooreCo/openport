@@ -1,0 +1,21 @@
+# OpenPort eval spec for the receipt reader.
+#
+# Each receipt image is drawn by tools/make_receipts.py from numbers it chose, so the labels in read.jsonl are
+# right by construction: no model labelled them.
+target: receipts
+source_root: ..
+
+call_sites:
+  - id: read
+    title: Receipt reading (images)
+    file: receipts/reader.py
+    module: receipts.reader
+    function: read_receipt
+    client_attr: client
+    sdk: openai
+    original_model: gpt-4o-mini
+    output: json_object
+    dataset: read.jsonl
+    grader:
+      type: fields
+      fields: [order_id, date, total]

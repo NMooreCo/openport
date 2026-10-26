@@ -333,9 +333,10 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **FEEDBACK.md opens with eight asks, ranked by how much real code each would move:** counted on the field study's apps (70 of the 207 calls are written for Anthropic's Messages API) and on the live model list (`created` is the time of the request for 9 of 30 models, Nano has the lowest request limit, and `supported_features` leaves out JSON support that works).
 - **Corrected:** Token Factory documents `POST /v1/responses`, where I'd written on Oct 23 that it serves chat completions only (its switch guide reads that way). OpenPort's note no longer claims to rewrite Responses-API calls, which it never did: Token Factory serves them, and the evals test chat completions only. Monday's smoke check calls `/v1/responses` on every tier.
 - **Calls that send images move to Nemotron 3.5 Super VL** (on Token Factory since Oct 12): their tuning ladder is that one model, the research step reads its own pages, and an untuned port moves them with a note to check. probly ports 4 of 4; the field study moves 74 of 207 (one more: the other 10 image calls also get their client or URL from elsewhere).
+- **A receipt reader proves the vision path** once credit is back: `examples/receipts`, a gpt-4o-mini call that reads the order number, date and total off a photo of a store receipt, with 24 receipt images drawn from numbers chosen in advance (labels right by construction; subtotals, discounts, cash tendered and change as traps). A dashboard preset, and four steps in `scripts/monday.py`.
 - **Nemotron 3.5 Lightning** (Nano's size and price, 4× its context, 6× its request limit) is a rung `--tiers` can add; Monday's baseline runs it beside Nano. `openport smoke` also checks image input, sampling settings and the Responses API on every tier.
 - Fixed before Monday: `scripts/monday.py` crashed listing its steps on a Windows console (the ⟨placeholders⟩), and the field study's reasons broke on a rerun (a variable shadowed the function that groups them). A scan-only rerun of the study now keeps each app's saved upgrade results.
-- 234 offline tests.
+- 237 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
