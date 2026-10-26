@@ -12,10 +12,10 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 
 - **207 LLM calls in 14 of the 20 apps' own code:** 132 through the OpenAI and Anthropic SDKs, in 11 apps (72 OpenAI, 60 Anthropic), and 75 plain HTTP calls to OpenAI- or Anthropic-style endpoints, in 9. 151 are in Python and 56 in TypeScript; 51 use tool calling. Another 943 sit in tests, docs' code samples, benchmarks and evals, which OpenPort lists apart.
 - **160 of the 207 calls (77%) can be tested as written**, once the app's own dependencies are installed: wherever their client comes from, in a function or in a class's method, and over plain HTTP too, whose requests OpenPort redirects to its stand-in for the API. Most of the rest are in methods of classes OpenPort can't build on its own (20): their constructors take arguments, which the spec can give as `init:`, or come from a base class it doesn't follow. Another 16 are in TypeScript functions inside other functions or objects, where the harness can't reach them.
-- **`openport port` moves 74 of them (36%) to Nemotron as they are:** 61 SDK calls and 13 HTTP calls. Each of the other 133 stays where it is with the reason, and most reasons are a choice the code makes somewhere OpenPort doesn't rewrite:
-  - 50 get their client from code the port doesn't rewrite: 29 are handed it, by their caller (24) or as their object is built (5); 12 use a client of another class, such as Groq's SDK; 5 inherit it from a class outside the app; the port can't trace the last 4;
+- **`openport port` moves 79 of them (38%) to Nemotron as they are:** 66 SDK calls and 13 HTTP calls. Each of the other 128 stays where it is with the reason, and most reasons are a choice the code makes somewhere OpenPort doesn't rewrite:
+  - 43 get their client from code the port doesn't rewrite: 22 are handed it, by their caller (19) or as their object is built (3), from code out of its reach: a library's user (markitdown), a layer that routes between providers (11 of hermes-agent's), or TypeScript, where the port doesn't follow clients across calls yet (3); 12 use a client of another class, such as Groq's SDK; 5 inherit it from a class outside the app; the port can't trace the last 4;
   - 42 HTTP calls build their URL from settings or variables;
-  - 18 pick their provider at runtime: a factory choosing between providers, a client built from its caller's settings, or a table of endpoints;
+  - 20 pick their provider at runtime: a factory choosing between providers, a client built from its caller's settings, or a table of endpoints;
   - 22 are calls Nemotron on Token Factory can't serve as written: Anthropic's own HTTP format (10), embeddings (7), audio (3), the provider's own web search (1) and a streamed Anthropic response (1);
   - 1 is a plain HTTP call to OpenAI's Responses API, which Token Factory documents but the port doesn't rewrite yet.
 
@@ -39,9 +39,9 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 | [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands) | 91,748 | 2,315 | – | – | 0 | 0 | – | 1,453 | 32 | 30 |
 | [ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) | 88,890 | 190 | – | – | 0 | 0 | – | 1,145 | 51 | 51 |
 | [lobehub/lobehub](https://github.com/lobehub/lobehub) | 83,470 | 18,195 | 12 OpenAI + 4 Anthropic | 1 | 7 | 4 | – | 1,732 | 23 | 17 |
-| [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) | 79,159 | 114 | 49 Anthropic | – | 40 | 45 | – | 235 | 8 | 8 |
+| [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) | 79,159 | 114 | 49 Anthropic | – | 40 | 47 | – | 235 | 8 | 8 |
 | [ruvnet/ruflo](https://github.com/ruvnet/ruflo) | 79,038 | 4,341 | 5 OpenAI | 26 | 24 | 14 | – | 3,264 | 230 | 227 |
-| [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) | 77,729 | 1,856 | 6 OpenAI + 4 Anthropic | 3 | 9 | 2 | LiteLLM, LangChain, Vercel AI SDK | 1,604 | 10 | 10 |
+| [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) | 77,729 | 1,856 | 6 OpenAI + 4 Anthropic | 3 | 9 | 5 | LiteLLM, LangChain, Vercel AI SDK | 1,604 | 10 | 10 |
 | [calesthio/OpenMontage](https://github.com/calesthio/OpenMontage) | 71,581 | 447 | – | – | 0 | 0 | – | 243 | 6 | 6 |
 | [binary-husky/gpt_academic](https://github.com/binary-husky/gpt_academic) | 71,540 | 293 | 2 OpenAI | – | 1 | 0 | – | 21 | 4 | 3 |
 | [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) | 70,313 | 9,515 | – | 1 | 0 | 0 | – | 1,575 | 19 | 18 |
@@ -80,12 +80,14 @@ The second round, from running the port itself over the 20 apps and reading ever
 The third round (Oct 25), from Token Factory's own model list:
 
 - **Calls that send images stayed where they were, though a Nemotron now reads them.** Nemotron 3.5 Super VL arrived on Token Factory on Oct 12. A call that sends images now moves to it: its tuning ladder is that one model, since a text tier can't see the image, and the research step reads the VL model's own pages rather than its text sibling's. In the study that moved 1 call of 11, because the other 10 are held back by their client or URL too; in probly, one of the demo repos, it makes 4 of 4.
+- **A client handed in was never followed to where it's built.** 29 calls stayed because a caller passed them their client, or their object was built with one. The port now follows the argument back through the app's own calls (up to three, its tests' mocks left out) and moves the call when every caller hands it a client the port can rewrite. 5 moved (3 of headroom's, 2 of learn-claude-code's), and 2 now stay with the precise reason: their callers' clients come from a factory that picks the provider. A function also handed around as a callback, or a method also called on an object from elsewhere, stays: a call the port can't see might pass another client.
+- **A call that stayed could have its client swapped by one that moved.** learn-claude-code's context compactor stayed (its client arrived through `__init__`) while the agent's own calls moved, and they share one client, which the port swapped: the compactor would have sent its Claude model name to Token Factory. A client any staying call is handed, as far as the port can trace, is now split or left alone, never swapped under it.
 
 ## What it says to build next
 
-- **Following a client from where it's made to where it's used**, through callers and other modules: the most common reason (50 calls) a call stays where it is.
 - **Building classes that take arguments** (20 calls), from what the app's own tests build them with.
 - **Reading the settings that plain HTTP calls take their URL from** (42 calls), where a project keeps them in its own files.
+- **Following handed-in clients in TypeScript** (3 calls), as the Python port now does.
 
 ## Reproduce
 

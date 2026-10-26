@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from ..runtime.openport_llm import _PROVIDER_ONLY_OPTIONS
 from ..scan import _source_files
-from ..scan.findings import CallSiteFinding
+from ..scan.findings import CallSiteFinding, is_test_path
 from ..scan.python_scanner import HTTP_METHODS, _constructor_sdk, _match_suffix, _module_name
 from .clients import ClientAction, decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
@@ -92,6 +92,8 @@ class _Repo:
                 self.modules.setdefault(_module_name(relative), relative)
         self._files: dict[str, _File | None] = {}
         self._bindings: dict[str, list[_Binding]] = {}
+        self._sources: dict[str, bytes] = {}
+        self._mentions: dict[str, list[_File]] = {}
 
     def file(self, path: str | None) -> _File | None:
         if not path:
@@ -241,6 +243,135 @@ class _Repo:
                 return self.made_by(f, ast.unparse(value.func), site.function)
         return []
 
+    def handed_in(self, site: CallSiteFinding) -> tuple[list[_Binding], bool]:
+        """The constructors behind a client the call is handed: what its function's callers pass for that parameter,
+        or what code building its object passes `__init__` (`self.client = client`), followed up to _HOPS calls back.
+        Complete (True) only when every call the app makes (its tests don't count) passes a client the port can find;
+        otherwise the clients it could find, which the call still uses wherever it stays."""
+        f = self.file(site.file)
+        call = _call_node(f, site) if f else None
+        function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None) if call else None
+        if function is None:
+            return [], False
+        receiver = _receiver_base(site.receiver)
+        if receiver in _parameters(function):
+            return self._passed(f, function, receiver, _HOPS)
+        attribute = re.fullmatch(r"(?:self|cls)\.(\w+)", receiver)
+        cls = next((a for a in f.ancestors(call) if isinstance(a, ast.ClassDef)), None)
+        init = next((n for n in cls.body if isinstance(n, _FUNCTIONS) and n.name == "__init__"), None) if attribute and cls else None
+        for node in ast.walk(init) if init else []:
+            if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in _parameters(init)
+                    and any(isinstance(t, ast.Attribute) and t.attr == attribute[1] and isinstance(t.value, ast.Name)
+                            and t.value.id == "self" for t in node.targets)):
+                return self._passed(f, init, node.value.id, _HOPS)
+        return [], False
+
+    def _passed(self, f: _File, function: ast.AST, parameter: str, hops: int) -> tuple[list[_Binding], bool]:
+        """The constructors behind what the calls of `function` pass for `parameter`, and whether that's all of them."""
+        calls, complete = self._calls(f, function)
+        found: list[_Binding] = []
+        for caller_file, call, scope in calls:
+            value = _argument(call, function, parameter)
+            bindings, traced = self._value_bindings(caller_file, value, scope, hops - 1) if value is not None else ([], False)
+            found += [b for b in bindings if b not in found]
+            complete = complete and traced and bool(bindings)
+        return found, complete and bool(calls)
+
+    def _calls(self, f: _File, function: ast.AST) -> tuple[list[tuple[_File, ast.Call, ast.AST | None]], bool]:
+        """The calls the app (not its tests) makes of a function, of a method through `self`, or, for `__init__`, of
+        its class: (file, call, the function the call is in), and whether those are all. They aren't when it's also
+        used some other way, like passed as a callback, where a call the port can't see might hand it another client."""
+        cls = next((a for a in f.ancestors(function) if isinstance(a, ast.ClassDef)), None)
+        if cls is not None and function.name != "__init__":  # a method: `self.method(...)` in its own class
+            uses = [node for other in self._mentioning(function.name) for node in ast.walk(other.tree)
+                    if isinstance(node, ast.Attribute) and node.attr == function.name]
+            inside = {id(node) for node in ast.walk(cls)}
+            calls = [(f, f.parents[id(node)], _scope(f, node)) for node in uses if id(node) in inside
+                     and isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")
+                     and isinstance(f.parents.get(id(node)), ast.Call) and f.parents[id(node)].func is node]
+            return calls, len(calls) == len(uses)  # also called on an object from elsewhere: can't tell with what
+        defined = cls if cls is not None else function
+        if defined not in f.tree.body:  # a function inside another one: out of reach
+            return [], False
+        calls, complete = [], True
+        for other in self._mentioning(defined.name):
+            names, modules = self.imports(other)
+            direct = {defined.name} if other.path == f.path else set()
+            direct |= {local for local, (module, original) in names.items()
+                       if original == defined.name and self.module_path(module, other.path) == f.path}
+            aliases = {alias for alias, module in modules.items() if self.module_path(module, other.path) == f.path}
+            aliases |= {local for local, (module, original) in names.items() if self.module_path(f"{module}.{original}", other.path) == f.path}
+            for node in ast.walk(other.tree):
+                if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in direct
+                        or isinstance(node, ast.Attribute) and node.attr == defined.name and isinstance(node.value, ast.Name)
+                        and node.value.id in aliases):
+                    continue
+                parent = other.parents.get(id(node))
+                if isinstance(parent, ast.Call) and parent.func is node:
+                    calls.append((other, parent, _scope(other, node)))
+                elif cls is None or not _harmless_class_use(other, node):  # a class in an annotation or isinstance() is fine
+                    complete = False
+        return calls, complete
+
+    def _mentioning(self, name: str) -> list[_File]:
+        """The app's Python files (not its tests) whose source has `name` in it, parsed."""
+        if name not in self._mentions:
+            needle = name.encode()
+            paths = [path for path in self.modules.values() if not is_test_path(path) and needle in self._raw(path)]
+            self._mentions[name] = [f for f in map(self.file, paths) if f is not None]
+        return self._mentions[name]
+
+    def _raw(self, path: str) -> bytes:
+        if path not in self._sources:
+            try:
+                self._sources[path] = (self.root / path).read_bytes()
+            except OSError:
+                self._sources[path] = b""
+        return self._sources[path]
+
+    def _value_bindings(self, f: _File, value: ast.AST, scope: ast.AST | None, hops: int) -> tuple[list[_Binding], bool]:
+        """The constructors a client expression refers to, where it's written: a client built right there (or wrapped
+        on the way), a factory's, a local, a module or imported client, `self.x`, or what the callers pass when it's a
+        parameter. And whether that's the whole story: False when part of it can't be told."""
+        value = value.value if isinstance(value, ast.Await) else value
+        if isinstance(value, ast.Call):
+            built = [b for b in self.bindings(f) if b.node is value or any(arg is b.node for arg in value.args)]
+            if built:
+                return built, True
+            dotted = ast.unparse(value.func)
+            made = self.made_by(f, dotted, _qualname(f, scope)) if re.fullmatch(r"[\w.]+", dotted) else []
+            return made, bool(made)
+        if isinstance(value, ast.Name):
+            if scope is not None and value.id in _parameters(scope):
+                return self._passed(f, scope, value.id, hops) if hops > 0 else ([], False)
+            if scope is not None and (assigned := _assignments(scope, value.id, value.lineno)):
+                found = [self._value_bindings(f, each, scope, hops) for each in assigned]  # whichever branch ran
+                return [b for bs, _ in found for b in bs], all(traced and bs for bs, traced in found)
+            module_level = [b for b in self.bindings(f) if b.kind == "module" and b.var == value.id]
+            if module_level:
+                return module_level, True
+            names, _ = self.imports(f)
+            if value.id in names:
+                module, original = names[value.id]
+                target = self.file(self.module_path(module, f.path))
+                found = [b for b in self.bindings(target) if b.kind == "module" and b.var == original] if target else []
+                return found, bool(found)
+            assigned = _module_value(f, value.id)
+            return self._value_bindings(f, assigned, None, hops) if assigned is not None else ([], False)
+        if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            owner = value.value.id
+            if owner in ("self", "cls"):
+                cls = next((a for a in f.ancestors(scope) if isinstance(a, ast.ClassDef)), None) if scope is not None else None
+                classes = _lineage(f, cls)
+                found = [b for b in self.bindings(f) if b.kind == "attribute" and b.var == value.attr and b.cls in classes]
+                return found, bool(found)
+            names, modules = self.imports(f)  # `settings.client`, a client another module builds
+            module = modules.get(owner) or (".".join(names[owner]) if owner in names else None)
+            target = self.file(self.module_path(module, f.path)) if module else None
+            found = [b for b in self.bindings(target) if b.kind == "module" and b.var == value.attr] if target else []
+            return found, bool(found)
+        return [], False
+
     def made_by(self, f: _File, dotted: str, caller: str) -> list[_Binding]:
         """The constructors a factory (`get_client`, `clients.get_client`, `self._client_for`) builds its clients with."""
         resolved = self.resolve_callable(f, dotted, caller)
@@ -260,6 +391,66 @@ class _Repo:
             if isinstance(ret, ast.Return) and isinstance(ret.value, ast.Name)
         }
         return [b for b in self.bindings(target) if b.kind == "module" and b.var in returned]
+
+
+_HOPS = 3  # how many calls back a handed-in client is followed
+
+
+def _parameters(function: ast.AST) -> set[str]:
+    args = function.args
+    return {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]} - {"self", "cls"}
+
+
+def _scope(f: _File, node: ast.AST) -> ast.AST | None:
+    """The function a node is in, or None at module level."""
+    return next((a for a in f.ancestors(node) if isinstance(a, _FUNCTIONS)), None)
+
+
+def _qualname(f: _File, function: ast.AST | None) -> str:
+    """"Class.method", the way bindings name the function they're in."""
+    if function is None:
+        return ""
+    scopes = [a for a in reversed(f.ancestors(function)) if isinstance(a, (ast.ClassDef, *_FUNCTIONS))]
+    return ".".join([*(s.name for s in scopes), function.name])
+
+
+def _argument(call: ast.Call, function: ast.AST, parameter: str) -> ast.AST | None:
+    """What a call passes for one of a function's parameters; None when it passes nothing or the port can't tell
+    (a `*args` or `**kwargs` spread in the way)."""
+    for keyword in call.keywords:
+        if keyword.arg == parameter:
+            return keyword.value
+    positional = [a.arg for a in [*function.args.posonlyargs, *function.args.args]]
+    if positional[:1] in (["self"], ["cls"]):
+        positional = positional[1:]
+    if parameter not in positional:
+        return None
+    index = positional.index(parameter)
+    if any(isinstance(a, ast.Starred) for a in call.args[: index + 1]) or index >= len(call.args):
+        return None
+    return call.args[index]
+
+
+def _assignments(scope: ast.AST, name: str, before_line: int) -> list[ast.AST]:
+    """Every value assigned to `name` in a function before a line: all must check out, whichever branch ran."""
+    return [node.value for node in ast.walk(scope) if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+            and node.lineno < before_line
+            and any(isinstance(t, ast.Name) and t.id == name for t in (node.targets if isinstance(node, ast.Assign) else [node.target]))]
+
+
+def _harmless_class_use(f: _File, node: ast.AST) -> bool:
+    """A class named in a type annotation, or in isinstance() or issubclass(): it isn't built there."""
+    for ancestor in [node, *f.ancestors(node)]:
+        parent = f.parents.get(id(ancestor))
+        if isinstance(parent, ast.arg) and parent.annotation is ancestor or isinstance(parent, ast.AnnAssign) and parent.annotation is ancestor:
+            return True
+        if isinstance(parent, _FUNCTIONS) and parent.returns is ancestor:
+            return True
+        if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name) and parent.func.id in ("isinstance", "issubclass") and ancestor in parent.args:
+            return True
+        if isinstance(parent, ast.stmt):
+            return False
+    return False
 
 
 def _chosen_by_caller(f: _File, binding: _Binding) -> str | None:
@@ -387,6 +578,9 @@ def _constructor_text(f: _File, binding: _Binding, helper: str, notes: list[str]
     for keyword in binding.node.keywords:
         if keyword.arg is None or keyword.arg not in _PROVIDER_ONLY_OPTIONS:
             kept.append(f.source[slice(*f.span(keyword))])
+        if keyword.arg is None:
+            notes.append(f"{binding.ctor}() in {binding.file} takes options from `**{f.text(keyword.value)}`: "
+                         "a base_url or api_key among them is ignored on Token Factory")
     if binding.node.args:
         notes.append(f"Dropped positional arguments to {binding.ctor}() in {binding.file}")
     return helper.encode() + b"(" + b", ".join(kept) + b")"
@@ -887,6 +1081,11 @@ def port_python(
     http_sites = [site for site in sites if site.sdk == "http"]
     sites = [site for site in sites if site.sdk != "http"]
     links = {site.id: repo.link(site) for site in sites}
+    partly: dict[str, list[_Binding]] = {}  # handed-in clients traced through only some of the callers
+    for site in sites:
+        if not links[site.id] and not plan[site.id].keep:
+            found, complete = repo.handed_in(site)
+            (links if complete else partly)[site.id] = found
     for site in sites:  # where the code picks no single provider, rewriting the client would override a choice made elsewhere
         urls = _providers(links[site.id])
         chosen = next((how for b in links[site.id] if (how := _chosen_by_caller(repo.file(b.file), b))), None)
@@ -903,6 +1102,11 @@ def port_python(
         elif chosen:
             plan[site.id].keep_because(f"its client takes its provider from whoever builds it ({chosen}): point that at "
                                        f"{TOKEN_FACTORY_V1} with {KEY_VARIABLE} instead")
+    sites_by_id = {site.id: site for site in sites}
+    for site_id, found in partly.items():  # it stays, and still uses the clients those callers hand it: none is swapped under it
+        if not plan[site_id].keep:
+            plan[site_id].keep_because(f"couldn't find where its client (`{sites_by_id[site_id].receiver}`) is created")
+        links[site_id] = found
     actions = decide_client_actions(
         sites,
         plan,

@@ -336,7 +336,9 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **A receipt reader proves the vision path** once credit is back: `examples/receipts`, a gpt-4o-mini call that reads the order number, date and total off a photo of a store receipt, with 24 receipt images drawn from numbers chosen in advance (labels right by construction; subtotals, discounts, cash tendered and change as traps). A dashboard preset, and four steps in `scripts/monday.py`.
 - **Nemotron 3.5 Lightning** (Nano's size and price, 4× its context, 6× its request limit) is a rung `--tiers` can add; Monday's baseline runs it beside Nano. `openport smoke` also checks image input, sampling settings and the Responses API on every tier.
 - Fixed before Monday: `scripts/monday.py` crashed listing its steps on a Windows console (the ⟨placeholders⟩), and the field study's reasons broke on a rerun (a variable shadowed the function that groups them). A scan-only rerun of the study now keeps each app's saved upgrade results.
-- 237 offline tests.
+- **The port follows a client handed in back to where it's built** (Python): through the callers of the function a call is in, or the code building its object, up to three calls back, its tests' mocks left out. The call moves when every caller hands it a client the port can rewrite; a function also passed around as a callback, or a method also called from elsewhere, stays. The field study now moves 79 of 207 (38%): headroom +3, learn-claude-code +2.
+- **Fixed on the way: a call that stayed could have its client swapped by one that moved.** learn-claude-code's context compactor stayed while the agent's own calls moved, on the same client, which the port swapped. Clients a staying call is handed are now split or left alone. Re-porting SupportDesk and preflight with their plans changes nothing in their code.
+- 239 offline tests.
 
 **Still open for Fri 23:**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.

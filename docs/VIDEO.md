@@ -90,7 +90,7 @@ pass-rate tables match the Oct 24 runs (SupportDesk 15:12, preflight 14:58); ref
 
 - **The field study could carry the 1:35 beat** (it's the strongest proof that OpenPort works on code I didn't
   write). A line that fits in place of the TypeScript sentence: "Across the 20 most-starred open-source AI apps it
-  finds 207 LLM calls, tests 160 of them as written, and moves 74 to Nemotron as they are; every other call says why
+  finds 207 LLM calls, tests 160 of them as written, and moves 79 to Nemotron as they are; every other call says why
   it stays." → the per-app table in `docs/FIELD-STUDY.md`. Rerun `scripts/field_study.py` first if the scanner or
   port has changed since Oct 25.
 

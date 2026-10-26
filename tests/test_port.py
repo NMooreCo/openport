@@ -264,6 +264,82 @@ def mystery(text):
 }
 
 
+HANDED = {
+    "app/__init__.py": "",
+    "app/llm.py": '''def ask(client, question):
+    return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": question}])
+
+
+class Summarizer:
+    def __init__(self, llm, model):
+        self.llm = llm
+        self.model = model
+
+    def run(self, text):
+        return self.llm.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": text}])
+''',
+    "app/main.py": '''from openai import OpenAI
+
+from app.llm import Summarizer, ask
+
+client = OpenAI(timeout=20)
+SUMMARIZER = Summarizer(client, "gpt-4o-mini")
+
+
+def handle(question):
+    local = OpenAI()
+    return ask(local, question)
+
+
+def batch(questions):
+    return [ask(client, q) for q in questions]
+''',
+    "tests/test_main.py": '''from unittest.mock import MagicMock
+
+from app.llm import ask
+
+
+def test_ask():
+    ask(MagicMock(), "hi")
+''',
+}
+
+
+def test_a_client_handed_in_is_followed_to_where_its_callers_build_it(tmp_path):
+    root = write(tmp_path / "repo", HANDED)
+    result, sites = port(root, tmp_path / "out")
+    main = (result.output / "app/main.py").read_text()
+    llm = (result.output / "app/llm.py").read_text()
+
+    assert sites["llm.ask"].status == sites["llm.run"].status == "ported"
+    # Both clients its callers build are swapped; the test's MagicMock doesn't count as a caller.
+    assert "client = token_factory_client(timeout=20)" in main and "local = token_factory_client()" in main
+    assert 'model="nvidia/super-test"' in llm and "token_factory_client" not in llm  # the calls keep their parameter
+
+
+def test_a_handed_in_client_stays_when_any_caller_passes_another_or_it_is_passed_around(tmp_path):
+    groq = {**HANDED, "app/other.py": "from groq import Groq\n\nfrom app.llm import ask\n\n\ndef fast(q):\n    return ask(Groq(), q)\n"}
+    result, sites = port(write(tmp_path / "groq", groq), tmp_path / "out1")
+    assert sites["llm.ask"].status == "kept" and "whatever its caller passes" in sites["llm.ask"].reason
+    # batch() hands ask the client Summarizer is built with: swapping it would move ask's call too, so neither moves.
+    assert sites["llm.run"].status == "kept" and "shares its client with llm.ask" in sites["llm.run"].reason
+    assert "client = OpenAI(timeout=20)" in (result.output / "app/main.py").read_text()
+
+    callback = {**HANDED, "app/pool.py": "from concurrent.futures import ThreadPoolExecutor\n\nfrom app.llm import ask\n"
+                "from app.main import client\n\n\ndef many(qs):\n    with ThreadPoolExecutor() as pool:\n"
+                "        return list(pool.map(lambda q: pool.submit(ask, client, q), qs))\n"}
+    result, sites = port(write(tmp_path / "callback", callback), tmp_path / "out2")
+    assert sites["llm.ask"].status == "kept"  # handed to submit(): a call the port can't see
+    assert sites["llm.run"].status == "kept"  # and the callers it can see hand it the client Summarizer uses
+    assert "client = OpenAI(timeout=20)" in (result.output / "app/main.py").read_text()
+
+    alone = {**HANDED, "app/main.py": HANDED["app/main.py"].replace("    return [ask(client, q) for q in questions]", "    return []")}
+    result, sites = port(write(tmp_path / "alone", {**alone, "app/other.py": groq["app/other.py"]}), tmp_path / "out3")
+    assert sites["llm.ask"].status == "kept" and sites["llm.run"].status == "ported"  # no kept call shares Summarizer's client now
+    assert "client = token_factory_client(timeout=20)" in (result.output / "app/main.py").read_text()
+    assert "local = OpenAI()" in (result.output / "app/main.py").read_text()  # handed to ask, which stays
+
+
 def test_an_image_call_moves_to_the_nemotron_that_reads_images(tmp_path):
     root = write(tmp_path / "repo", SHARED_CLIENT)
     report = scan_repo(root)
