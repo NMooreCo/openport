@@ -38,8 +38,10 @@ class Step:
 
 
 STEPS = [
-    Step("check", "a tiny call to each tier: the key works and the account has credit again", ["smoke"]),
-    Step("baseline-supportdesk", "the plain swap on Nano, all 118 cases (VIDEO.md ⟨plain⟩)", ["baseline", "examples/supportdesk", "--tiers", "nano"]),
+    Step("check", "tiny calls to each tier, Lightning and Super VL included: the key works and the account has credit "
+                  "again; also whether Super VL reads an image and whether /v1/responses answers (FEEDBACK.md)", ["smoke"]),
+    Step("baseline-supportdesk", "the plain swap on Nano, all 118 cases (VIDEO.md ⟨plain⟩), and on Lightning, which has "
+                                 "Nano's size and price: if it does better, it's a cheaper first rung", ["baseline", "examples/supportdesk", "--tiers", "nano,lightning"]),
     Step("tune-supportdesk", "tune SupportDesk's five calls; the report's last line is ⟨own cost⟩", ["tune", "examples/supportdesk"],
          keeps=("plan-supportdesk.json",)),
     Step("port-supportdesk", "port it with the tuned plan", ["port", "examples/supportdesk", "--plan", "runs/plan-supportdesk.json"],
@@ -132,6 +134,7 @@ def record(endpoint: str, filename: str, request: dict) -> str:
 
 
 def main(argv: list[str]) -> int:
+    sys.stdout.reconfigure(encoding="utf-8")  # the steps name VIDEO.md's ⟨placeholders⟩, which a Windows console can't print
     steps = STEPS
     if "--from" in argv:
         name = argv[argv.index("--from") + 1]

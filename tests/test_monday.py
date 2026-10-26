@@ -2,7 +2,9 @@
 what it overwrites, it totals what it spends, and no recording with a local path or a key reaches the image."""
 
 import importlib.util
+import io
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -32,6 +34,15 @@ def test_every_step_is_a_command_the_cli_takes():
     paths = [arg for step in monday.STEPS for arg in step.command or [] if arg.startswith("examples/")]
     assert paths and all((ROOT / path).exists() for path in paths)
     assert [s.name for s in monday.STEPS].index("tune-supportdesk") < [s.name for s in monday.STEPS].index("port-supportdesk")
+
+
+def test_it_lists_the_steps_on_a_windows_console(monkeypatch):
+    console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # what Windows gives a script by default
+    monkeypatch.setattr(sys, "stdout", console)
+    assert monday.main([]) == 0  # lists only; nothing runs without --run
+    console.flush()
+    listed = console.buffer.getvalue().decode("utf-8")
+    assert "⟨plain⟩" in listed and "Nothing ran" in listed
 
 
 def test_it_keeps_what_it_overwrites_and_totals_what_it_spends(tmp_path, monkeypatch):
