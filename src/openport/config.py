@@ -3,8 +3,10 @@
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
+# The .env where OpenPort is run (an installed `openport` in your own repo) wins over this checkout's own.
+load_dotenv(find_dotenv(usecwd=True))
 load_dotenv()
 
 TOKEN_FACTORY_BASE_URL = os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")

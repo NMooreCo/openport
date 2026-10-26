@@ -1,5 +1,7 @@
 # OpenPort
 
+[![tests](https://github.com/NMooreCo/openport/actions/workflows/tests.yml/badge.svg)](https://github.com/NMooreCo/openport/actions/workflows/tests.yml)
+
 **Prove it, then port it.** OpenPort moves your app from closed LLM APIs (OpenAI, Anthropic) onto NVIDIA Nemotron on Nebius Token Factory, and proves it still works:
 
 1. It finds every LLM call in your repo.

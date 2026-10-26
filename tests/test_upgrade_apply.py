@@ -650,11 +650,12 @@ def test_upgrade_is_proven_end_to_end(tmp_path):
         return [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", cited
 
     plans = [upgrade(), upgrade("uvicorn", "0.20.0", "0.30.0", source="uv.lock")]
-    run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=plans, run_tests=lambda folder: next(results),
+    no_lock = lambda *args: TestRun(False, 2, "error: No `pyproject.toml` found in current directory", "", 1.0)  # AuthKit has no uv.lock
+    run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=plans, run_tests=lambda folder: next(results), run_container=no_lock,
                        researcher=lambda up: [{"title": "c", "url": "u", "excerpt": "e"}], fixer=fixer)
     assert run.proven and run.changed == ["requirements.txt"] and len(run.rounds) == 1
     assert fix_calls[0][0] == [{"name": "PyJWT", "from": "1.7.1", "to": "2.14.0"}] and fix_calls[0][1]
-    assert [up.dep.name for up, _ in run.skipped] == ["uvicorn"]  # lockfile-managed: left to its package manager
+    assert [(up.dep.name, why.split(":")[0]) for up, why in run.skipped] == [("uvicorn", "uv.lock couldn't be updated")]
     assert "+PyJWT==2.14.0" in run.diff and "+    return token" in run.diff
 
     body = render(run)

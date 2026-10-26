@@ -442,6 +442,7 @@ def test_plain_http_calls_move_to_token_factory(tmp_path, monkeypatch):
 
     # The ported call runs on the model its code names now, through OpenPort's stand-in for the API.
     monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-key")  # the ported code reads it, as the key OpenPort itself runs with
     fake = FakeTokenFactory(lambda request: completion(content='{"label": "billing"}'))
     spec = load_spec(result.output)
     outcome = run_site(spec, spec.call_sites[0], "as written", None, client=fake)
