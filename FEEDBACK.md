@@ -6,19 +6,51 @@ Two kinds of notes are tracked separately and honestly:
 - **[build]** — observations from reading the docs and writing code against the API (true as of the dates shown).
 - **[live]** — observations from actually running against Token Factory (from Oct 24). I only report numbers I measured.
 
+## The short version
+
+What would move the most real code onto Token Factory, ranked. The counts come from OpenPort's [field study](docs/FIELD-STUDY.md) of the 20 most-starred open-source AI apps on GitHub, whose own code makes 207 LLM calls in 14 of them; the rest comes from my live runs. Each ask links to its details below.
+
+What already works: 119 of the 207 calls (57%) are plain Chat Completions, which Token Factory's OpenAI compatibility serves as promised once the URL, key and model change. The 51 that use tool calling (25%), the commonest structured shape, need nothing more: Nemotron's OpenAI-format tool calling passed on all three tiers.
+
+1. **An Anthropic-compatible Messages endpoint.** 70 of the 207 calls (34%), in half the apps that make calls (7 of 14), are written for Anthropic's Messages API: 60 through its SDK, 10 over plain HTTP (49 of the 70 are in one app, learn-claude-code). None can move with a base-URL swap. DeepSeek and Moonshot serve such an endpoint for their own models, both of which Token Factory hosts. [Details](#anthropic-sdk-code-has-no-drop-in-path)
+2. **One line at the top of the switch guide: raise `max_tokens`, or turn reasoning off.** Reasoning tokens count against `max_tokens`, so a call sized for a closed model's direct answer comes back cut off. It broke preflight's review call, and the obvious fix (reasoning off) cost 17 points of accuracy. [Details](#reasoning-tokens-count-against-max_tokens)
+3. **`supported_features` that says what works.** For every Nemotron model it lists only `tools` and `reasoning`, yet JSON mode passed on all three tiers in my live tests, and strict JSON schemas on Super and Ultra. A router that trusts the field would never send the 7 JSON-mode and structured-output calls to Nemotron. [Details](#supported_features-leaves-out-json-support-that-works)
+4. **OpenAI's Responses API.** 10 calls in 4 apps use it (`responses.create`, `responses.parse`, or `/v1/responses` over HTTP). Token Factory serves Chat Completions only, so each needs a rewrite. [Details](#the-openai-responses-api-also-needs-rewriting)
+5. **Catalog fields tools can rely on:** a family or size, and a real `created` date. Nemotron 3.5 Lightning has Nano's size and price but not its name, so OpenPort's tier detection never tried it, and `created` is the time of the request for 9 of the 30 models. [Details](#the-catalog-doesnt-say-which-models-are-alike-or-when-one-arrived)
+6. **A higher request limit for Nano.** The tier evals pick for high-volume calls allows 100 requests a minute, a third of Super's. [Details](#nano-the-tier-for-high-volume-calls-has-the-lowest-request-limit)
+7. **A TypeScript framework integration.** 2 of the 20 apps reach models through the Vercel AI SDK, and 56 of the 207 calls are TypeScript, but the integrations page covers Python frameworks only. [Details](#the-integrations-cover-python-frameworks-not-typescript-ones)
+8. **Fine-tuning:** a Nemotron base model, a `queued` status, and adapter downloads at zero balance. [Details](#fine-tuning-sft--lora)
+
 ---
 
 ## Token Factory API (OpenAI compatibility)
 
+<a id="anthropic-sdk-code-has-no-drop-in-path"></a>
 **[build] Anthropic SDK code has no drop-in path.** (Oct 23)
 - Expected: a provider swap like the OpenAI one — change the base URL and go.
 - Found: the switch guide's promise of "no other changes" holds for OpenAI-style chat calls, but there is no Anthropic-compatible endpoint, so apps on the Anthropic SDK (`client.messages.create`) need a real translation of system prompts, content blocks, tools and `tool_use`/`tool_result`. This is the single biggest porting cost, and OpenPort exists partly because of it.
+- How common it is (field study, Oct 25): 70 of the 207 calls in the 20 most-starred open-source AI apps speak Anthropic's Messages API, in 7 of the 14 apps that make calls: 60 through the SDK and 10 over plain HTTP. 49 of them are in one app, learn-claude-code; the other six apps hold 21. All four of preflight's calls are Claude Opus.
+- Others do it: DeepSeek ([`api.deepseek.com/anthropic`](https://api-docs.deepseek.com/guides/anthropic_api)) and Moonshot (`api.moonshot.ai/anthropic`) serve Anthropic-format endpoints for their own models, mainly so Claude Code runs on them. Token Factory hosts both families (DeepSeek V4, Kimi K2.6 and K3), and its list of coding-assistant integrations has no Claude Code.
 - Suggestion: either an Anthropic-compatible shim endpoint, or a short, prominent "porting from Anthropic" page that spells out the message-shape mapping.
 
+<a id="the-openai-responses-api-also-needs-rewriting"></a>
 **[build] The OpenAI Responses API also needs rewriting.** (Oct 23)
 - Expected: `client.responses.create(...)` to work against the OpenAI-compatible surface.
 - Found: only Chat Completions is compatible; Responses-API calls must be rewritten to `chat.completions`.
+- How common it is (field study, Oct 25): 10 of the 207 calls, in 4 of the 20 apps (AutoGPT and lobehub 4 each, hermes-agent and oh-my-openagent 1 each): 7 `responses.create`, 2 `responses.parse` and 1 plain HTTP post to `/v1/responses`. OpenAI recommends this API for new projects, so expect more.
 - Suggestion: call this out explicitly in the compatibility docs — it's easy to assume "OpenAI-compatible" includes the newer Responses API.
+
+<a id="supported_features-leaves-out-json-support-that-works"></a>
+**[live] `supported_features` leaves out JSON support that works.** (Oct 25)
+- Expected: `/v1/models?verbose=true`'s `supported_features` to say what each model can do, as it does for DeepSeek V4, gpt-oss-120b and the Qwen3 Instruct models (`json_mode`, `structured_outputs`).
+- Found: all four Nemotron text models and Nemotron 3.5 Super VL list only `tools` and `reasoning`. In `openport smoke` (Oct 24), JSON mode passed on Nano, Super and Ultra, and strict `json_schema` output passed on Super and Ultra (Nano failed it). Super VL's `supported_sampling_parameters` is also empty, where every other Nemotron lists temperature, top_p and four more.
+- Why it matters: a router or gateway that reads the field would keep JSON calls off Nemotron. In the field study that's 7 calls (4 JSON mode, 3 strict schemas), and every call that parses JSON out of plain text (29 more) is a candidate.
+- Suggestion: list `json_mode` for all three tiers and `structured_outputs` for Super and Ultra (and fix Nano's, or say it's unsupported).
+
+<a id="the-integrations-cover-python-frameworks-not-typescript-ones"></a>
+**[build] The integrations cover Python frameworks, not TypeScript ones.** (Oct 25)
+- Found: of the 20 apps, 3 reach models through LiteLLM, 4 through LangChain and 2 through the Vercel AI SDK. Token Factory's [integrations page](https://docs.tokenfactory.nebius.com/integrations/overview) covers LiteLLM and LangChain (Python) well, but no TypeScript framework, and I found no Vercel AI SDK provider for Nebius. 56 of the 207 calls are TypeScript.
+- Suggestion: a Vercel AI SDK page (its OpenAI-compatible provider pointed at Token Factory, with the Nemotron model IDs and the reasoning switch), or a first-party provider package.
 
 **[live] Nano fails strict structured output (`json_schema`); Super and Ultra pass.** (Oct 24)
 - Ran `openport smoke` against all three tiers. `json_object` (JSON mode), `auto`/forced tool calling, a tool round-trip, and the reasoning on/off switch all pass on Nano, Super and Ultra. But strict JSON-schema structured output (`chat.completions.parse` with a Pydantic schema) **fails on Nano** while passing on Super and Ultra.
@@ -41,6 +73,19 @@ Two kinds of notes are tracked separately and honestly:
 - Found: OpenPort resolves the Nano/Super/Ultra tier IDs from `/v1/models` at runtime instead of hard-coding, which is more robust but means a startup round-trip and some guessing about which listed model is which tier.
 - Suggestion: a documented tier label (or a `family`/`tier` field in the models list) so tooling can map "the small Nemotron" to an ID without heuristics.
 
+<a id="the-catalog-doesnt-say-which-models-are-alike-or-when-one-arrived"></a>
+**[live] The catalog doesn't say which models are alike, or when one arrived.** (Oct 25)
+- Found: Nemotron 3.5 Lightning (`nvidia/Nemotron-3_5-Lightning`) is, by its own description, a 30B hybrid MoE with 3B active parameters, the shape of Nemotron 3 Nano, at the same price ($0.06 / $0.24 per 1M tokens), with 4× the context (1M tokens) and 6× the request limit. Nothing in the list links the two, so OpenPort's tier detection, which looks for "nano", never tried it; I noticed it on Oct 25, two months after it was added. Nemotron 3.5 Super VL, the first Nemotron that reads images, arrived on Oct 12 the same way.
+- Found: `created` is the time of the request for 9 of the 30 models, Nemotron 3 Nano among them. Two calls 20 seconds apart returned two different times for each, a few seconds before the response, so a tool can't use it to spot new models or tell their age.
+- Suggestion: `family`, `generation` and size fields (or a tier), and a fixed `created` date for every model.
+
+<a id="nano-the-tier-for-high-volume-calls-has-the-lowest-request-limit"></a>
+**[live] Nano, the tier for high-volume calls, has the lowest request limit.** (Oct 25)
+- Found: per the models list, Nemotron 3 Nano allows 100 requests a minute; Super, Ultra and Super VL allow 300, and Lightning 600.
+- Why it matters: Nano is where OpenPort's evals put the cheap, high-volume calls (SupportDesk's triage, refunds and policy; preflight's standards and PR description). At 100 a minute, an app making more than about 1.7 of those calls a second can't stay on the model its evals chose.
+- Suggestion: a Nano limit at least as high as Super's, or a documented way to raise it.
+
+<a id="reasoning-tokens-count-against-max_tokens"></a>
 **[live] Reasoning tokens count against `max_tokens`, so apps ported from closed models get cut off.** (Oct 24)
 - [preflight](https://github.com/jsliapark/preflight) asks for `max_tokens=1024`, plenty for Claude's direct answer. On Nemotron, reasoning is on by default and its tokens come out of the same budget: on a five-line diff Nano spent 800 of the 1,024 tokens, most of them reasoning. On bigger diffs the JSON answer arrives cut off, and the app reports a parse error.
 - That reads like a formatting problem, and the obvious fix (reasoning off) cost accuracy on this review task: 83% → 66% of the cases on Nano. On Super, keeping reasoning on and raising the budget to 4,096 (plus stricter instructions) passed. OpenPort's tuner now tells its engineer when a failing reply hit the token limit.
