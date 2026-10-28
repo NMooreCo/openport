@@ -204,15 +204,23 @@ def tiers_for(site: CallSite, findings: dict[tuple[str, str], CallSiteFinding], 
     return tiers
 
 
+def _why_kept(best: Attempt | None, target: float) -> str:
+    """Why a call stays. "Best: 96%" alone reads as a contradiction when the best attempt missed only the held-out bar."""
+    if best is None:
+        return f"no Nemotron tier reached {target:.0%}"
+    if best.pass_rate >= target and best.holdout_pass is not None and best.holdout_pass < target:
+        return (f"no Nemotron tier reached {target:.0%} on the held-out cases (best: {best.tier}, {best.pass_rate:.0%} "
+                f"overall but {best.holdout_pass:.0%} held out)")
+    return f"no Nemotron tier reached {target:.0%} (best: {best.tier} at {best.pass_rate:.0%})"
+
+
 def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
     ids = _finding_ids(spec)
     plan = {}
     for result in results:
         site_id = ids.get((result.file, result.function), result.site_id)
         if result.chosen is None:
-            best = result.best
-            reason = f"no Nemotron tier reached {target:.0%}" + (f" (best: {best.tier} at {best.pass_rate:.0%})" if best else "")
-            plan[site_id] = {"model": "keep", "reason": reason}
+            plan[site_id] = {"model": "keep", "reason": _why_kept(result.best, target)}
             continue
         chosen = result.chosen
         entry = {

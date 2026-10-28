@@ -604,6 +604,53 @@ def _import_line(path: str, vendor_dir: str, helpers: set[str]) -> bytes:
     return f"from {'.' * (depth + 1)}{RUNTIME_MODULE} import {names}".encode()
 
 
+def _module_split(binding: "_Binding", ported: list[CallSiteFinding]) -> bool:
+    """A module-level client, used by the calls that move only in its own file."""
+    return binding.top_level and binding.kind == "module" and all(
+        s.file == binding.file and s.receiver_kind == "module_global" for s in ported
+    )
+
+
+def _factory_split(binding: "_Binding", ported: list[CallSiteFinding]) -> bool:
+    """A client built by a top-level factory that every call that moves gets by calling that factory by name
+    (`get_client()` or `module.get_client()`). preflight's four agents share one `get_client()`: when one call has
+    to stay on its provider, the others still move, on a second factory beside it."""
+    name = binding.function
+    if not name or "." in name or binding.kind not in ("module", "local", "return"):
+        return False
+    pattern = re.compile(rf"(?:[\w.]+\.)?{re.escape(name)}\(\)")
+    return all(s.receiver_kind == "factory" and pattern.fullmatch(s.receiver) for s in ported)
+
+
+def _second_factory(f: "_File", name: str, new_name: str, constructor: bytes) -> list[Edit]:
+    """`new_name()` beside the factory `name()`: the same client on Token Factory, built once."""
+    factory = next(n for n in f.tree.body if isinstance(n, _FUNCTIONS) and n.name == name)
+    nl = newline_style(f.source)
+    end = line_end(f.source, f.span(factory)[1])
+    block = (
+        nl + nl + b"@functools.cache" + nl + f"def {new_name}():".encode() + nl
+        + f'    """`{name}()`\'s client on NVIDIA Nemotron (Nebius Token Factory), for the calls OpenPort moved."""'.encode() + nl
+        + b"    return " + constructor + nl
+    )
+    edits = [Edit(end, end, block)]
+    imported = any(isinstance(n, ast.Import) and any(a.name == "functools" and not a.asname for a in n.names) for n in f.tree.body)
+    if not imported:
+        edits.append(_insert_import(f, b"import functools"))
+    return edits
+
+
+def _import_beside(f: "_File", name: str, new_name: str) -> Edit | None:
+    """Import `new_name` from wherever this file imports `name` (keeping a relative import relative)."""
+    for node in ast.walk(f.tree):
+        if isinstance(node, ast.ImportFrom) and any(a.name == name and not a.asname for a in node.names):
+            module = "." * node.level + (node.module or "")
+            nl = newline_style(f.source)
+            end = line_end(f.source, f.span(node)[1])
+            indent = indentation(f.source, f.span(node)[0])
+            return Edit(end, end, indent + f"from {module} import {new_name}".encode() + nl)
+    return None  # reached as `module.name()`, or defined in this file: nothing to import
+
+
 def _insert_import(f: _File, statement: bytes) -> Edit:
     nl = newline_style(f.source)
     body = f.tree.body
@@ -1112,15 +1159,16 @@ def port_python(
         plan,
         links,
         key=lambda b: (b.file, b.node.lineno, b.node.col_offset),
-        # Only a module-level client used by ported calls in its own file can be split safely.
-        splittable=lambda b, ported: b.top_level and b.kind == "module"
-        and all(s.file == b.file and s.receiver_kind == "module_global" for s in ported),
+        # A client can be split (a second one on Token Factory beside it, for the calls that move) when it's built
+        # at module level and used in its own file, or built by a top-level factory every moving call calls by name.
+        splittable=lambda b, ported: _module_split(b, ported) or _factory_split(b, ported),
     )
 
     edits: dict[str, list[Edit]] = defaultdict(list)
     helpers: dict[str, set[str]] = defaultdict(set)
     replaced: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    split_names: dict[str, str] = {}  # site id -> new client variable
+    split_names: dict[str, str] = {}  # site id -> new client variable, or new factory name
+    factory_imports: set[tuple[str, str, str]] = set()  # (site file, factory name, new factory name)
 
     for action in actions.values():
         binding: _Binding = action.binding
@@ -1133,7 +1181,7 @@ def port_python(
             span = f.span(binding.node)
             edits[f.path].append(Edit(*span, text))
             replaced[f.path].append(span)
-        else:  # split: a second client next to the original, for the ported calls only
+        elif _module_split(binding, action.ported):  # a second client next to the original, for the ported calls only
             new_var = f"{binding.var}_nemotron"
             statement_end = line_end(f.source, f.span(binding.statement)[1])
             indent = indentation(f.source, f.span(binding.statement)[0])
@@ -1141,6 +1189,13 @@ def port_python(
             edits[f.path].append(Edit(statement_end, statement_end, line))
             for site in action.ported:
                 split_names[site.id] = new_var
+        else:  # a second factory next to the original, for the ported calls only
+            new_name = f"{binding.function}_nemotron"
+            edits[f.path] += _second_factory(f, binding.function, new_name, text)
+            for site in action.ported:
+                split_names[site.id] = new_name
+                if site.file != binding.file:
+                    factory_imports.add((site.file, binding.function, new_name))
 
     # Models, tuned settings and receivers at each ported call site.
     const_uses: dict[tuple[str, str], list[tuple[str | None, ast.Name]]] = defaultdict(list)
@@ -1197,7 +1252,20 @@ def port_python(
             base = call.func
             while isinstance(base, ast.Attribute):
                 base = base.value
-            edits[f.path].append(Edit(*f.span(base), split_names[site.id].encode()))
+            if isinstance(base, ast.Call):  # a factory: call the second one instead (`get_client()` -> `get_client_nemotron()`)
+                callee = base.func
+                name_node = callee if isinstance(callee, ast.Name) else None
+                if isinstance(callee, ast.Attribute):  # `clients.get_client()`: rename the attribute only
+                    start = f.span(callee)[1] - len(callee.attr.encode())
+                    edits[f.path].append(Edit(start, f.span(callee)[1], split_names[site.id].encode()))
+                elif name_node is not None:
+                    edits[f.path].append(Edit(*f.span(name_node), split_names[site.id].encode()))
+            else:
+                edits[f.path].append(Edit(*f.span(base), split_names[site.id].encode()))
+    for path, factory, new_name in sorted(factory_imports):
+        edit = _import_beside(repo.file(path), factory, new_name)
+        if edit is not None:
+            edits[path].append(edit)
     _port_http(repo, http_sites, plan, edits, const_uses, text_edits, applied)
 
     # Shared model constants: edit the constant once if every call using it moves to the same model,

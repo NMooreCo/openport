@@ -241,6 +241,43 @@ def test_factory_client_in_another_module(tmp_path):
     assert any("anthropic.APIError" in note for note in sites["review"].notes)
 
 
+def test_a_factory_shared_with_a_call_that_stays_is_split(tmp_path):
+    """preflight, Oct 28: one of four calls on one `get_client()` missed the bar, and the three that passed stayed
+    with it. Now they move, on a second factory beside the first; the call that stays keeps the original."""
+    root = write(tmp_path / "repo", {**PREFLIGHT_LIKE, "agents/summary.py": '''from core.anthropic_client import get_client
+
+
+def summarize(text):
+    response = get_client().messages.create(model="claude-opus-4-5", max_tokens=300, messages=[{"role": "user", "content": text}])
+    return response.content[0].text
+'''})
+    result, sites = port(root, tmp_path / "out", review="keep")
+    out = result.output
+    assert (sites["review"].status, sites["summary.summarize"].status) == ("kept", "ported")
+
+    client_module = (out / "core/anthropic_client.py").read_text()
+    assert "_client = Anthropic(api_key=\"sk-ant-old\", timeout=20)" in client_module  # the original stays as it was
+    assert "@functools.cache\ndef get_client_nemotron():\n" in client_module
+    assert "    return anthropic_client(timeout=20)\n" in client_module
+    assert "import functools" in client_module and "from .openport_llm import anthropic_client" in client_module
+
+    summary = (out / "agents/summary.py").read_text()
+    assert "from core.anthropic_client import get_client\nfrom core.anthropic_client import get_client_nemotron\n" in summary
+    assert "response = get_client_nemotron().messages.create(model=\"nvidia/super-test\"" in summary
+    review = (out / "agents/review.py").read_text()
+    assert review == PREFLIGHT_LIKE["agents/review.py"]  # untouched: it stays on Claude
+
+    # The rewritten module runs: the second factory builds a Token Factory client, once.
+    check = (
+        "import core.anthropic_client as c; a = c.get_client_nemotron(); "
+        "print(type(a).__name__, a is c.get_client_nemotron(), type(c.get_client()).__name__)"
+    )
+    env = {**os.environ, "NEBIUS_API_KEY": "test-key", "PYTHONPATH": ""}
+    ran = subprocess.run([sys.executable, "-c", check], cwd=out, env=env, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.split() == ["AnthropicOnNemotron", "True", "Anthropic"]
+
+
 SHARED_CLIENT = {
     "app.py": '''from openai import OpenAI
 from vendor_sdk import build

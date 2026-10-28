@@ -270,6 +270,16 @@ def test_tuning_reaches_the_model_for_code_on_anthropics_sdk():
     assert requests[0]["chat_template_kwargs"] == {"enable_thinking": False}  # the variant reached the request
 
 
+def test_a_call_that_missed_only_held_out_cases_says_so():
+    from openport.tune import Attempt, _why_kept
+
+    best = Attempt(tier="nano", model="m", round=0, variant=Variant(), tune_pass=1.0, holdout_pass=0.875,
+                   passed=25, total=26, cost_usd=0)
+    assert _why_kept(best, 0.9) == "no Nemotron tier reached 90% on the held-out cases (best: nano, 96% overall but 88% held out)"
+    worse = Attempt(tier="ultra", model="m", round=0, variant=Variant(), tune_pass=0.7, holdout_pass=0.5, passed=7, total=10, cost_usd=0)
+    assert _why_kept(worse, 0.9) == "no Nemotron tier reached 90% (best: ultra at 70%)"
+
+
 def test_parse_variant_tolerates_chatter():
     text = 'Here you go:\n```json\n{"reasoning": false, "system_addendum": "JSON only.", "max_tokens": 0, "temperature": null, "rationale": "x"}\n```'
     variant = parse_variant(text, fallback=Variant())
