@@ -120,7 +120,10 @@ def _checks(client: OpenAI, model: str) -> dict[str, Callable[[], tuple[bool, st
             max_tokens=MAX_TOKENS,
         )
         parsed = completion.choices[0].message.parsed
-        return parsed is not None and parsed.priority == "urgent", repr(parsed)[:100]
+        # The check is schema adherence and extraction. The priority is the model's judgment (the prompt defines
+        # no levels), so it's shown, not graded: Oct 28, four models called a gas leak "normal" in valid JSON.
+        ok = parsed is not None and parsed.name == "Jane Doe" and parsed.email == "jane.doe@example.com"
+        return ok, repr(parsed)[:100]
 
     def tool_call(tool_choice):
         response = client.chat.completions.create(

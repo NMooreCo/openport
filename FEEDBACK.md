@@ -56,6 +56,7 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 **[live] Nano fails strict structured output (`json_schema`); Super and Ultra pass.** (Oct 24)
 - Ran `openport smoke` against all three tiers. `json_object` (JSON mode), `auto`/forced tool calling, a tool round-trip, and the reasoning on/off switch all pass on Nano, Super and Ultra. But strict JSON-schema structured output (`chat.completions.parse` with a Pydantic schema) **fails on Nano** while passing on Super and Ultra.
 - Impact: a cheap high-volume extraction call that relies on strict schemas can't just drop onto Nano; it needs Super, or a prompt that coaxes schema-valid output. This is exactly what OpenPort's tuning ladder is for, but it's worth a docs note on which tiers support strict structured output.
+- Rechecked Oct 28: Nano still fails, now by running through its whole 4,096-token budget without closing the JSON (`LengthFinishReasonError`, 25 s). Super, Ultra, Lightning and Super VL all return schema-valid output in 1 to 10 s. (My own check had also graded the ticket's priority, a judgment the prompt gave no rules for; it now grades only schema adherence and the extracted fields.)
 - Confirmed in tuning: for SupportDesk's PII extraction call, adding prompt instructions on Nano made it *worse* (43% on tuning cases, 0% held-out); moving to Super fixed it (100% / 100%).
 
 **[live] The reasoning switch is the most powerful tuning knob.** (Oct 24)
