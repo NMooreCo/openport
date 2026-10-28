@@ -11,12 +11,12 @@
 	"containers": [
 		{
 			"class_name": "Dashboard",
-			"image": "../../../Dockerfile",
-			"image_build_context": "../../..",
-			// 1/2 vCPU, 4 GiB, 8 GB disk. Billed only while awake; it sleeps after 15 idle minutes.
-			"instance_type": "standard-1",
-			// One instance: runs and their live event streams are held in its memory.
-			"max_instances": 1
+			// The Durable Object starts the container itself, choosing the image and instance size (src/index.ts).
+			// One instance, billed only while awake: runs and their live event streams are held in its memory.
+			"scheduling_policy": "durable_object",
+			"images": {
+				"dashboard": { "dockerfile": "../../../Dockerfile", "build_context": "../../.." }
+			}
 		}
 	],
 	"durable_objects": {
@@ -25,6 +25,9 @@
 	"exports": {
 		"Dashboard": { "type": "durable-object", "storage": "sqlite" }
 	},
+	// Also at openport-dashboard.<account subdomain>.workers.dev, which works whatever the custom domain's DNS does.
+	"workers_dev": true,
+	// Redirect rules run before Workers: the zone's own redirect to narralogy.ai has to skip this hostname.
 	"routes": [{ "pattern": "nebius.narralogy.com", "custom_domain": true }],
 	"vars": {
 		// What visitors' live runs may spend on Token Factory per day. The demos replay recorded runs for free.

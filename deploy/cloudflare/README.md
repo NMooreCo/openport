@@ -14,8 +14,10 @@ anyone with AI Cloud.
 ## The live dashboard
 
 `narralogy.com` must be a zone on the same Cloudflare account. On deploy, Wrangler adds the DNS record and
-certificate for `nebius.narralogy.com`; if that hostname already has a DNS record, delete it first. Start Docker,
-then:
+certificate for `nebius.narralogy.com`; if that hostname already has a DNS record, delete it first. Redirect rules
+run before Workers, so the zone's own redirect to narralogy.ai ("Route To Narralogy.ai") must skip this hostname, or
+visitors land on Narralogy instead. The dashboard is also at `https://openport-dashboard.nmooreco.workers.dev`, which
+no zone rule touches. Start Docker, then:
 
 ```bash
 cd deploy/cloudflare
@@ -30,6 +32,10 @@ npx wrangler secret put TAVILY_API_KEY --config live/wrangler.jsonc
 keeps `.env` and `runs/` out too). The container gets the keys as environment variables when it starts. With no keys
 it still replays the recordings; only live runs need them. The first deploy takes a few minutes
 while Cloudflare provisions the image, and the URL can answer before the container does.
+
+The container uses the `durable_object` scheduling policy (Cloudflare wouldn't create one with the older `default` policy on my account), so
+the Worker's Durable Object starts it: it picks the image and the instance size, waits for the server inside to
+answer, and forwards every request to it.
 
 Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (1, set in `live/wrangler.jsonc`). One
 instance serves everyone, so a run started by one visitor streams to the next. A live run's result lasts until the
