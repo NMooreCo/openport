@@ -8,8 +8,9 @@ already true and checked.
 
 - **Token Factory credit** for the live runs: SupportDesk ≈ $0.70, the TypeScript SupportDesk ≈ $0.30,
   preflight ≈ $0.30, an upgrade fix ≈ $0.05. Tavily credit for the research step.
-- **The hosted dashboard** at its public URL (⟨dashboard URL⟩, on Cloudflare: AI Cloud isn't required and the
-  hackathon gives no AI Cloud credit, per its FAQ), so the URL in the video is the one judges open.
+- **The hosted dashboard** at its public URL (https://nebius.narralogy.com, on Cloudflare: AI Cloud isn't required
+  and the hackathon gives no AI Cloud credit, per its FAQ), so the URL in the video is the one judges open. Live
+  Oct 28; its replays show the same numbers as below.
 - **Record the replays of the Oct 28 live runs** (`examples/recorded/`), not new live runs: the numbers below are
   read off those recordings, so what's said matches what's on screen. A fresh live run lands a little differently
   each time. Upgrades need Docker, so the AuthKit upgrade is its recording too (re-recorded live Oct 28, with quotes).

@@ -15,9 +15,10 @@ anyone with AI Cloud.
 
 `narralogy.com` must be a zone on the same Cloudflare account. On deploy, Wrangler adds the DNS record and
 certificate for `nebius.narralogy.com`; if that hostname already has a DNS record, delete it first. Redirect rules
-run before Workers, so the zone's own redirect to narralogy.ai ("Route To Narralogy.ai") must skip this hostname, or
-visitors land on Narralogy instead. The dashboard is also at `https://openport-dashboard.nmooreco.workers.dev`, which
-no zone rule touches. Start Docker, then:
+run before Workers, so the zone's own redirect to narralogy.ai ("Route To Narralogy.ai") skips this hostname
+(`http.host ne "nebius.narralogy.com"`); without that, visitors land on Narralogy. The zone's bot check also answers
+scripts like `curl` with a 403 challenge, which browsers pass on their own. The dashboard is also at
+`https://openport-dashboard.nmooreco.workers.dev`, which no zone rule touches. Start Docker, then:
 
 ```bash
 cd deploy/cloudflare
