@@ -17,6 +17,9 @@ runs/
 node_modules/
 src/openport/server/static/
 
+# Wrangler's local state (deploy/cloudflare)
+.wrangler/
+
 # OS / editor
 .DS_Store
 Thumbs.db

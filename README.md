@@ -148,11 +148,11 @@ uv run openport serve            # http://127.0.0.1:8000
 
 For hosting, the dashboard only accepts its demo presets and public GitHub repos. It runs one pipeline at a time, reuses a recent result for the same repo, and never opens PRs (it shows the dry run). Upgrades run the repo's tests in Docker; on a server without Docker they stop after choosing safe versions.
 
-To host it on a **Nebius Serverless Endpoint**, `scripts/deploy_endpoint.sh` builds the image, pushes it to a Nebius container registry and starts the endpoint, with the API keys taken from a MysteryBox secret (never baked into the image). It prints the dashboard's URL.
+The hosted dashboard runs on **Cloudflare**: the same Docker image in a Cloudflare Container behind a Worker, with the API keys as Worker secrets (never baked into the image). [`deploy/cloudflare/`](deploy/cloudflare/README.md) has the config and the steps. The hackathon's rules count Token Factory calls as using the Nebius platform and give no AI Cloud credit, so the dashboard doesn't run on AI Cloud. For anyone who has it, `scripts/deploy_endpoint.sh` puts the same image on a **Nebius Serverless Endpoint**, with the keys taken from a MysteryBox secret.
 
-A **static replay** of the dashboard plays the demos' recorded runs with no server, key or credit behind it: `uv run python scripts/static_replay.py` builds it into `site/`, for any static host. Once the repo is public, `.github/workflows/pages.yml` publishes it on GitHub Pages, so the demo keeps working whatever happens to the endpoint or the credit.
+A **static replay** of the dashboard plays the demos' recorded runs with no server, key or credit behind it: `uv run python scripts/static_replay.py` builds it into `site/`, for any static host (`deploy/cloudflare/replay/` serves it free on Cloudflare). Once the repo is public, `.github/workflows/pages.yml` publishes it on GitHub Pages, so the demo keeps working whatever happens to the server or the credit.
 
-A public dashboard shouldn't run up the key's bill, so the demos replay recorded runs (`examples/recorded`, labelled as recorded and dated) and "Run it live" starts a fresh one. Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (2 in the image).
+A public dashboard shouldn't run up the key's bill, so the demos replay recorded runs (`examples/recorded`, labelled as recorded and dated) and "Run it live" starts a fresh one. Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (2 in the image; the Cloudflare deployment sets 1).
 
 Testing a call imports the repo's code and runs it inside the server, next to the API keys. So the Docker image sets `OPENPORT_RUN_REPO_CODE=vetted`: a public deployment runs code only for its bundled demo apps and for OpenPort's eval packs, which pin the exact commit that was reviewed (preflight's is `7a00fa2`). Any other repo is scanned and ported untuned, and the launcher says so up front. Locally, OpenPort tests whatever repo you point it at.
 
@@ -171,6 +171,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `examples/evalpacks/preflight/` | OpenPort's eval pack for [jsliapark/preflight](https://github.com/jsliapark/preflight), an AI PR reviewer that ships no evals: 119 hand-labelled cases, pinned to a reviewed commit |
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |
+| `deploy/cloudflare/` | The hosted dashboard: a Worker and Container config for the live dashboard, and one for the static replay |
 | `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the re-measure and recordings that wait on Token Factory credit, as one checked sequence) |
 | `tests/` | Offline tests (no API keys needed) |
 
@@ -203,7 +204,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 
 **Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
 
-> Built, not yet run live: `tune --jobs` on **Nebius Serverless Jobs** (waiting on my AI Cloud setup) and serving the fine-tuned student, which needs a Dedicated Endpoint. Hosting the dashboard on a **Nebius Serverless Endpoint** is next. The plan is in [PLAN.md](PLAN.md).
+> Built, not run live: `tune --jobs` on **Nebius Serverless Jobs**, the dashboard on a **Nebius Serverless Endpoint**, and serving the fine-tuned student, which needs a Dedicated Endpoint. All three need AI Cloud, which the hackathon gives no credit for, so their code and tests are in the repo but no result is claimed. The plan is in [PLAN.md](PLAN.md).
 
 ## License
 

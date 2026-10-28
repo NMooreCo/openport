@@ -1,0 +1,13 @@
+// The static replay of the dashboard (scripts/static_replay.py builds it into site/): the demos' recorded runs,
+// played in the browser with no server, key or credit. Static assets only, so it's free on any Workers plan.
+// It serves at openport-replay.<your subdomain>.workers.dev; to give it a custom domain instead, add
+// "routes": [{ "pattern": "<host>", "custom_domain": true }].
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "openport-replay",
+	"compatibility_date": "2026-10-27",
+	"assets": {
+		"directory": "../../../site",
+		"not_found_handling": "single-page-application"
+	}
+}

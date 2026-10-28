@@ -1,0 +1,33 @@
+// The live dashboard: OpenPort's Docker image in a Cloudflare Container, behind a Worker on a custom domain.
+// Needs the Workers Paid plan. The keys are Worker secrets (`npx wrangler secret put NEBIUS_API_KEY --config
+// live/wrangler.jsonc`, and TAVILY_API_KEY), passed to the container when it starts; they're never in the image.
+// See deploy/cloudflare/README.md.
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "openport-dashboard",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-27",
+	"observability": { "enabled": true },
+	"containers": [
+		{
+			"class_name": "Dashboard",
+			"image": "../../../Dockerfile",
+			"image_build_context": "../../..",
+			// 1/2 vCPU, 4 GiB, 8 GB disk. Billed only while awake; it sleeps after 15 idle minutes.
+			"instance_type": "standard-1",
+			// One instance: runs and their live event streams are held in its memory.
+			"max_instances": 1
+		}
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "DASHBOARD", "class_name": "Dashboard" }]
+	},
+	"exports": {
+		"Dashboard": { "type": "durable-object", "storage": "sqlite" }
+	},
+	"routes": [{ "pattern": "nebius.narralogy.com", "custom_domain": true }],
+	"vars": {
+		// What visitors' live runs may spend on Token Factory per day. The demos replay recorded runs for free.
+		"OPENPORT_DAILY_BUDGET_USD": "1"
+	}
+}

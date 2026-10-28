@@ -1,0 +1,16 @@
+{
+  "name": "openport-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit -p live && wrangler deploy --dry-run --config live/wrangler.jsonc && wrangler deploy --dry-run --config replay/wrangler.jsonc",
+    "deploy:live": "wrangler deploy --config live/wrangler.jsonc",
+    "deploy:replay": "wrangler deploy --config replay/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@cloudflare/workers-types": "^5.20261028.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.154.0"
+  }
+}
