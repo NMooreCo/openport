@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script>
+<style>
+  .card { position: absolute; border-radius: 24px; background: #0b1324; border: 1px solid rgba(148,163,184,.18);
+    box-shadow: 0 40px 120px rgba(0,0,0,.5); overflow: hidden; }
+  #pr { left: 90px; top: 120px; width: 700px; height: 760px; }
+  .head { padding: 26px 32px; border-bottom: 1px solid rgba(148,163,184,.14); }
+  .head .k { font-size: 22px; color: #8a9ab3; font-weight: 600; }
+  .head h3 { font-size: 36px; font-weight: 800; letter-spacing: -0.02em; margin-top: 6px; }
+  .diff { padding: 20px 0; font-size: 19px; line-height: 1.75; }
+  .diff div { padding: 0 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #94a3b8; }
+  .diff .del { background: rgba(248,113,113,.10); color: #fecaca; }
+  .diff .file { color: #7dd3fc; font-weight: 700; padding-bottom: 8px; }
+  .checks { position: absolute; left: 0; right: 0; bottom: 0; padding: 24px 32px; border-top: 1px solid rgba(148,163,184,.14);
+    display: flex; align-items: center; gap: 18px; font-size: 26px; font-weight: 700; }
+  .status { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-size: 22px; font-weight: 900; }
+  .run { border: 4px solid rgba(251,191,36,.25); border-top-color: #fbbf24; }
+  .fail { background: #ef4444; color: #fff; }
+  #term { left: 820px; top: 120px; width: 1010px; height: 760px; background: #050913; }
+  #term .bar { padding: 18px 24px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid rgba(148,163,184,.12);
+    font-size: 20px; color: #8a9ab3; font-weight: 600; }
+  #term .bar i { width: 13px; height: 13px; border-radius: 50%; background: #334155; display: inline-block; }
+  /* Consolas draws the table's box characters at the same width as its letters (the web font's subset lacks them) */
+  #out { padding: 26px 24px; font-size: 18px; line-height: 1.7; white-space: pre; color: #cbd5e1; font-family: Consolas, "Cascadia Mono", monospace; }
+  #out .r { color: #f87171; font-weight: 700; } #out .p { color: #34d399; } #out .t { color: #e5edf7; font-weight: 700; }
+  #verdict { position: absolute; left: 820px; top: 900px; width: 1010px; display: flex; align-items: center; gap: 18px;
+    font-size: 30px; font-weight: 800; color: #fca5a5; }
+</style></head>
+<body><div class="stage">
+  <div id="pr" class="card">
+    <div class="head"><div class="k">Pull request</div><h3>Trim the triage prompt</h3></div>
+    <div class="diff mono">
+      <div class="file">supportdesk/triage.py</div>
+      <div class="del">-Priority:</div>
+      <div class="del">-- urgent: safety risks (injury, fire, gas leaks, gear failing in the field), legal threats…</div>
+      <div class="del">-- normal: most tickets</div>
+      <div class="del">-- low: general questions with no time pressure, praise, spam</div>
+      <div>&nbsp;</div>
+      <div>&nbsp;If a ticket raises several issues, pick the category of the one the customer…</div>
+      <div>&nbsp;Respond with JSON only: {"category": "&lt;category&gt;", "priority": "&lt;priority&gt;"}</div>
+      <div class="del">-</div>
+      <div class="del">-Priority rules: General product questions (sizing, care, specs, compatibility) = low…</div>
+    </div>
+    <div class="checks"><span class="status run" id="st"></span><span>OpenPort quality gate</span><span class="muted" id="stx" style="font-weight:600">· running evals</span></div>
+  </div>
+  <div id="term" class="card">
+    <div class="bar"><i></i><i></i><i></i><span style="margin-left:12px">llm-evals · GitHub Action</span></div>
+    <div id="out" class="mono"></div>
+  </div>
+  <div id="verdict"><span class="status fail">✕</span><span>Build failed: triage passes 10%, needs 90%</span></div>
+</div>
+<script>
+// The real output of `openport check` on SupportDesk with this exact change (Oct 28), colors as the CLI prints them.
+const LINES = [
+  `<span class="p">$</span> openport check .`,
+  ``,
+  `                        <span class="t">OpenPort quality gate</span>`,
+  `┌───────────────┬───────────────────────────────────────┬────────────┬───────┬────────┐`,
+  `│ Call site     │ Model                                 │ Pass rate  │ Needs │ Result │`,
+  `├───────────────┼───────────────────────────────────────┼────────────┼───────┼────────┤`,
+  `│ Ticket triage │ nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B │ <span class="r">10% (3/31)</span> │ 90%   │ <span class="r">FAIL</span>   │`,
+  `└───────────────┴───────────────────────────────────────┴────────────┴───────┴────────┘`,
+  `  triage-01: priority: got 'high'`,
+  `  triage-02: priority: got 'high'`,
+  `  triage-03: priority: got 'high'`,
+  `  triage-04: priority: got 'medium'`,
+  `  triage-05: priority: got 'high'`,
+  ``,
+  `<span class="r">Error: Process completed with exit code 1.</span>`,
+];
+window.DURATION = 8.3;
+window.render = (t) => {
+  rise("#pr", t, 0.15, { dist: 30 });
+  rise("#term", t, cue("GitHub") - 0.2, { dist: 30 });
+  const start = cue("Break") - 0.35, end = cue("fails") - 0.25;
+  const shown = t < start ? 1 : Math.round(1 + (LINES.length - 1) * prog(t, start, end - start, "lin"));
+  $("#out").innerHTML = LINES.slice(0, shown).join("\n");
+  const failed = t >= cue("fails") - 0.15;
+  $("#st").className = `status ${failed ? "fail" : "run"}`;
+  $("#st").textContent = failed ? "✕" : "";
+  $("#st").style.transform = failed ? "" : `rotate(${t * 360}deg)`;
+  $("#stx").textContent = failed ? "· failed" : "· running evals";
+  $("#stx").style.color = failed ? "#f87171" : "";
+  rise("#verdict", t, cue("fails") - 0.15, { dist: 12, dur: 0.35 });
+  const shake = failed ? Math.sin(t * 60) * 6 * (1 - prog(t, cue("fails"), 0.45)) : 0;
+  $("#verdict").style.marginLeft = `${shake}px`;
+};
+</script></body></html>

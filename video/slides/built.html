@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script>
+<style>
+  #title { position: absolute; left: 0; right: 0; top: 96px; text-align: center; font-size: 56px; font-weight: 800; letter-spacing: -0.03em; }
+  #title span { color: #34d399; }
+  #models { position: absolute; left: 130px; right: 130px; top: 250px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 26px; }
+  .m { border-radius: 26px; padding: 34px 30px; background: rgba(15,23,42,.75); border: 1px solid rgba(148,163,184,.16); min-height: 330px; }
+  .m .tier { font-size: 22px; font-weight: 700; color: #8a9ab3; letter-spacing: .06em; text-transform: uppercase; }
+  .m h3 { font-size: 50px; font-weight: 800; letter-spacing: -0.03em; margin-top: 8px; }
+  .m p { font-size: 27px; line-height: 1.4; color: #cbd5e1; margin-top: 22px; font-weight: 500; }
+  .m.on { border-color: rgba(52,211,153,.7); box-shadow: 0 0 0 4px rgba(52,211,153,.12), 0 24px 70px rgba(52,211,153,.18); }
+  #tf { position: absolute; left: 130px; right: 130px; top: 612px; height: 92px; border-radius: 22px; display: flex; align-items: center;
+    justify-content: center; gap: 18px; font-size: 36px; font-weight: 800; letter-spacing: -0.02em;
+    background: linear-gradient(90deg, rgba(52,211,153,.16), rgba(14,165,233,.16)); border: 1px solid rgba(52,211,153,.4); }
+  #tf small { font-size: 26px; color: #94a3b8; font-weight: 600; }
+  #tav { position: absolute; left: 130px; right: 130px; top: 734px; height: 150px; border-radius: 22px; display: flex; align-items: center;
+    gap: 34px; padding: 0 40px; background: rgba(15,23,42,.75); border: 1px solid rgba(125,211,252,.35); }
+  #tav h3 { font-size: 44px; font-weight: 800; color: #7dd3fc; white-space: nowrap; }
+  #tav p { font-size: 29px; color: #cbd5e1; line-height: 1.35; }
+  #tav p b { color: #e5edf7; }
+</style></head>
+<body><div class="stage">
+  <div id="title">Every model inside OpenPort: <span>NVIDIA Nemotron</span></div>
+  <div id="models">
+    <div class="m" id="nano"><div class="tier">Nemotron 3</div><h3>Nano</h3><p>Reads closed-model pricing pages. The first rung every call is tested on.</p></div>
+    <div class="m" id="super"><div class="tier">Nemotron 3</div><h3>Super</h3><p>Writes realistic test inputs. Fixes code a dependency upgrade broke.</p></div>
+    <div class="m" id="ultra"><div class="tier">Nemotron 3</div><h3>Ultra</h3><p>Tunes prompts and settings from failures. Judges free-text answers.</p></div>
+    <div class="m" id="vl"><div class="tier">Nemotron 3.5</div><h3>Super VL</h3><p>Takes the calls that read images, like receipts.</p></div>
+  </div>
+  <div id="tf">Nebius Token Factory <small>· every call, live prices from its model catalog</small></div>
+  <div id="tav"><h3>Tavily</h3><p>Grounds every change in a <b>quoted source</b>: NVIDIA's guidance for the exact model, each package's changelog, providers' pricing pages. Quotes are checked word for word.</p></div>
+</div>
+<script>
+window.DURATION = 18.7;
+window.render = (t) => {
+  rise("#title", t, 0.3, { dist: 20 });
+  const order = [["#nano", "Nano"], ["#super", "Super"], ["#ultra", "Ultra"], ["#vl", "Super", 2]];
+  order.forEach(([id, word, nth], i) => {
+    rise(id, t, 0.9 + i * 0.12, { dist: 26 });
+    const at = cue(word, nth || 1), next = i + 1 < order.length ? cue(order[i + 1][1], order[i + 1][2] || 1) : cue("Tavily");
+    $(id).classList.toggle("on", t >= at - 0.15 && t < next - 0.15);
+  });
+  rise("#tf", t, cue("Token") - 0.3, { dist: 18 });
+  rise("#tav", t, cue("Tavily") - 0.3, { dist: 22 });
+  $("#tav").style.borderColor = t >= cue("Tavily") - 0.3 ? "rgba(125,211,252,.75)" : "";
+};
+</script></body></html>

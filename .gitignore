@@ -28,3 +28,6 @@ Thumbs.db
 
 # The static replay of the dashboard (scripts/static_replay.py)
 site/
+
+# The demo video's renders (video/)
+video/out/

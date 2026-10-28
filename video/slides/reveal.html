@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script>
+<style>
+  #wrap { position: absolute; left: 0; right: 0; top: 300px; text-align: center; }
+  #logo { font-size: 168px; }
+  #logo .word { display: inline-block; }
+  #burst { position: absolute; left: 50%; top: 395px; width: 900px; height: 900px; margin: -450px 0 0 -450px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(52,211,153,.32), transparent 60%); }
+  #tag { margin-top: 46px; font-size: 52px; font-weight: 700; letter-spacing: -0.02em; color: #94a3b8; }
+  #tag span { transition: none; }
+  #chips { margin-top: 64px; display: flex; gap: 22px; justify-content: center; }
+</style></head>
+<body><div class="stage">
+  <div id="burst"></div>
+  <div id="wrap">
+    <div id="logo" class="mark"><span class="glyph"></span><span class="word">OpenPort</span></div>
+    <div id="tag"><span id="w1">An agent that </span><span id="w2">proves the switch,</span><span id="w3"> then makes it.</span></div>
+    <div id="chips"><span class="chip">NVIDIA Nemotron</span><span class="chip">Nebius Token Factory</span><span class="chip">Tavily</span></div>
+  </div>
+</div>
+<script>
+window.DURATION = 5.2;
+window.render = (t) => {
+  const g = prog(t, 0.15, 0.7, "back");
+  $(".glyph").style.transform = `scale(${0.3 + 0.7 * g}) rotate(${(1 - g) * -40}deg)`;
+  $(".glyph").style.opacity = clamp(g * 1.4);
+  const b = prog(t, 0.2, 1.4);
+  $("#burst").style.opacity = 0.9 * b * (1 - 0.6 * prog(t, 1.8, 2));
+  $("#burst").style.transform = `scale(${0.4 + 0.8 * b})`;
+  const w = prog(t, cue("OpenPort") - 0.35, 0.7, "inOut");
+  const word = $("#logo .word");
+  word.style.clipPath = w < 1 ? `inset(0 ${100 - 100 * w}% 0 0)` : "none";  // no clip edge left once it's in
+  // the glyph starts centred and slides left as the name wipes in beside it
+  $("#logo").style.transform = `translateX(${(1 - w) * (word.offsetWidth + 22) / 2}px)`;
+  rise("#tag", t, cue("an") - 0.2, { dist: 18 });
+  $("#w2").style.color = prog(t, cue("proves") - 0.1, 0.3) > 0.5 ? "#34d399" : "#94a3b8";
+  $("#w3").style.color = prog(t, cue("then") - 0.1, 0.3) > 0.5 ? "#e5edf7" : "#94a3b8";
+  $$(".chip").forEach((c, i) => rise(c, t, cue("switch") + 0.1 + i * 0.15, { dist: 14, dur: 0.45 }));
+};
+</script></body></html>

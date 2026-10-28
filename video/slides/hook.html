@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script>
+<style>
+  #a { position: absolute; left: 160px; top: 250px; width: 1600px; }
+  #a h1 { font-size: 92px; font-weight: 800; letter-spacing: -0.035em; line-height: 1.05; }
+  #a h1 .soft { color: #8a9ab3; }
+  #punches { margin-top: 70px; display: flex; gap: 34px; }
+  .punch { font-size: 64px; font-weight: 800; letter-spacing: -0.03em; padding: 18px 34px; border-radius: 22px;
+    background: rgba(248,113,113,.08); border: 1px solid rgba(248,113,113,.35); color: #fca5a5; }
+  #b { position: absolute; left: 50%; top: 170px; width: 1240px; margin-left: -620px; }
+  #b .label { font-size: 30px; font-weight: 700; color: #8a9ab3; letter-spacing: .02em; display: flex; justify-content: space-between; }
+  #b .label b { color: #34d399; }
+  .code { margin-top: 22px; border-radius: 24px; background: #0b1324; border: 1px solid rgba(148,163,184,.18);
+    box-shadow: 0 40px 120px rgba(0,0,0,.55); padding: 34px 0; font-size: 31px; line-height: 1.75; }
+  .code div { padding: 0 44px; white-space: pre; color: #cbd5e1; }
+  .code .add { background: rgba(52,211,153,.10); color: #a7f3d0; }
+  .code .del { background: rgba(248,113,113,.10); color: #fecaca; }
+  .code .sign { display: inline-block; width: 34px; color: #64748b; }
+  #c { position: absolute; left: 0; right: 0; top: 330px; text-align: center; }
+  #c h2 { font-size: 104px; font-weight: 900; letter-spacing: -0.04em; line-height: 1.06; }
+  #c h2 em { font-style: normal; color: #34d399; }
+  #c h2 .brk { color: #f87171; }
+  #c p { margin-top: 34px; font-size: 40px; color: #8a9ab3; font-weight: 600; }
+</style></head>
+<body><div class="stage">
+  <div id="a">
+    <h1>Your AI app runs on<br><span class="soft">someone else's model.</span></h1>
+    <div id="punches"><div class="punch">Their prices.</div><div class="punch">Their roadmap.</div><div class="punch">Their outages.</div></div>
+  </div>
+  <div id="b">
+    <div class="label"><span>Switching to open models</span><span><b id="n">0</b> lines</span></div>
+    <div class="code mono">
+      <div>client = OpenAI(</div>
+      <div class="add l"><span class="sign">+</span>    base_url="https://api.tokenfactory.nebius.com/v1/",</div>
+      <div class="add l"><span class="sign">+</span>    api_key=os.environ["NEBIUS_API_KEY"],</div>
+      <div>)</div>
+      <div>response = client.chat.completions.create(</div>
+      <div class="del l"><span class="sign">-</span>    model="gpt-5-mini",</div>
+      <div class="add l"><span class="sign">+</span>    model="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",</div>
+      <div>    messages=messages,</div>
+    </div>
+  </div>
+  <div id="c"><h2>Nobody can <em>prove</em><br>it <span class="brk">won't break.</span></h2><p>So almost nobody switches.</p></div>
+</div>
+<script>
+window.DURATION = 14;
+window.render = (t) => {
+  const outA = cue("Switching") - 0.35;
+  rise("#a h1", t, 0.55, { end: outA, dist: 34 });
+  $$(".punch").forEach((p, i) => rise(p, t, cue("Their", i + 1) - 0.05, { end: outA, dist: 22, scale: 0.12, dur: 0.4 }));
+  const outB = cue("nobody", 2) - 0.45;
+  rise("#b", t, cue("Switching") - 0.1, { end: outB, dist: 40, dur: 0.6 });
+  const lines = $$(".code .l");
+  lines.forEach((l, i) => { const p = prog(t, cue("three-line") - 0.5 + i * 0.22, 0.35); l.style.boxShadow = `inset ${6 * p}px 0 0 ${i === 2 ? "#f87171" : "#34d399"}`; });
+  $("#n").textContent = Math.round(3 * prog(t, cue("three-line") - 0.5, 0.9, "lin"));
+  rise("#c h2", t, cue("nobody", 2) - 0.25, { dist: 30, scale: 0.04, dur: 0.6 });
+  rise("#c p", t, cue("won't") + 0.1, { dist: 16 });
+  // a hairline crack through "won't break" as it's said
+  const brk = $("#c .brk"), k = prog(t, cue("break"), 0.25);
+  brk.style.textShadow = k ? `${2 * k}px 0 0 rgba(56,189,248,.5), ${-2 * k}px 0 0 rgba(248,113,113,.7)` : "none";
+};
+</script></body></html>

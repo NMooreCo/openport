@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script><script src="apps.js"></script>
+<style>
+  #title { position: absolute; left: 130px; top: 120px; font-size: 54px; font-weight: 800; letter-spacing: -0.03em; }
+  #title span { color: #8a9ab3; font-weight: 600; }
+  #grid20 { position: absolute; left: 130px; top: 250px; width: 1010px; }
+  #nums { position: absolute; left: 1230px; top: 250px; width: 560px; }
+  .big { font-size: 190px; font-weight: 900; letter-spacing: -0.05em; line-height: .95; }
+  .cap { font-size: 34px; font-weight: 600; color: #8a9ab3; margin-top: 10px; }
+  #moved { margin-top: 70px; }
+  #moved .big { color: #34d399; }
+  .bar { margin-top: 26px; height: 18px; border-radius: 9px; background: rgba(148,163,184,.15); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #34d399, #0ea5e9); border-radius: 9px; }
+</style></head>
+<body><div class="stage">
+  <div id="title">The 20 most-starred open-source AI apps <span>· field study</span></div>
+  <div id="grid20" class="apps"></div>
+  <div id="nums">
+    <div id="found"><div class="big" id="n1">0</div><div class="cap">LLM calls found in their code</div></div>
+    <div id="moved"><div class="big" id="n2">0</div><div class="cap">moved to Nemotron as they are</div><div class="bar"><i></i></div></div>
+  </div>
+</div>
+<script>
+appGrid($("#grid20"));
+window.DURATION = 9.2;
+window.render = (t) => {
+  rise("#title", t, 0.1, { dist: 18 });
+  $$(".app").forEach((a, i) => {
+    rise(a, t, 0.35 + i * 0.09, { dist: 16, dur: 0.4 });
+    const lit = prog(t, cue("finds") + i * 0.04, 0.3);
+    a.querySelector(".dot").style.background = lit > 0.5 ? "#34d399" : "#475569";
+  });
+  rise("#found", t, cue("finds") - 0.3, { dist: 20 });
+  count("#n1", t, cue("finds") - 0.2, 1.9, 207);
+  rise("#moved", t, cue("moves") - 0.3, { dist: 20 });
+  count("#n2", t, cue("seventy-nine") - 0.1, 0.9, 79);
+  $("#moved .bar i").style.width = `${38 * prog(t, cue("seventy-nine") - 0.1, 1.1)}%`;
+};
+</script></body></html>

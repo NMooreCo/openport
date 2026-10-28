@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script>
+<style>
+  #line { position: absolute; left: 0; right: 0; top: 400px; text-align: center; font-size: 100px; font-weight: 900; letter-spacing: -0.045em; }
+  #line em { font-style: normal; color: #34d399; }
+  #end { position: absolute; left: 0; right: 0; top: 230px; text-align: center; }
+  #logo { font-size: 150px; }
+  #tag { margin-top: 30px; font-size: 50px; font-weight: 700; color: #94a3b8; letter-spacing: -0.02em; }
+  #url { margin: 66px auto 0; display: inline-flex; align-items: center; gap: 18px; padding: 22px 44px; border-radius: 999px;
+    font-size: 54px; font-weight: 800; color: #04121a; background: linear-gradient(90deg, #34d399, #38bdf8); letter-spacing: -0.02em;
+    box-shadow: 0 20px 70px rgba(52,211,153,.35); }
+  #repo { margin-top: 30px; font-size: 32px; color: #cbd5e1; }
+  #by { position: absolute; left: 0; right: 0; bottom: 70px; text-align: center; font-size: 27px; color: #8a9ab3; font-weight: 600; }
+  #by b { color: #cbd5e1; }
+</style></head>
+<body><div class="stage">
+  <div id="line">Open models,<br><em>proven</em> before you ship.</div>
+  <div id="end">
+    <div id="logo" class="mark"><span class="glyph"></span><span>OpenPort</span></div>
+    <div id="tag">Prove it, then port it.</div>
+    <div id="url">nebius.narralogy.com</div>
+    <div id="repo" class="mono">github.com/NMooreCo/openport · MIT</div>
+  </div>
+  <div id="by">Built on <b>NVIDIA Nemotron</b> · <b>Nebius Token Factory</b> · <b>Tavily</b> &nbsp;—&nbsp; Nebius × NVIDIA Global AI Hackathon</div>
+</div>
+<script>
+window.DURATION = 11.7;
+window.render = (t) => {
+  rise("#line", t, cue("Open") - 0.25, { dist: 30, end: cue("OpenPort") - 0.5, outDur: 0.4 });
+  const g = prog(t, cue("OpenPort") - 0.35, 0.6, "back");
+  $("#logo").style.opacity = clamp(g * 1.3);
+  $("#logo").style.transform = `scale(${0.85 + 0.15 * g})`;
+  rise("#tag", t, cue("Prove") - 0.2, { dist: 16 });
+  rise("#url", t, cue("Try") - 0.1, { dist: 20, scale: 0.06 });
+  rise("#repo", t, cue("narralogy"), { dist: 12 });
+  rise("#by", t, cue("com") + 0.3, { dist: 10 });
+};
+</script></body></html>

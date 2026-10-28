@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="lib.js"></script><script src="apps.js"></script>
+<style>
+  #grid20 { position: absolute; left: 130px; top: 250px; width: 1010px; }
+  #nums { position: absolute; left: 1230px; top: 230px; width: 600px; }
+  .big { font-size: 210px; font-weight: 900; letter-spacing: -0.05em; line-height: .95; color: #f87171; }
+  .big span { color: #64748b; font-size: 120px; }
+  .cap { font-size: 38px; font-weight: 700; color: #e5edf7; margin-top: 18px; line-height: 1.25; }
+  .sub { font-size: 28px; color: #8a9ab3; margin-top: 26px; font-weight: 600; }
+  .app.bad { border-color: rgba(248,113,113,.4); background: rgba(127,29,29,.18); }
+</style></head>
+<body><div class="stage">
+  <div id="grid20" class="apps"></div>
+  <div id="nums">
+    <div class="big" id="n">0<span> / 20</span></div>
+    <div class="cap">pin a dependency with a<br>known vulnerability</div>
+    <div class="sub">746 vulnerable versions · 3,302 advisories</div>
+  </div>
+</div>
+<script>
+appGrid($("#grid20"));
+window.DURATION = 4.9;
+window.render = (t) => {
+  // The previous slide showed the same grid; it carries straight over.
+  const bad = $$(".app").filter((a) => a.dataset.app !== CLEAN);
+  bad.forEach((a, i) => {
+    const on = prog(t, cue("Nineteen") + i * 0.07, 0.25) > 0.5;
+    a.classList.toggle("bad", on);
+    a.querySelector(".dot").style.background = on ? "#f87171" : "#475569";
+  });
+  const n = Math.min(19, Math.floor(prog(t, cue("Nineteen"), 19 * 0.07 + 0.2, "lin") * 19.999));
+  $("#n").firstChild.textContent = String(n);
+  rise("#nums", t, cue("Nineteen") - 0.3, { dist: 20 });
+  rise(".cap", t, cue("pin") - 0.2, { dist: 14 });
+  rise(".sub", t, cue("known") - 0.1, { dist: 12 });
+};
+</script></body></html>
