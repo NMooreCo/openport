@@ -170,13 +170,26 @@ def http_routed(base: str):
         HTTP_BASE.reset(token)
 
 
+def _wrapped(client: object | None) -> list[object]:
+    """A client and every client it wraps. Tuning hands the runner a wrapper (VariantClient) whose `client` is
+    the real SDK client; that one's calls are OpenPort's own too. Marking only the wrapper sent the inner call
+    back to the swapped client: for code on Anthropic's SDK, whose shim never resets the route, every case
+    failed before reaching a model (Oct 28)."""
+    chain: list[object] = []
+    while client is not None and all(client is not seen for seen in chain):
+        chain.append(client)
+        client = getattr(client, "client", None)
+    return chain
+
+
 @contextmanager
 def routed(swapped: object, passthrough: object | None = None):
-    """While inside, the SDKs' calls go to `swapped`; `passthrough` (the client `swapped` calls) goes to Token Factory."""
+    """While inside, the SDKs' calls go to `swapped`; `passthrough` (the client `swapped` calls), and any client it
+    wraps, goes to Token Factory."""
     install()
-    if passthrough is not None:
+    for client in _wrapped(passthrough):
         try:
-            PASSTHROUGH.add(passthrough)
+            PASSTHROUGH.add(client)
         except TypeError:  # not weakly referenceable: it can't be one of the SDK's clients either
             pass
     token = ROUTE.set(swapped)

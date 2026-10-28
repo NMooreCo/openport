@@ -236,6 +236,40 @@ def test_a_tier_can_be_served_somewhere_else():
     assert result.chosen.tier == "student" and {r["model"] for r in student.requests} == {"ft:llama-3.1-8b:student"}
 
 
+def test_tuning_reaches_the_model_for_code_on_anthropics_sdk():
+    """Oct 28, live: under tuning, every call written for Anthropic's SDK failed before reaching a model. Tuning
+    hands the runner a VariantClient; the real SDK client inside it wasn't let through, so the shim's own request
+    was routed back to the shim. The fakes elsewhere aren't SDK clients, so this one uses a real OpenAI client
+    over an in-memory transport."""
+    import httpx
+    from openai import OpenAI
+
+    from openport.evals.runner import run_site
+    from openport.tune.variant import VariantClient
+
+    requests = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        body = {
+            "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": "<decision>deny</decision><refund_amount>0</refund_amount><brief>b</brief>"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=body)
+
+    real = OpenAI(api_key="test", base_url="https://tokenfactory.test/v1/", http_client=httpx.Client(transport=httpx.MockTransport(answer)))
+    policy = next(s for s in SPEC.call_sites if s.id == "policy")
+    assert policy.sdk == "anthropic"
+    result = run_site(SPEC, policy, "nano", "nvidia/nano-test", client=VariantClient(real, Variant(reasoning=False)), cases=policy.cases()[:2])
+
+    assert [c.error for c in result.cases] == [None, None]
+    assert result.prompt_tokens == 20 and len(requests) == 2
+    assert {r["model"] for r in requests} == {"nvidia/nano-test"}
+    assert requests[0]["chat_template_kwargs"] == {"enable_thinking": False}  # the variant reached the request
+
+
 def test_parse_variant_tolerates_chatter():
     text = 'Here you go:\n```json\n{"reasoning": false, "system_addendum": "JSON only.", "max_tokens": 0, "temperature": null, "rationale": "x"}\n```'
     variant = parse_variant(text, fallback=Variant())

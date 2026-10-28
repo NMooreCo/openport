@@ -146,6 +146,13 @@ def main(argv: list[str]) -> int:
     if "--from" in argv:
         name = argv[argv.index("--from") + 1]
         steps = STEPS[[s.name for s in STEPS].index(name):]
+    if "--only" in argv:  # a comma-separated list of step names, run in the runbook's order
+        wanted = argv[argv.index("--only") + 1].split(",")
+        unknown = set(wanted) - {s.name for s in STEPS}
+        if unknown:
+            print(f"No step named {', '.join(sorted(unknown))}")
+            return 2
+        steps = [s for s in steps if s.name in wanted]
     budget = float(argv[argv.index("--budget") + 1]) if "--budget" in argv else 10.0
     for step in steps:
         how = f"openport {' '.join(step.command)}" if step.command else f"dashboard {step.record[0]} {json.dumps(step.record[2])}"
