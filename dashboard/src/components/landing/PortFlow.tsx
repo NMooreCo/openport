@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Mark } from "../Logo";
 import { reducedMotion } from "./motion";
 
 // SupportDesk's recorded run (Oct 28): its five LLM calls, the closed model each one was on, the Nemotron tier its
@@ -269,11 +270,7 @@ export function PortFlow() {
               aria-hidden
             />
             <span className="relative flex flex-col items-center gap-1.5">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400 to-cyan-500 shadow-[0_0_18px_rgba(52,211,153,0.5)]" aria-hidden>
-                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="#04121a" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 12h12" /><path d="M12 6l6 6-6 6" /><path d="M20 5v14" />
-                </svg>
-              </span>
+              <Mark size="h-8 w-8" />
               <span className="font-display text-sm font-semibold text-white">Open<span className="text-emerald-300">Port</span></span>
             </span>
           </div>

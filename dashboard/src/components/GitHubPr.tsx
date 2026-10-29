@@ -23,7 +23,7 @@ export function GitHubPr({ run, ready }: { run: RunInfo; ready: boolean }) {
         href={url}
         target="_blank"
         rel="noreferrer"
-        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-400/30 bg-emerald-400/[0.06] px-4 py-3 text-sm transition hover:border-emerald-400/60"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.06] px-4 py-3 text-sm shadow-[0_0_30px_-12px_rgba(52,211,153,0.6)] transition hover:border-emerald-400/60"
       >
         <span className="text-slate-200">
           Opened on GitHub: <span className="font-mono text-emerald-300">{shortName(url)}</span>
@@ -47,7 +47,7 @@ export function GitHubPr({ run, ready }: { run: RunInfo; ready: boolean }) {
     setBusy(false);
   };
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-panel px-4 py-3">
+    <div className="panel flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3">
       <p className="max-w-xl text-sm text-muted">
         Open this pull request on GitHub, in the <span className="font-mono text-slate-200">{org}</span> organization
         {fork ? `, on a fork of ${run.target}: its maintainers aren't notified.` : ", in the demo app's own repo there."}
@@ -58,7 +58,7 @@ export function GitHubPr({ run, ready }: { run: RunInfo; ready: boolean }) {
         <button
           onClick={open}
           disabled={busy}
-          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-ink transition hover:bg-emerald-400 disabled:opacity-50"
+          className="glow rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-ink transition hover:bg-emerald-300 disabled:opacity-50"
         >
           {busy ? "Opening on GitHub…" : "Open on GitHub"}
         </button>

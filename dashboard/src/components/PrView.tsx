@@ -7,7 +7,7 @@ export function PrView({ body }: { body: string }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(body, { async: false })), [body]);
   const [copied, setCopied] = useState(false);
   return (
-    <div className="rounded-xl border border-line bg-panel">
+    <div className="panel rounded-2xl">
       <div className="flex items-center justify-between border-b border-line px-4 py-2">
         <p className="text-xs text-muted">Pull request description (Markdown)</p>
         <button

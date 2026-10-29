@@ -36,8 +36,8 @@ function FilePanel({ file }: { file: FileDiff }) {
   // The vendored runtime and big new files start collapsed; the interesting edits are small.
   const [open, setOpen] = useState(!file.path.endsWith("openport_llm.py") && file.lines.length < 160);
   return (
-    <section className="overflow-hidden rounded-lg border border-line">
-      <button onClick={() => setOpen(!open)} className="flex w-full items-center justify-between gap-3 bg-panel px-3 py-2 text-left">
+    <section className="panel overflow-hidden rounded-xl">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-white/[0.02]">
         <span className="truncate font-mono text-xs text-white">{file.path}</span>
         <span className="shrink-0 font-mono text-xs">
           <span className="text-emerald-300">+{file.added}</span> <span className="text-red-300">−{file.removed}</span>

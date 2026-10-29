@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import * as api from "../api";
 import { useSite } from "../site";
 import { JudgeUnlock } from "./JudgeUnlock";
+import { Logo } from "./Logo";
 import type { Mode } from "./Launcher";
 import { CountUp, Reveal, useCount, useInView } from "./landing/motion";
 import { PortFlow } from "./landing/PortFlow";
@@ -220,14 +221,7 @@ export function Landing() {
         }`}
       >
         <nav className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
-          <a href="#" className="flex items-center gap-2 font-display text-lg font-semibold text-white">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400 to-cyan-500 shadow-[0_0_18px_rgba(52,211,153,0.5)]" aria-hidden>
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="#04121a" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 12h12" /><path d="M12 6l6 6-6 6" /><path d="M20 5v14" />
-              </svg>
-            </span>
-            <span>Open<span className="text-emerald-300">Port</span></span>
-          </a>
+          <Logo />
           <div className="hidden items-center gap-6 text-sm text-slate-300 md:flex">
             <a href="#how" onClick={scrollTo("how")} className="hover:text-white">How it works</a>
             <a href="#results" onClick={scrollTo("results")} className="hover:text-white">Results</a>

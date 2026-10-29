@@ -70,7 +70,7 @@ function PackageCard({ pkg }: { pkg: Package }) {
   };
   const rest = pkg.advisories.slice(SHOWN_ADVISORIES);
   return (
-    <article className="rounded-xl border border-line bg-panel p-4">
+    <article className="panel rounded-2xl p-4">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate font-mono text-sm text-white">{pkg.name}</h3>
@@ -164,13 +164,13 @@ function FixStep({ fix, index }: { fix: FixRound; index: number }) {
 function Changelogs({ changelogs }: { changelogs: Changelog[] }) {
   return (
     <section aria-labelledby="changelogs">
-      <h2 id="changelogs" className="text-sm font-medium text-white">What changed upstream</h2>
+      <h2 id="changelogs" className="font-display text-lg font-semibold text-white">What changed upstream</h2>
       <p className="mt-1 text-xs text-muted">
         Quoted from each package's own changelog, found and read with Tavily, for the releases between the two versions.
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         {changelogs.map((log) => (
-          <article key={`${log.name}@${log.from}`} className="min-w-0 rounded-xl border border-line bg-panel p-4">
+          <article key={`${log.name}@${log.from}`} className="min-w-0 panel rounded-2xl p-4">
             <p className="text-sm break-words text-white">
               <span className="font-medium">{log.name}</span> <span className="font-mono text-xs text-muted">{log.from} → {log.to}</span>
             </p>
@@ -203,11 +203,11 @@ function Tests({ state }: { state: UpgradeState }) {
   const fixing = state.stages.fix === "active" && state.status === "running";
   return (
     <section aria-labelledby="tests">
-      <h2 id="tests" className="text-sm font-medium text-white">The repo's own tests</h2>
+      <h2 id="tests" className="font-display text-lg font-semibold text-white">The repo's own tests</h2>
       <p className="mt-1 text-xs text-muted">
         Run in a throwaway container with only the upgraded copy mounted. OpenPort changes application code to fix what breaks, never the tests.
       </p>
-      <ol className="mt-3 space-y-4 rounded-xl border border-line bg-panel p-4">
+      <ol className="mt-3 space-y-4 panel rounded-2xl p-4">
         <Step title="Before the upgrade" result={state.before} active={!state.before && state.status === "running"} />
         {state.before && <Step title={`After the version bump${bumps ? `: ${bumps}` : ""}`} result={state.afterBump} active={!state.afterBump && state.status === "running"} />}
         {state.research.length > 0 && <ResearchStep sources={state.research} />}
@@ -243,7 +243,7 @@ export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive?: () =
       )}
 
       <section aria-labelledby="packages">
-        <h2 id="packages" className="text-sm font-medium text-white">Vulnerable packages</h2>
+        <h2 id="packages" className="font-display text-lg font-semibold text-white">Vulnerable packages</h2>
         {!state.packages ? (
           <p className="mt-3 text-sm text-muted">{live ? "Checking each pinned dependency against OSV.dev…" : "No dependencies were checked."}</p>
         ) : packages.length === 0 ? (

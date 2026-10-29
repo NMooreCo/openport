@@ -1,11 +1,14 @@
 import { pct, usd, type RunState } from "../run";
 
-export function Tile({ label, value, sub, tone = "text-white" }: { label: string; value: string; sub?: string; tone?: string }) {
+export function Tile({ label, value, sub, tone = "text-white", className = "" }: {
+  label: string; value: string; sub?: string; tone?: string; className?: string;
+}) {
   return (
-    <div className="rounded-xl border border-line bg-panel px-4 py-3">
-      <p className="text-xs text-muted">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-muted">{sub}</p>}
+    <div className={`panel rounded-2xl px-4 py-4 ${className}`}>
+      <p className="text-[11px] font-medium tracking-wider text-muted uppercase">{label}</p>
+      {/* a long value ("$11.70 → $2.27") a size down, so it stays on one line in its tile */}
+      <p className={`mt-2 font-display font-semibold tracking-tight tabular-nums ${value.length > 9 ? "text-2xl" : "text-3xl"} ${tone}`}>{value}</p>
+      {sub && <p className="mt-1 text-xs text-muted">{sub}</p>}
     </div>
   );
 }
@@ -43,7 +46,8 @@ export function Metrics({ state }: { state: RunState }) {
         value={usd(ownCost)}
         sub={ownCost != null ? "evals, engineer and judge" : state.attempts.length ? "prices unavailable" : "while testing and tuning"}
       />
-      <Tile label="Cost per 1k calls" value={priced ? `${usd(before)} → ${usd(now)}` : "–"} sub={priced ? "est. at list prices" : "after tuning and pricing"} tone={priced ? "text-pass" : "text-white"} />
+      {/* fifth of two columns on a phone: the full row, room for the before and after */}
+      <Tile label="Cost per 1k calls" value={priced ? `${usd(before)} → ${usd(now)}` : "–"} sub={priced ? "est. at list prices" : "after tuning and pricing"} tone={priced ? "text-pass" : "text-white"} className="col-span-2 lg:col-span-1" />
     </div>
   );
 }

@@ -29,11 +29,11 @@ export function PortView({ run, onRunLive }: { run: RunInfo; onRunLive?: () => P
       )}
 
       <section aria-labelledby="calls">
-        <h2 id="calls" className="text-sm font-medium text-white">LLM calls</h2>
+        <h2 id="calls" className="font-display text-lg font-semibold text-white">LLM calls</h2>
         {state.sites.length === 0 ? (
           <p className="mt-3 text-sm text-muted">{live ? "Looking for OpenAI and Anthropic calls…" : "No calls found."}</p>
         ) : (
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div className="mt-3 grid items-start gap-3 md:grid-cols-2">
             {state.sites.map((site) => <CallCard key={site.id} site={site} state={state} />)}
           </div>
         )}

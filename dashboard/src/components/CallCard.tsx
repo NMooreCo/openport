@@ -44,7 +44,7 @@ export function CallCard({ site, state }: { site: Finding; state: RunState }) {
   const change = tuned?.chosen && tuned.chosen.variant !== "as written" ? tuned.chosen : null;
 
   return (
-    <article className="rounded-xl border border-line bg-panel p-4">
+    <article className="panel rounded-2xl p-4">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate font-mono text-sm text-white">{site.id}</h3>
