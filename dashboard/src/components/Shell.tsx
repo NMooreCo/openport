@@ -1,9 +1,13 @@
 import { useState, type ReactNode } from "react";
 import type { RunInfo } from "../App";
+import { useSite } from "../site";
+import { JudgeUnlock } from "./JudgeUnlock";
 
 function RecordedBanner({ created, onRunLive }: { created: number; onRunLive?: () => Promise<void> }) {
+  const site = useSite();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const locked = Boolean(site?.gated && !site.judge); // the hosted demo keeps live runs for the judges
   const day = new Date(created * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const runLive = async () => {
     setBusy(true);
@@ -20,7 +24,9 @@ function RecordedBanner({ created, onRunLive }: { created: number; onRunLive?: (
       <p>A recorded run from {day}, replayed faster than it ran. Nothing is calling Token Factory now.</p>
       <div className="flex flex-wrap items-center gap-3">
         {error && <span role="alert" className="text-xs text-red-300">{error}</span>}
-        {onRunLive ? (
+        {onRunLive && locked ? (
+          <JudgeUnlock compact />
+        ) : onRunLive ? (
           <button
             disabled={busy}
             onClick={runLive}
@@ -50,7 +56,7 @@ export function Shell({ run, status, home, tagline, onRunLive, children }: {
     <div className="min-h-screen">
       <header className="border-b border-line">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-          <a href={home} className="shrink-0 font-semibold text-white">
+          <a href="#" className="shrink-0 font-semibold text-white">
             OpenPort <span className="hidden font-normal text-muted sm:inline">· {tagline}</span>
           </a>
           <div className="flex min-w-0 items-center gap-3">

@@ -31,3 +31,6 @@ site/
 
 # The demo video's renders (video/)
 video/out/
+
+# Wrangler's local secrets (deploy/cloudflare)
+.dev.vars

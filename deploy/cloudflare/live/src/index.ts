@@ -6,10 +6,22 @@ interface Env {
 	TAVILY_API_KEY?: string;
 	OPENPORT_DAILY_BUDGET_USD: string;
 	NEW_RUNS_PER_DAY: string;
+	// Set as a secret, live runs are for whoever has it (the hackathon's judges); everyone else sees the replays.
+	JUDGE_PASSWORD?: string;
+	VIDEO_URL?: string;
 }
 
 // Requests that can start a run (and spend Token Factory and Tavily credit) rather than replay one.
 const RUN_STARTS = new Set(["/api/runs", "/api/upgrades"]);
+// Wrong passwords one address may try in an hour; past that its guesses aren't checked until the next hour.
+const MISSES_PER_HOUR = 20;
+
+/** Whether two secrets match, taking the same time whatever they hold. */
+async function same(given: string, secret: string): Promise<boolean> {
+	const encode = (text: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+	const [a, b] = await Promise.all([encode(given), encode(secret)]);
+	return crypto.subtle.timingSafeEqual(a, b);
+}
 
 // `openport serve` in the repo's Dockerfile.
 const PORT = 8000;
@@ -22,32 +34,39 @@ export class Dashboard extends DurableObject<Env> {
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
-		// The timeout isn't kept across a restart of this object, such as a deploy.
-		const container = ctx.container!;
-		if (container.running) {
+		// The timeout isn't kept across a restart of this object, such as a deploy. (No container at all in
+		// `wrangler dev --enable-containers=false`, where only /api/site answers.)
+		const container = ctx.container;
+		if (container?.running) {
 			void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(IDLE_MS));
 		}
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+		if (url.pathname === "/api/site") return this.site(request); // answered here: no need to wake the container
+
 		// Requests that arrive while it starts share one start and one readiness check.
 		this.starting ??= this.start().finally(() => {
 			this.starting = undefined;
 		});
 		await this.starting;
 
-		const url = new URL(request.url);
 		url.protocol = "http:";
 		url.host = "container";
 		const forwarded = new Request(url, request);
 		forwarded.headers.delete("host");
+		forwarded.headers.delete("x-openport-judge"); // the password stops here
 
 		// The server caps a day's spend, but it forgets when the container sleeps. This object's storage doesn't:
 		// it counts the runs started each UTC day, and past the cap the server may only show runs it already has.
+		// With a judges' password set, a run can only start for someone who gives it.
 		const starting = request.method === "POST" && RUN_STARTS.has(url.pathname);
 		const day = `new-runs:${new Date().toISOString().slice(0, 10)}`;
 		const started = starting ? ((await this.ctx.storage.get<number>(day)) ?? 0) : 0;
-		if (starting && started >= Number(this.env.NEW_RUNS_PER_DAY || 20)) {
+		if (starting && this.env.JUDGE_PASSWORD && !(await this.isJudge(request))) {
+			forwarded.headers.set("x-openport-reuse-only", "judges");
+		} else if (starting && started >= Number(this.env.NEW_RUNS_PER_DAY || 20)) {
 			forwarded.headers.set("x-openport-reuse-only", "1");
 		}
 		const response = await this.ctx.container!.getTcpPort(PORT).fetch(forwarded);
@@ -56,6 +75,26 @@ export class Dashboard extends DurableObject<Env> {
 			if (run?.reused === false) await this.ctx.storage.put(day, started + 1);
 		}
 		return response;
+	}
+
+	/** The page's /api/site: whether live runs need the password, whether this visitor gave it, and the video. */
+	private async site(request: Request): Promise<Response> {
+		const gated = Boolean(this.env.JUDGE_PASSWORD);
+		const body = { gated, judge: gated ? await this.isJudge(request) : true, video_url: this.env.VIDEO_URL || null };
+		return Response.json(body, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+	}
+
+	/** Whether the request carries the judges' password, with wrong guesses limited per address and hour. */
+	private async isJudge(request: Request): Promise<boolean> {
+		const given = request.headers.get("x-openport-judge");
+		if (!given || !this.env.JUDGE_PASSWORD) return false;
+		const address = request.headers.get("cf-connecting-ip") ?? "unknown";
+		const key = `judge-misses:${new Date().toISOString().slice(0, 13)}:${address}`;
+		const misses = (await this.ctx.storage.get<number>(key)) ?? 0;
+		if (misses >= MISSES_PER_HOUR) return false;
+		if (await same(given, this.env.JUDGE_PASSWORD)) return true;
+		await this.ctx.storage.put(key, misses + 1);
+		return false;
 	}
 
 	private async start(): Promise<void> {

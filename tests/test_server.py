@@ -370,6 +370,13 @@ def test_a_host_can_hold_the_server_to_runs_it_already_has(upgrade_server):
     assert upgrade_server.post("/api/upgrades", json={"target": "authkit"}, headers=held).json()["reused"]  # a recent run still shows
     refused = upgrade_server.post("/api/upgrades", json={"target": "authkit", "live": True}, headers=held)
     assert refused.status_code == 429 and "new runs" in refused.json()["detail"]
+    for_judges = upgrade_server.post("/api/upgrades", json={"target": "authkit", "live": True}, headers={"x-openport-reuse-only": "judges"})
+    assert for_judges.status_code == 403 and "judges" in for_judges.json()["detail"]
+
+
+def test_a_server_on_its_own_has_no_judges_gate(server, monkeypatch):
+    monkeypatch.setenv("OPENPORT_VIDEO_URL", "https://youtu.be/abc123")
+    assert server.get("/api/site").json() == {"gated": False, "judge": True, "video_url": "https://youtu.be/abc123"}
 
 
 def test_a_monorepo_folder_is_a_plain_path_inside_its_repo(upgrade_server):

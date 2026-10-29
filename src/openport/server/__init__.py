@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import threading
 import time
 import uuid
@@ -28,8 +29,9 @@ app = FastAPI(title="OpenPort", docs_url="/api/docs", openapi_url="/api/openapi.
 # The page shows text from scanned repos and from models, so it allows only its own scripts, and nobody can frame
 # it. The API docs load their viewer from a CDN, so they go without the policy.
 SECURITY_HEADERS = {
-    "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; "
-                               "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.ytimg.com; "
+                               "frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'none'; form-action 'self'; "
+                               "frame-ancestors 'none'",
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
     "referrer-policy": "strict-origin-when-cross-origin",
@@ -80,6 +82,13 @@ def info() -> dict:
     return {"vetted_only": pipeline.VETTED_ONLY, "daily_budget_usd": pipeline.DAILY_BUDGET_USD}
 
 
+@app.get("/api/site")
+def site() -> dict:
+    """Whether live runs need the judges' password (and whether this visitor has given it), and the demo video.
+    Run by itself, the server has no gate; behind deploy/cloudflare, the Worker answers this instead."""
+    return {"gated": False, "judge": True, "video_url": os.getenv("OPENPORT_VIDEO_URL") or None}
+
+
 def spent_today() -> float:
     """Live runs' Token Factory spend since midnight UTC, counting each unfinished run at IN_FLIGHT_USD."""
     midnight = time.time() // 86400 * 86400
@@ -111,7 +120,7 @@ def _forget_old_runs() -> None:
         del runs[run.id]
 
 
-def _launch(kind: str, target: str, label: str, local: Path | None, runner, live: bool = False, reuse_only: bool = False) -> dict:
+def _launch(kind: str, target: str, label: str, local: Path | None, runner, live: bool = False, reuse_only: str | None = None) -> dict:
     same = [r for r in runs.values() if r.kind == kind and r.target == target]
     shown = [r for r in same if r.status in ("queued", "running")]  # already running: watch that one
     if not live:  # else a recent run of it, or the recorded one, instead of spending credits again
@@ -119,6 +128,9 @@ def _launch(kind: str, target: str, label: str, local: Path | None, runner, live
         shown = shown or [r for r in same if r.status == "done" and r.recorded]
     if shown:
         return {**shown[-1].summary(), "reused": True}
+    if reuse_only == "judges":  # the host keeps live runs for whoever has the judges' password (deploy/cloudflare)
+        raise HTTPException(403, "Live runs are for the hackathon's judges: unlock them with the password in the submission's "
+                                 "testing instructions. The recorded runs play for everyone, and OpenPort runs anywhere: see the README.")
     if reuse_only:  # the host has counted today's new runs, which outlives this process (deploy/cloudflare)
         raise HTTPException(429, "This demo has started all the new runs it can today. The recorded runs of the demo apps are "
                                  "still here, and OpenPort runs anywhere: see the README.")
@@ -134,9 +146,10 @@ def _launch(kind: str, target: str, label: str, local: Path | None, runner, live
     return {**run.summary(), "reused": False}
 
 
-def _reuse_only(request: Request) -> bool:
-    """Whoever hosts the server can say it's to start no new runs, only show ones it has (a header only narrows)."""
-    return request.headers.get("x-openport-reuse-only") == "1"
+def _reuse_only(request: Request) -> str | None:
+    """Whoever hosts the server can say it's to start no new runs, only show ones it has (a header only narrows),
+    and why: "judges" (live runs need the judges' password) or anything else (today's new runs are used up)."""
+    return request.headers.get("x-openport-reuse-only") or None
 
 
 @app.post("/api/runs")

@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import * as api from "./api";
+import { Landing } from "./components/Landing";
 import { Launcher, type Mode } from "./components/Launcher";
 import { PortView } from "./components/PortView";
 import { UpgradeView } from "./components/UpgradeView";
 
 const runFromHash = () => location.hash.match(/run=([a-f0-9]+)/)?.[1] ?? null;
+// #app and #upgrade are the launcher (porting, upgrading), #run=<id> a run, anything else the front page.
+const inLauncher = () => location.hash === "#app" || location.hash === "#upgrade";
 
 export interface RunInfo {
   id: string;
@@ -17,10 +20,15 @@ export interface RunInfo {
 
 export default function App() {
   const [runId, setRunId] = useState<string | null>(runFromHash);
+  const [launcher, setLauncher] = useState(inLauncher);
   const [run, setRun] = useState<RunInfo | null>(null);
 
   useEffect(() => {
-    const onHash = () => setRunId(runFromHash());
+    const onHash = () => {
+      setRunId(runFromHash());
+      setLauncher(inLauncher());
+      if (!runFromHash()) window.scrollTo(0, 0);
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -34,7 +42,7 @@ export default function App() {
         target: data.target, recorded: Boolean(data.recorded), created: data.created,
       }))
       .catch(() => {
-        if (current) location.hash = "";
+        if (current) location.hash = "app";
       });
     return () => { current = false; };
   }, [runId]);
@@ -43,7 +51,7 @@ export default function App() {
     location.hash = `run=${await api.start(target, mode, live)}`;
   };
 
-  if (!runId) return <Launcher onStart={start} />;
+  if (!runId) return launcher ? <Launcher onStart={start} /> : <Landing />;
   if (run?.id !== runId) return null; // the run's details are still loading
   const runLive = api.STATIC ? undefined : () => start(run.target, run.kind, true); // a static page can't run anything
   return run.kind === "upgrade" ? <UpgradeView run={run} onRunLive={runLive} /> : <PortView run={run} onRunLive={runLive} />;

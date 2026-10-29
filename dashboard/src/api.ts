@@ -49,6 +49,40 @@ export async function info(): Promise<{ vetted_only: boolean }> {
   return STATIC ? { vetted_only: false } : fetch("/api/info").then((r) => json(r));
 }
 
+/** Whether live runs need the judges' password, whether this browser has given it, and the demo video. */
+export interface Site {
+  gated: boolean;
+  judge: boolean;
+  video_url: string | null;
+}
+
+// The judges' password: kept in this browser only, and sent only with the requests that start runs.
+const JUDGE_KEY = "openport-judge";
+
+export function judgePassword(): string {
+  try {
+    return localStorage.getItem(JUDGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function rememberJudge(password: string | null): void {
+  try {
+    if (password) localStorage.setItem(JUDGE_KEY, password);
+    else localStorage.removeItem(JUDGE_KEY);
+  } catch {
+    // private windows and blocked storage: the password lasts as long as the page
+  }
+}
+
+const judgeHeader = (password = judgePassword()): Record<string, string> => (password ? { "x-openport-judge": password } : {});
+
+export async function site(password = judgePassword()): Promise<Site> {
+  if (STATIC) return { gated: false, judge: false, video_url: null }; // a static page runs nothing live
+  return fetch("/api/site", { headers: judgeHeader(password) }).then((r) => json(r));
+}
+
 export async function presets(mode: Mode): Promise<Preset[]> {
   if (!STATIC) return fetch(mode === "upgrade" ? "/api/upgrade-presets" : "/api/presets").then((r) => json(r));
   return (await replayIndex()).filter((r) => r.kind === mode).map((r) => ({ id: r.preset, label: r.label, detail: r.detail }));
@@ -63,7 +97,7 @@ export async function start(target: string, mode: Mode, live = false): Promise<s
   }
   const response = await fetch(mode === "upgrade" ? "/api/upgrades" : "/api/runs", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...judgeHeader() },
     body: JSON.stringify({ target, live }),
   });
   return (await json<RunSummary>(response)).id;

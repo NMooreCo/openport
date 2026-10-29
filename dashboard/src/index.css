@@ -1,6 +1,11 @@
 @import "tailwindcss";
+/* Bundled with the page: its Content-Security-Policy loads nothing from elsewhere. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/space-grotesk";
 
 @theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --color-ink: #0b1220;
   --color-panel: #111a2e;
   --color-line: #1f2a44;
@@ -15,6 +20,38 @@ html,
 body {
   background: var(--color-ink);
   color: #e6ebf5;
+}
+
+/* The front page: glass panels, glowing accents, and sections that rise into view. */
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.glow { box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.35), 0 10px 40px -10px rgba(52, 211, 153, 0.55); }
+.text-gradient {
+  background: linear-gradient(90deg, #34d399, #22d3ee 45%, #a7f3d0 70%, #34d399);
+  background-size: 220% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 7s linear infinite;
+}
+.reveal { opacity: 0; transform: translateY(26px); transition: opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1), transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.reveal.in { opacity: 1; transform: none; }
+.float { animation: float 7s ease-in-out infinite; }
+.travel { animation: travel 3.6s cubic-bezier(0.55, 0, 0.45, 1) infinite; }
+.ring-pulse { animation: ring-pulse 3.6s ease-out infinite; }
+@keyframes shimmer { to { background-position: 220% center; } }
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+@keyframes travel { from { left: 0%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } to { left: 100%; opacity: 0; } }
+@keyframes ring-pulse { 0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); } 70%, 100% { box-shadow: 0 0 0 14px rgba(52, 211, 153, 0); } }
+@keyframes scroll-hint { 0% { transform: translateY(0); opacity: 1; } 80% { transform: translateY(10px); opacity: 0; } 100% { opacity: 0; } }
+.scroll-hint { animation: scroll-hint 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .text-gradient, .float, .travel, .ring-pulse, .scroll-hint { animation: none; }
 }
 
 /* The PR description, rendered from Markdown. */

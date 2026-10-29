@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
+import { JudgeUnlock } from "./JudgeUnlock";
 
 export type Mode = "port" | "upgrade";
 
@@ -56,7 +57,7 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
   const choose = (next: Mode) => {
     setMode(next);
     setError("");
-    history.replaceState(null, "", `${location.pathname}${location.search}${next === "upgrade" ? "#upgrade" : ""}`);
+    history.replaceState(null, "", `${location.pathname}${location.search}${next === "upgrade" ? "#upgrade" : "#app"}`);
   };
 
   const start = async (value: string) => {
@@ -73,7 +74,10 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
 
   return (
     <main className="mx-auto max-w-3xl px-4 pt-16 pb-24 sm:pt-24">
-      <p className="text-sm font-medium tracking-wide text-emerald-400">OpenPort</p>
+      <p className="flex items-center justify-between gap-4 text-sm font-medium tracking-wide text-emerald-400">
+        <a href="#" className="hover:text-emerald-300">OpenPort</a>
+        <a href="#" className="text-xs font-normal text-muted hover:text-white">What is this?</a>
+      </p>
       <div role="tablist" aria-label="What OpenPort should do" className="mt-4 inline-flex rounded-lg border border-line bg-panel p-1 text-sm">
         {(Object.keys(MODES) as Mode[]).map((m) => (
           <button
@@ -120,6 +124,7 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
       </form>
       )}
       {error && <p className="mt-3 text-sm text-fail">{error}</p>}
+      <div className="mt-4"><JudgeUnlock compact /></div>
       {vettedOnly && mode === "port" && (
         <p className="mt-3 text-xs leading-relaxed text-muted">
           Testing a call runs the repo's code, so this public demo tests and tunes only the examples below that have eval

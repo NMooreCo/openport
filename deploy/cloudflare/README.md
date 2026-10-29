@@ -46,6 +46,22 @@ instance serves everyone, so a run started by one visitor streams to the next. A
 container sleeps; the recordings are in the image, so the demos always come back. There's no Docker inside the
 container, so a live upgrade stops after choosing safe versions; the AuthKit demo replays its recording.
 
+### Live runs for the judges
+
+The front page explains OpenPort and plays the recorded demos for everyone, for free. Live runs, which spend Token
+Factory and Tavily credit, are for whoever has the judges' password:
+
+```bash
+npx wrangler secret put JUDGE_PASSWORD --config live/wrangler.jsonc
+```
+
+Give it to the judges in the submission's judges-only testing instructions. They enter it once on the site (it's
+kept in their browser and sent only with requests that start runs), and "Run it live" works on every demo. The
+Worker checks it in constant time, stops checking an address's guesses after 20 wrong ones in an hour, and strips it
+before anything reaches the container. Without the secret, there's no gate. Live runs are still capped by
+`OPENPORT_DAILY_BUDGET_USD` (5) and `NEW_RUNS_PER_DAY` (30). To embed the demo video on the front page, set
+`VIDEO_URL` in `live/wrangler.jsonc` to its YouTube link and deploy again.
+
 To redeploy after changing the code or the recordings, run `npm run deploy:live` again. It rebuilds the image and
 rolls it out.
 

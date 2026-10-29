@@ -15,7 +15,7 @@ export function PortView({ run, onRunLive }: { run: RunInfo; onRunLive?: () => P
   const changedFiles = state.ported ? state.ported.changed.length + state.ported.added.length : 0;
 
   return (
-    <Shell run={run} status={state.status} home="#" tagline="Prove it, then port it." onRunLive={onRunLive}>
+    <Shell run={run} status={state.status} home="#app" tagline="Prove it, then port it." onRunLive={onRunLive}>
       <Stages order={STAGES} labels={STAGE_LABELS} stages={state.stages} failed={state.status === "failed"} />
       {state.error && (
         <div role="alert" className="rounded-lg border border-fail/40 bg-fail/10 p-3 text-sm text-red-200">{state.error}</div>

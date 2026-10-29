@@ -1,6 +1,7 @@
 // The live dashboard: OpenPort's Docker image in a Cloudflare Container, behind a Worker on a custom domain.
 // Needs the Workers Paid plan. The keys are Worker secrets (`npx wrangler secret put NEBIUS_API_KEY --config
 // live/wrangler.jsonc`, and TAVILY_API_KEY), passed to the container when it starts; they're never in the image.
+// JUDGE_PASSWORD, also a secret, keeps live runs for whoever has it; without it, anyone may start them.
 // See deploy/cloudflare/README.md.
 {
 	"$schema": "../node_modules/wrangler/config-schema.json",
@@ -30,10 +31,13 @@
 	// Redirect rules run before Workers: the zone's own redirect to narralogy.ai has to skip this hostname.
 	"routes": [{ "pattern": "nebius.narralogy.com", "custom_domain": true }],
 	"vars": {
-		// What visitors' live runs may spend on Token Factory per day. The demos replay recorded runs for free.
-		"OPENPORT_DAILY_BUDGET_USD": "1",
+		// What live runs (the judges', with JUDGE_PASSWORD set) may spend on Token Factory per day. A SupportDesk run
+		// costs about $0.70, preflight's about $0.07. The demos replay recorded runs for free.
+		"OPENPORT_DAILY_BUDGET_USD": "5",
 		// New runs started per UTC day, counted by the Worker so a sleeping container can't reset it. Replays of the
 		// recorded demos don't count; past the cap, only they and runs the server already has are shown.
-		"NEW_RUNS_PER_DAY": "20"
+		"NEW_RUNS_PER_DAY": "30",
+		// The demo video, embedded on the front page once it's on YouTube.
+		"VIDEO_URL": ""
 	}
 }
