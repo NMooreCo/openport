@@ -254,7 +254,11 @@ def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds
             # A fix that didn't pass is undone: the next round (Ultra, after Super) starts from the code the upgrade
             # broke, told what was tried, and nothing it didn't need reaches the PR.
             _restore(home, before, applied)
-            notes = (f"That changed {len(applied)} snippet(s) and was undone, because the tests still failed ({current.summary}): {rationale}\n"
+            # What it touched and how that failed, not its reasoning: given Super's account of its restructuring,
+            # Ultra repeated it, where on its own it wrote the one small file the error asked for (seen live).
+            touched = ", ".join(sorted({e.file for e in applied}))
+            notes = (f"It changed {touched}, and the tests still failed ({current.summary}), so it was undone: the files are back "
+                     "as the upgrade left them. Try a different, smaller fix.\n"
                      + "".join(f"- rejected edit to {e.file}: {why}\n" for e, why in rejected))
             current = failing
     run.diff = diff(root, out, run.created)

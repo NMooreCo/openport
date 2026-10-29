@@ -21,7 +21,8 @@ Rules:
 - Change application code only, never tests: the tests define correct behaviour.
 - Make the smallest change that works with the new version. Never pin the old version back or undo the security fix.
 - Each edit replaces one exact snippet: copy `search` from the file character for character, including indentation, and make it long enough to appear only once.
-- If the new version needs a file the repo doesn't have yet (a framework that now requires one, say), give an edit with an empty `search` and the whole new file as `replace`.
+- If the new version needs a file the repo doesn't have yet (a framework that now requires one, say), give an edit with an empty `search` and the whole new file as `replace`. Write the least it needs, and don't repeat what existing files already do: read them first. (A required root layout, when a nested layout already renders the html and body tags, only passes its children through.)
+- A previous attempt, if one is described, was undone: the files are as shown here, not as that attempt left them.
 - If excerpts from changelogs are included, use them to understand what changed. Cite an excerpt in sources only if your fix follows something it says, with that sentence copied word for word as the quote. Citations are checked against the excerpts, and an empty list is normal.
 
 Respond with JSON only:
@@ -33,6 +34,9 @@ SOURCE_BUDGET = 40_000  # characters of source sent per request
 # spend the whole budget thinking and answer nothing. It gets room for both, and if it still runs out, the same
 # question again with reasoning off.
 MAX_TOKENS = 16_384
+# Low, for code edits: replayed on learn-claude-code's Next.js 16.4 break, Ultra wrote the one-line root layout
+# 3 times in 3 at 0.2, and once in 3 at its default.
+TEMPERATURE = 0.2
 
 
 class FixerSilent(RuntimeError):
@@ -105,7 +109,7 @@ def make_fixer(client: OpenAI | None = None, model: str | None = None, meter: Us
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
         for extra in ({}, {"extra_body": tokenfactory.reasoning(False)}):
             start = time.perf_counter()
-            response = client.chat.completions.create(model=chosen, messages=messages, max_tokens=MAX_TOKENS, **extra)
+            response = client.chat.completions.create(model=chosen, messages=messages, max_tokens=MAX_TOKENS, temperature=TEMPERATURE, **extra)
             if meter is not None:
                 meter.record(chosen, response.usage, time.perf_counter() - start)
             choice = response.choices[0]
