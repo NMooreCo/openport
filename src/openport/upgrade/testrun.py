@@ -63,8 +63,11 @@ def docker_command(folder: Path, image: str, command: str) -> list[str]:
     # A monorepo's project runs from its own folder (`cd backend && ...`), so its installs are cleared from there too.
     owner = '; chown -R "$(stat -c %u:%g /repo)" /repo 2>/dev/null' if os.name != "nt" else ""
     command = f"{command}; status=$?; rm -rf /repo/node_modules /repo/.venv node_modules .venv{owner}; exit $status"
+    # The repo's own code runs here: no gaining privileges, and bounded memory, CPU and processes (a fork bomb or a
+    # leak stops the run, not the machine). Root stays, to hand the installs back above.
+    limits = ["--security-opt", "no-new-privileges", "--pids-limit", "2048", "--memory", "4g", "--cpus", "2"]
     return [
-        "docker", "run", "--rm", "-e", "PYTHONDONTWRITEBYTECODE=1",
+        "docker", "run", "--rm", *limits, "-e", "PYTHONDONTWRITEBYTECODE=1",
         "-v", f"{Path(folder).resolve()}:/repo", "-w", "/repo", image, "sh", "-c", command,
     ]
 

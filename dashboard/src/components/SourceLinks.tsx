@@ -1,7 +1,7 @@
 import type { Source } from "../run";
 
 // Links come from web search results, so only plain web URLs are rendered as links.
-const isWebUrl = (url: string) => /^https?:\/\//i.test(url);
+export const isWebUrl = (url: string) => /^https?:\/\//i.test(url);
 
 /** The pages a change followed, each with the sentence it quoted. Citations without a checked quote aren't shown. */
 export function Citations({ label, sources }: { label: string; sources: Source[] }) {

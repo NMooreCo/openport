@@ -5,6 +5,7 @@ where there's no Docker (a hosted endpoint), the run stops after choosing safe v
 """
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -13,7 +14,10 @@ from ..runtime.openport_llm import UsageMeter
 from ..upgrade import Upgrade, plan_upgrades, read_lockfiles
 from ..upgrade.run import BUMPABLE_SOURCES
 from ..workspace import fetch_repo, split_project
+from . import pipeline
 from .pipeline import PIPELINE_LOCK, Run, _save
+
+PROJECT_FOLDER = re.compile(r"^[\w][\w.-]*(?:/[\w][\w.-]*)*$")  # apps/api: each part a name, none starting with a dot
 
 PRESETS = [
     {"id": "authkit", "label": "AuthKit", "detail": "Demo app: PyJWT 1.7.1 and requests 2.31.0 pinned, with tests", "path": "authkit"},
@@ -60,8 +64,10 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
 
     run.emit("stage", stage="fetch")
     repo, project = ("/".join(target.split("/")[:2]), "/".join(target.split("/")[2:])) if local is None else (target, "")
-    root = local if local is not None else fetch_repo(repo)[0]
+    root = local if local is not None else fetch_repo(repo, max_mb=pipeline.MAX_REPO_MB)[0]
     run.emit("stage", stage="find")
+    if project and not (PROJECT_FOLDER.match(project) and (root / project).resolve().is_relative_to(root.resolve())):
+        raise ValueError("A project's folder is a path inside its repo, like apps/api")
     if project and not (root / project).is_dir():
         run.emit("note", message=f"{repo} has no folder {project} on its default branch.")
         return
@@ -78,6 +84,10 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     if not APPLY or shutil.which("docker") is None:
         run.emit("note", message="Dry run: proving an upgrade means running the repo's tests in a container, which this server "
                                  "can't do. Run `openport upgrade --apply` locally.")
+        return
+    if pipeline.VETTED_ONLY and local is None:  # installing and testing runs the repo's code, even in a container
+        run.emit("note", message="Dry run: this public server runs tests only for its demo apps. Run `openport upgrade --apply` "
+                                 "locally to prove this upgrade.")
         return
 
     def event(kind, data):
@@ -131,7 +141,8 @@ def resolve_target(target: str) -> tuple[str, str, Path | None]:
     repo, project = split_project(target)
     if not project:
         return resolve(target, PRESETS)
-    if ".." in project.split("/"):
-        raise ValueError("A project's folder can't climb out of its repo")
+    # Plain folder names only: no "..", no empty part (a leading "/" would make the folder absolute), no backslash.
+    if not PROJECT_FOLDER.match(project):
+        raise ValueError("A project's folder is a path inside its repo, like apps/api")
     name, label, _ = resolve(repo, [])
     return f"{name}/{project}", f"{label}/{project}", None

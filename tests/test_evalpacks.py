@@ -69,12 +69,13 @@ def test_a_pinned_repo_is_fetched_at_exactly_that_commit(tmp_path, monkeypatch):
     commit = "7a00fa2928acea9fcddce9661417e2bd6e6c1403"
     calls = []
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
-    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check: calls.append(args))
+    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check, timeout: calls.append(args))
     root, fresh = workspace.fetch_repo(f"jsliapark/preflight@{commit}")
     assert fresh and root == tmp_path / "repos" / commit[:12] / "jsliapark__preflight" and root.is_dir()
     assert [args[3:] for args in calls] == [
         ["init", "--quiet"],
         ["config", "core.longpaths", "true"],  # paths longer than Windows' 260 characters still check out
+        ["config", "core.symlinks", "false"],  # a link checks out as a file naming its target, never followed
         ["remote", "add", "origin", "https://github.com/jsliapark/preflight.git"],  # so `openport pr` can find the repo
         ["fetch", "--depth", "1", "--quiet", "origin", commit],
         ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
@@ -92,7 +93,7 @@ def test_a_clone_that_fails_halfway_is_never_reused(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
 
-    def failing_clone(args, check):
+    def failing_clone(args, check, timeout):
         Path(args[-1]).mkdir(parents=True)  # what git leaves: the folder, without all the files
         raise subprocess.CalledProcessError(128, args)
 
@@ -100,9 +101,36 @@ def test_a_clone_that_fails_halfway_is_never_reused(tmp_path, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         workspace.fetch_repo("acme/huge")
     assert not (tmp_path / "repos" / "acme__huge").exists()
-    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check: Path(args[-1]).mkdir(parents=True))
+    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check, timeout: Path(args[-1]).mkdir(parents=True))
     root, fresh = workspace.fetch_repo("acme/huge")  # the next try clones afresh
     assert fresh and root.is_dir() and not root.with_name("acme__huge.partial").exists()
+
+
+def test_a_clone_that_hangs_is_stopped_and_cleaned_up(tmp_path, monkeypatch):
+    import subprocess
+
+    from openport import config, workspace
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
+
+    def stalled(args, check, timeout):
+        Path(args[-1]).mkdir(parents=True)
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(workspace.subprocess, "run", stalled)
+    with pytest.raises(RuntimeError, match="took over"):
+        workspace.fetch_repo("acme/slow")
+    assert not any((tmp_path / "repos").iterdir())  # nothing half-cloned is left to pass for a clone
+
+
+def test_a_public_server_skips_repos_over_its_size_limit(tmp_path, monkeypatch):
+    from openport import config, workspace
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(workspace, "repo_size_mb", lambda owner, name: 4096.0)
+    monkeypatch.setattr(workspace.subprocess, "run", lambda *a, **k: pytest.fail("a repo over the limit was cloned"))
+    with pytest.raises(ValueError, match="over this server's 500 MB limit"):
+        workspace.fetch_repo("acme/monorepo", max_mb=500)
 
 
 def test_preflight_pack_is_pinned_to_the_reviewed_commit():

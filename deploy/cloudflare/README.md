@@ -38,7 +38,10 @@ The container uses the `durable_object` scheduling policy (Cloudflare wouldn't c
 the Worker's Durable Object starts it: it picks the image and the instance size, waits for the server inside to
 answer, and forwards every request to it.
 
-Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (1, set in `live/wrangler.jsonc`). One
+Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (1, set in `live/wrangler.jsonc`). The
+server forgets that when the container sleeps, so the Worker also counts the new runs started each UTC day in its
+Durable Object's storage: past `NEW_RUNS_PER_DAY` (20), it tells the server to only show runs it already has (the
+recorded demos always play). A deploy that brings a new image replaces the running container at the next request. One
 instance serves everyone, so a run started by one visitor streams to the next. A live run's result lasts until the
 container sleeps; the recordings are in the image, so the demos always come back. There's no Docker inside the
 container, so a live upgrade stops after choosing safe versions; the AuthKit demo replays its recording.

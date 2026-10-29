@@ -65,7 +65,13 @@ def _prepare_output(source: Path, output: Path) -> None:
         if not managed and any(output.iterdir()):
             raise FileExistsError(f"{output} already exists and isn't empty")
         _remove_tree(output)
-    shutil.copytree(source, output, ignore=COPY_IGNORE)
+    # Links are copied as links, never followed: one pointing out of the repo can't pull a file into the copy.
+    shutil.copytree(source, output, symlinks=True, ignore=COPY_IGNORE)
+
+
+def _inside(root: Path, path: Path) -> bool:
+    """Whether `path` stays in `root` once every link on the way is followed (it needn't exist yet)."""
+    return path.resolve().is_relative_to(root.resolve())
 
 
 def find_eval_spec(root: Path) -> str | None:
@@ -99,7 +105,10 @@ def _summary(outcomes: list[SiteOutcome], gate: dict | None) -> bytes:
 def _diff(source: Path, output: Path, paths: list[str]) -> str:
     chunks = []
     for path in paths:
-        before = (source / path).read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if (source / path).exists() else []
+        original = source / path
+        # A link's target is never read into the diff: the diff is shown and saved, and it could name any file.
+        exists = original.is_file() and _inside(source, original)
+        before = original.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if exists else []
         after = (output / path).read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         chunks.extend(difflib.unified_diff(before, after, f"a/{path}" if before else "/dev/null", f"b/{path}"))
     return "".join(line if line.endswith("\n") else line + "\n" for line in chunks)
@@ -136,11 +145,16 @@ def port_repo(
     if evals and any(o.status == "ported" and s.language == "python" for o, s in zip(outcomes, sites)):
         gate = {"evals": evals, "min_pass_rate": min_pass_rate}
         if not (output / WORKFLOW_FILE).exists():
-            files[WORKFLOW_FILE] = workflow(install_command(output), config.OPENPORT_SOURCE).encode()
+            files[WORKFLOW_FILE] = workflow(install_command(output), config.openport_source()).encode()
     files[SUMMARY_FILE] = _summary(outcomes, gate)
     for path, content in files.items():
-        (output / path).parent.mkdir(parents=True, exist_ok=True)
-        (output / path).write_bytes(content)
+        target = output / path
+        if target.is_symlink() and path in (SUMMARY_FILE, WORKFLOW_FILE):
+            target.unlink()  # OpenPort's own files: a link in their place is replaced, not written through
+        if not _inside(output, target):  # checked before any folder is made, so none is made through a link either
+            raise ValueError(f"{path} is reached through a link out of the repo, so OpenPort won't write it")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
 
     paths = sorted(files)
     added = [p for p in paths if not (source / p).exists()]

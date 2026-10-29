@@ -8,7 +8,7 @@ import {
 import { Tile } from "./Metrics";
 import { ResultTabs } from "./ResultTabs";
 import { Shell } from "./Shell";
-import { Citations, SourceLinks } from "./SourceLinks";
+import { Citations, SourceLinks, isWebUrl } from "./SourceLinks";
 import { Stages } from "./Stages";
 
 const STATUS: Record<string, { label: string; className: string }> = {
@@ -175,7 +175,9 @@ function Changelogs({ changelogs }: { changelogs: Changelog[] }) {
             </p>
             <p className="mt-0.5 text-xs text-muted">
               {plural(log.releases.length, "release")} ·{" "}
-              <a href={log.url} target="_blank" rel="noreferrer" className="underline decoration-line hover:text-white">{log.title}</a>
+              {isWebUrl(log.url) ? (  // a changelog's URL can come from the package's own metadata
+                <a href={log.url} target="_blank" rel="noreferrer noopener" className="underline decoration-line hover:text-white">{log.title}</a>
+              ) : log.title}
             </p>
             {log.quotes.length ? (
               <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-300">

@@ -580,6 +580,24 @@ def test_tests_run_in_a_container_with_only_the_copy_mounted(tmp_path):
     assert (image, shell, flag) == ("img", "sh", "-c") and script.startswith("make test; status=$?; ")
     # The installs are removed inside the container (Windows can't delete their Linux symlinks), and the exit status kept.
     assert "rm -rf /repo/node_modules /repo/.venv" in script and script.endswith("exit $status")
+    # The repo's code can't gain privileges or take the machine down with it.
+    flags = " ".join(docker_command(tmp_path, "img", "make test"))
+    assert "--security-opt no-new-privileges" in flags and "--pids-limit" in flags and "--memory" in flags
+
+
+def test_the_workflows_openport_writes_pin_what_they_run(monkeypatch):
+    from openport import config
+    from openport.check import workflow as gate_workflow
+    from openport.upgrade.action import workflow as upgrade_workflow
+
+    monkeypatch.setattr(config, "OPENPORT_SOURCE", "git+https://github.com/NMooreCo/openport")
+    monkeypatch.setattr(config, "_own_commit", lambda: "a" * 40)
+    for text in (gate_workflow(None, config.openport_source()), upgrade_workflow(config.openport_source())):
+        assert f"openport @ git+https://github.com/NMooreCo/openport@{'a' * 40}" in text  # the code that wrote it
+        uses = [line.split("@", 1)[1].split()[0] for line in text.splitlines() if "uses:" in line]
+        assert uses and all(len(ref) == 40 for ref in uses)  # actions by commit, not by a tag that can move
+    monkeypatch.setattr(config, "OPENPORT_SOURCE", "git+https://github.com/me/openport@v2")
+    assert config.openport_source() == "git+https://github.com/me/openport@v2"  # an explicit ref is kept
 
 
 def test_research_keeps_relevant_pages_once():

@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.datastructures import MutableHeaders
 
 from .. import config
 from . import pipeline, upgrades
@@ -18,12 +19,49 @@ from .pipeline import Run, load_runs, resolve_target, run_pipeline
 
 STATIC = Path(__file__).parent / "static"
 MAX_QUEUED = 3
+KEPT_RUNS = 100  # finished runs kept in memory; older ones go (their files in runs/dashboard stay)
 IN_FLIGHT_USD = 1.0  # what a live run may still spend, counted against the daily budget until it finishes
 REPLAY_SPEED, REPLAY_MAX_GAP = 20, 1.5  # a recorded run replays 20x faster, no pause over 1.5 s
 
 app = FastAPI(title="OpenPort", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+# The page shows text from scanned repos and from models, so it allows only its own scripts, and nobody can frame
+# it. The API docs load their viewer from a CDN, so they go without the policy.
+SECURITY_HEADERS = {
+    "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; "
+                               "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "strict-origin-when-cross-origin",
+}
+
+
+class SecurityHeaders:
+    """Adds SECURITY_HEADERS to every response, streams included (plain ASGI, so server-sent events pass untouched)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+        docs = scope["path"].startswith(("/api/docs", "/api/openapi.json"))
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in SECURITY_HEADERS.items():
+                    if not (docs and name == "content-security-policy"):
+                        headers.setdefault(name, value)
+            await send(message)
+
+        await self.inner(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeaders)
 # Finished runs survive a restart; recorded runs of the demos come with the server.
 runs: dict[str, Run] = {r.id: r for r in [*load_runs(config.RUNS_DIR / "dashboard"), *load_runs(pipeline.RECORDED, recorded=True)]}
+forgotten_spend: dict[float, float] = {}  # UTC day -> what runs since dropped from memory spent
 
 
 class StartRun(BaseModel):
@@ -46,7 +84,7 @@ def spent_today() -> float:
     """Live runs' Token Factory spend since midnight UTC, counting each unfinished run at IN_FLIGHT_USD."""
     midnight = time.time() // 86400 * 86400
     today = [r for r in runs.values() if not r.recorded and r.created >= midnight]
-    return sum(r.cost_usd if r.status in ("done", "error") else IN_FLIGHT_USD for r in today)
+    return forgotten_spend.get(midnight, 0.0) + sum(r.cost_usd if r.status in ("done", "error") else IN_FLIGHT_USD for r in today)
 
 
 def _preset(preset: dict) -> dict:
@@ -64,7 +102,16 @@ def upgrade_presets() -> list[dict]:
     return [{k: v for k, v in p.items() if k != "path"} for p in upgrades.PRESETS]
 
 
-def _launch(kind: str, target: str, label: str, local: Path | None, runner, live: bool = False) -> dict:
+def _forget_old_runs() -> None:
+    """Keep at most KEPT_RUNS finished runs in memory, the newest (each can hold a large diff); the recorded demos stay."""
+    finished = sorted((r for r in runs.values() if not r.recorded and r.status in ("done", "error")), key=lambda r: r.created)
+    for run in finished[: max(0, len(finished) - KEPT_RUNS)]:
+        day = run.created // 86400 * 86400
+        forgotten_spend[day] = forgotten_spend.get(day, 0.0) + run.cost_usd  # still counts against its day's budget
+        del runs[run.id]
+
+
+def _launch(kind: str, target: str, label: str, local: Path | None, runner, live: bool = False, reuse_only: bool = False) -> dict:
     same = [r for r in runs.values() if r.kind == kind and r.target == target]
     shown = [r for r in same if r.status in ("queued", "running")]  # already running: watch that one
     if not live:  # else a recent run of it, or the recorded one, instead of spending credits again
@@ -72,6 +119,9 @@ def _launch(kind: str, target: str, label: str, local: Path | None, runner, live
         shown = shown or [r for r in same if r.status == "done" and r.recorded]
     if shown:
         return {**shown[-1].summary(), "reused": True}
+    if reuse_only:  # the host has counted today's new runs, which outlives this process (deploy/cloudflare)
+        raise HTTPException(429, "This demo has started all the new runs it can today. The recorded runs of the demo apps are "
+                                 "still here, and OpenPort runs anywhere: see the README.")
     if pipeline.DAILY_BUDGET_USD is not None and spent_today() >= pipeline.DAILY_BUDGET_USD:
         raise HTTPException(429, f"This demo's Token Factory budget for today (${pipeline.DAILY_BUDGET_USD:g}) is used up. "
                                  "The recorded runs of the demo apps are still here, and OpenPort runs anywhere: see the README.")
@@ -79,26 +129,32 @@ def _launch(kind: str, target: str, label: str, local: Path | None, runner, live
         raise HTTPException(429, "OpenPort is busy with other runs. Try again in a few minutes.")
     run = Run(id=uuid.uuid4().hex[:12], target=target, label=label, kind=kind)
     runs[run.id] = run
+    _forget_old_runs()
     threading.Thread(target=runner, args=(run, target, local), daemon=True).start()
     return {**run.summary(), "reused": False}
 
 
+def _reuse_only(request: Request) -> bool:
+    """Whoever hosts the server can say it's to start no new runs, only show ones it has (a header only narrows)."""
+    return request.headers.get("x-openport-reuse-only") == "1"
+
+
 @app.post("/api/runs")
-def start_run(body: StartRun) -> dict:
+def start_run(body: StartRun, request: Request) -> dict:
     try:
         target, label, local = resolve_target(body.target)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    return _launch("port", target, label, local, run_pipeline, body.live)
+    return _launch("port", target, label, local, run_pipeline, body.live, _reuse_only(request))
 
 
 @app.post("/api/upgrades")
-def start_upgrade(body: StartRun) -> dict:
+def start_upgrade(body: StartRun, request: Request) -> dict:
     try:
         target, label, local = upgrades.resolve_target(body.target)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    return _launch("upgrade", target, label, local, upgrades.run_pipeline, body.live)
+    return _launch("upgrade", target, label, local, upgrades.run_pipeline, body.live, _reuse_only(request))
 
 
 @app.get("/api/runs/{run_id}")
@@ -116,7 +172,10 @@ async def stream_events(run_id: str, request: Request) -> StreamingResponse:
     run = runs.get(run_id)
     if run is None:
         raise HTTPException(404, "No such run")
-    start = int(request.headers.get("last-event-id", -1)) + 1
+    try:  # a client resuming says which event it saw last
+        start = max(0, int(request.headers.get("last-event-id", -1)) + 1)
+    except ValueError:
+        start = 0
 
     async def events():
         index = start
@@ -140,8 +199,9 @@ if STATIC.is_dir():
 
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str) -> FileResponse:
-        file = STATIC / path
-        if path and file.is_file():
+        # The path is decoded, so "..%2F" arrives as "../": serve only files that resolve inside the build.
+        file = (STATIC / path).resolve()
+        if path and file.is_relative_to(STATIC.resolve()) and file.is_file():
             return FileResponse(file)
         # The page names its hashed scripts, so browsers ask for it again each time: a redeploy shows at once.
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})

@@ -142,7 +142,7 @@ def server_pack(tmp_path, monkeypatch):
         (pack / "classify.jsonl").write_text(MINI_APP["evals/classify.jsonl"])
     fetched = []
 
-    def fetch(target):
+    def fetch(target, max_mb=None):
         fetched.append(target)
         return tmp_path / "clones" / target.partition("@")[0], False
 
@@ -217,6 +217,26 @@ def test_the_page_is_asked_for_again_each_time(server):
         pytest.skip("the dashboard isn't built (npm run build in dashboard/)")
     page = server.get("/")
     assert page.status_code == 200 and page.headers["cache-control"] == "no-cache"  # so a redeploy's new scripts load at once
+
+
+def test_the_page_serves_nothing_from_outside_its_build(server):
+    from openport.server import STATIC
+
+    if not (STATIC / "index.html").is_file():
+        pytest.skip("the dashboard isn't built (npm run build in dashboard/)")
+    # On a public server, a file outside the build could be /proc/self/environ, which holds the API keys.
+    for path in ("/..%2F..%2F..%2F..%2Fpyproject.toml", "/%2e%2e/%2e%2e/%2e%2e/%2e%2e/pyproject.toml", "/..%5C..%5C..%5C..%5Cpyproject.toml"):
+        page = server.get(path)
+        assert page.status_code == 200 and "[project]" not in page.text and "<html" in page.text.lower(), path  # the page, not the file
+    assert server.get("/index.html").status_code == 200
+
+
+def test_responses_carry_security_headers(server):
+    for path in ("/api/info", "/api/presets"):
+        headers = server.get(path).headers
+        assert "default-src 'self'" in headers["content-security-policy"] and "frame-ancestors 'none'" in headers["content-security-policy"]
+        assert headers["x-content-type-options"] == "nosniff" and headers["x-frame-options"] == "DENY"
+    assert "content-security-policy" not in server.get("/api/docs").headers  # its viewer loads from a CDN
 
 
 def test_only_presets_and_github_repos(server):
@@ -331,7 +351,7 @@ def test_a_monorepo_project_is_upgraded_from_its_folders_github_url(upgrade_serv
     assert split_project("acme/mono") == ("acme/mono", "")
     mono = tmp_path / "acme__mono"
     shutil.copytree(AUTHKIT, mono / "apps" / "auth")  # AuthKit as one project of a monorepo
-    monkeypatch.setattr(upgrades, "fetch_repo", lambda repo: (mono, False) if repo == "acme/mono" else (_ for _ in ()).throw(ValueError(repo)))
+    monkeypatch.setattr(upgrades, "fetch_repo", lambda repo, max_mb=None: (mono, False) if repo == "acme/mono" else (_ for _ in ()).throw(ValueError(repo)))
     assert upgrade_server.post("/api/upgrades", json={"target": "https://github.com/acme/mono/tree/main/../../etc"}).status_code == 400
 
     started = upgrade_server.post("/api/upgrades", json={"target": "https://github.com/acme/mono/tree/main/apps/auth"}).json()
@@ -341,6 +361,46 @@ def test_a_monorepo_project_is_upgraded_from_its_folders_github_url(upgrade_serv
     assert fix["files"] == ["authkit/tokens.py"] and fix["tests"]["ok"]  # paths start at the project, as its tests see them
     diff = next(e for e in run["events"] if e["type"] == "upgrade_pr")["diff"]
     assert "+++ b/apps/auth/requirements.txt" in diff and "+++ b/apps/auth/authkit/tokens.py" in diff
+
+
+def test_a_host_can_hold_the_server_to_runs_it_already_has(upgrade_server):
+    replayed = upgrade_server.post("/api/upgrades", json={"target": "authkit"}).json()
+    wait_for(upgrade_server, replayed["id"])
+    held = {"x-openport-reuse-only": "1"}
+    assert upgrade_server.post("/api/upgrades", json={"target": "authkit"}, headers=held).json()["reused"]  # a recent run still shows
+    refused = upgrade_server.post("/api/upgrades", json={"target": "authkit", "live": True}, headers=held)
+    assert refused.status_code == 429 and "new runs" in refused.json()["detail"]
+
+
+def test_a_monorepo_folder_is_a_plain_path_inside_its_repo(upgrade_server):
+    # "/app" would make the folder absolute, so the server would read and report its own lockfiles
+    for folder in ("/app", "../../etc", "apps//api", "apps\\..\\..\\etc", ".git", "apps/./auth"):
+        target = f"https://github.com/acme/mono/tree/main/{folder}"
+        assert upgrade_server.post("/api/upgrades", json={"target": target}).status_code == 400, folder
+
+
+def test_a_public_server_proves_upgrades_only_for_its_demos(upgrade_server, tmp_path, monkeypatch):
+    import shutil
+
+    from openport.server import pipeline, upgrades
+
+    repo = tmp_path / "acme__app"
+    shutil.copytree(AUTHKIT, repo)
+    monkeypatch.setattr(pipeline, "VETTED_ONLY", True)
+    monkeypatch.setattr(upgrades, "fetch_repo", lambda repo_name, max_mb=None: (repo, False))
+    monkeypatch.setattr("openport.upgrade.testrun.run_tests", lambda *a, **k: pytest.fail("a public server ran a repo's tests"))
+    run = wait_for(upgrade_server, upgrade_server.post("/api/upgrades", json={"target": "acme/app"}).json()["id"])
+    assert run["status"] == "done", run["events"][-1]
+    assert any(e["type"] == "advisories" for e in run["events"])  # it still finds and plans the upgrades
+    assert any("only for its demo apps" in e.get("message", "") for e in run["events"])
+
+
+def test_a_resumed_event_stream_starts_somewhere_real(upgrade_server):
+    run_id = upgrade_server.post("/api/upgrades", json={"target": "authkit"}).json()["id"]
+    wait_for(upgrade_server, run_id)
+    for seen in ("-7", "not-a-number"):
+        stream = upgrade_server.get(f"/api/runs/{run_id}/events", headers={"Last-Event-ID": seen})
+        assert stream.status_code == 200 and stream.text.startswith("id: 0\n"), seen
 
 
 def test_upgrade_without_docker_is_a_dry_run(upgrade_server, monkeypatch):

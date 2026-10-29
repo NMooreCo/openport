@@ -902,3 +902,46 @@ def test_typescript_port(tmp_path):
     assert sites["analysisUtils.vision"].status == "kept"
     assert sites["analysisUtils.vision"].was == "set by `model`"
     assert not any(path.endswith("openport_llm.py") for path in result.added)
+
+
+def _can_link(tmp_path: Path) -> bool:
+    try:
+        os.symlink(tmp_path, tmp_path / "probe-link")
+        return True
+    except OSError:  # Windows without the privilege to make links
+        return False
+
+
+def test_a_link_out_of_the_repo_is_never_read_into_the_diff_or_written_through(tmp_path):
+    import pytest
+
+    if not _can_link(tmp_path):
+        pytest.skip("this account can't create symlinks")
+    secret = tmp_path / "server.env"
+    secret.write_text("NEBIUS_API_KEY=the-real-key\n")
+    repo = write(tmp_path / "repo", {"app.py": 'from openai import OpenAI\nclient = OpenAI()\n\n\ndef ask(q):\n'
+                                               '    return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": q}])\n'})
+    os.symlink(secret, repo / "openport.yaml")  # a repo can commit a link to any path on the machine that ports it
+    result, _ = port(repo, tmp_path / "out")
+    assert "the-real-key" not in result.diff  # the diff is shown on the dashboard and saved
+    written = result.output / "openport.yaml"
+    assert not written.is_symlink() and "the-real-key" not in written.read_text()
+    assert secret.read_text() == "NEBIUS_API_KEY=the-real-key\n"  # nothing written through the link
+
+
+def test_a_link_out_of_the_repo_stays_a_link_in_an_upgrade_copy(tmp_path):
+    import pytest
+
+    from openport.upgrade.apply import apply_bumps, copy_repo
+
+    if not _can_link(tmp_path):
+        pytest.skip("this account can't create symlinks")
+    secret = tmp_path / "id_rsa"
+    secret.write_text("PRIVATE KEY\n")
+    repo = write(tmp_path / "repo", {"requirements.txt": "requests==2.31.0\n"})
+    os.symlink(secret, repo / "key")
+    os.symlink(secret, repo / "requirements-dev.txt")
+    copy = copy_repo(repo, tmp_path / "copy")
+    assert (copy / "key").is_symlink()  # the tests' container sees a link into itself, not the host's file
+    assert apply_bumps(copy, {"requests": "2.33.0"}) == ["requirements.txt"]  # the linked requirements file is left alone
+    assert secret.read_text() == "PRIVATE KEY\n"

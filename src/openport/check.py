@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from . import tokenfactory
+from . import config, tokenfactory
 from .evals.runner import SiteResult, make_judge, run_site
 from .evals.spec import Spec, find_spec, load_spec
 
@@ -80,8 +80,8 @@ jobs:
     # Pull requests from forks can't read repository secrets.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: {config.CHECKOUT_ACTION}
+      - uses: {config.SETUP_UV_ACTION}
       - name: Install the app and OpenPort
         run: |
           uv venv

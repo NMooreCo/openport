@@ -51,7 +51,9 @@ def remove_tree(path: Path) -> None:
 def copy_repo(root: Path, out: Path) -> Path:
     if out.exists():
         remove_tree(out)
-    shutil.copytree(root, out, ignore=COPY_IGNORE)
+    # Links stay links: followed here, one pointing out of the repo would copy that file into the folder the
+    # repo's own tests run in, with the network. Inside the container a link can only reach the container.
+    shutil.copytree(root, out, symlinks=True, ignore=COPY_IGNORE)
     return out
 
 
@@ -73,7 +75,7 @@ def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Pa
     upgraded copy. No container ever saw it, so nothing a repo's tests did can reach the commit or its hooks."""
     if dest.exists():
         remove_tree(dest)
-    shutil.copytree(root, dest, ignore=shutil.ignore_patterns(*SKIP_DIRS))
+    shutil.copytree(root, dest, symlinks=True, ignore=shutil.ignore_patterns(*SKIP_DIRS))
     for name in files:
         shutil.copy2(folder / name, dest / name)
     return dest
@@ -84,6 +86,8 @@ def _read(path: Path) -> str:
 
 
 def _write(path: Path, text: str) -> None:
+    if path.is_symlink():  # it could point out of the repo
+        raise ValueError(f"{path.name} is a link, so OpenPort won't write through it")
     path.write_text(text, encoding="utf-8", newline="")  # as is: no \n -> \r\n on Windows
 
 
@@ -155,6 +159,8 @@ def apply_bumps(folder: Path, bumps: dict[str, str]) -> list[str]:
     """Bump each package to its version in the folder's requirements files. Returns the files changed."""
     changed = []
     for path in sorted(folder.glob("requirements*.txt")):
+        if path.is_symlink():  # a link's target may be anywhere: it isn't the repo's to bump
+            continue
         text = new = _read(path)
         for name, version in bumps.items():
             new, _ = bump_requirements(new, name, version)

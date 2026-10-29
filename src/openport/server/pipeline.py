@@ -37,6 +37,8 @@ VETTED_ONLY = os.getenv("OPENPORT_RUN_REPO_CODE", "any") == "vetted"
 # A public server caps what live runs spend on Token Factory per UTC day; recorded runs of the demos cost nothing.
 DAILY_BUDGET_USD = float(os.environ["OPENPORT_DAILY_BUDGET_USD"]) if os.getenv("OPENPORT_DAILY_BUDGET_USD") else None
 RECORDED = Path(os.getenv("OPENPORT_RECORDED", EXAMPLES / "recorded"))  # recorded runs shipped with the server
+# A public server's disk is small: repos GitHub says are bigger than this aren't fetched.
+MAX_REPO_MB = float(os.environ["OPENPORT_MAX_REPO_MB"]) if os.getenv("OPENPORT_MAX_REPO_MB") else None
 
 # Tuning swaps SDK clients inside imported modules, which is process-wide: one pipeline at a time.
 PIPELINE_LOCK = threading.Lock()
@@ -188,7 +190,7 @@ def _pipeline(run: Run, target: str, local: Path | None, target_rate: float) -> 
         root = local
     else:
         # A repo with an eval pack is fetched at the commit the pack was reviewed against, so the port is what was tested.
-        root, fresh = fetch_repo(pack.source if pack else target)
+        root, fresh = fetch_repo(pack.source if pack else target, max_mb=MAX_REPO_MB)
         at = f" at {pack.commit[:7]}" if pack and pack.commit else ""
         run.emit("note", message=f"{'Cloned' if fresh else 'Reused a clone of'} github.com/{target}{at}. Scanning parses its code without running it.")
     name = root.resolve().name

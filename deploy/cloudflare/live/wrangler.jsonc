@@ -31,6 +31,9 @@
 	"routes": [{ "pattern": "nebius.narralogy.com", "custom_domain": true }],
 	"vars": {
 		// What visitors' live runs may spend on Token Factory per day. The demos replay recorded runs for free.
-		"OPENPORT_DAILY_BUDGET_USD": "1"
+		"OPENPORT_DAILY_BUDGET_USD": "1",
+		// New runs started per UTC day, counted by the Worker so a sleeping container can't reset it. Replays of the
+		// recorded demos don't count; past the cap, only they and runs the server already has are shown.
+		"NEW_RUNS_PER_DAY": "20"
 	}
 }

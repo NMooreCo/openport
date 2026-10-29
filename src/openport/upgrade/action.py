@@ -6,6 +6,8 @@ updates) a PR only if the tests prove it. It never merges anything. In a monorep
 of its own (`--project backend`), with its own PR.
 """
 
+from .. import config
+
 WORKFLOW_FILE = ".github/workflows/openport-upgrade.yml"
 
 
@@ -42,8 +44,8 @@ jobs:
   upgrade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: {config.CHECKOUT_ACTION}
+      - uses: {config.SETUP_UV_ACTION}
       - name: Upgrade, prove it with the repo's tests, and open the PR
         env:
           NEBIUS_API_KEY: ${{{{ secrets.NEBIUS_API_KEY }}}}

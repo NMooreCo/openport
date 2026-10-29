@@ -17,7 +17,8 @@ WORKDIR /app/examples/supportdesk-ts
 COPY examples/supportdesk-ts/package.json examples/supportdesk-ts/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
-FROM python:3.12.11-slim
+# Patch releases of 3.12 are security releases: keep this to the newest that's at least a week old.
+FROM python:3.12.15-slim
 COPY --from=ghcr.io/astral-sh/uv:0.12.18 /uv /bin/uv
 # git: the dashboard and CLI shallow-clone public GitHub repos to scan them. Node runs TypeScript call sites in evals.
 RUN apt-get update && apt-get install -y --no-install-recommends git libstdc++6 && rm -rf /var/lib/apt/lists/*
@@ -34,6 +35,10 @@ ENV PATH="/app/.venv/bin:$PATH" OPENPORT_RUNS_DIR=/app/runs OPENPORT_EXAMPLES=/a
 # A public dashboard runs repo code only for its demo apps and pinned eval packs: testing a call imports the
 # repo into this process, next to the API keys. Set it to "any" for a private deployment you trust with any repo.
 # It also caps what live runs spend per day; the demos replay their recorded runs (examples/recorded) for free.
-ENV OPENPORT_RUN_REPO_CODE=vetted OPENPORT_DAILY_BUDGET_USD=2
+# Repos GitHub says are over OPENPORT_MAX_REPO_MB aren't fetched, and a fetch stops after OPENPORT_CLONE_TIMEOUT seconds.
+ENV OPENPORT_RUN_REPO_CODE=vetted OPENPORT_DAILY_BUDGET_USD=2 OPENPORT_MAX_REPO_MB=500 OPENPORT_CLONE_TIMEOUT=180
+# Not root: the server can write only its runs folder (clones, reports) and /tmp, and can't change its own code.
+RUN useradd --create-home --uid 10001 openport && mkdir -p /app/runs && chown openport /app/runs
+USER openport
 EXPOSE 8000
 CMD ["openport", "serve", "--host", "0.0.0.0", "--port", "8000"]

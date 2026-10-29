@@ -733,7 +733,7 @@ def upgrade_action(
     if path.exists():
         _fail(f"{path} already exists; delete it first to write a fresh one")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(workflow(config.OPENPORT_SOURCE, project).encode("utf-8"))
+    path.write_bytes(workflow(config.openport_source(), project).encode("utf-8"))
     console.print(f"Wrote {path}. Commit it, and add a NEBIUS_API_KEY repository secret (TAVILY_API_KEY too, for the changelog quotes).")
 
 
