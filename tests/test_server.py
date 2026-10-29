@@ -363,6 +363,26 @@ def test_a_monorepo_project_is_upgraded_from_its_folders_github_url(upgrade_serv
     assert "+++ b/apps/auth/requirements.txt" in diff and "+++ b/apps/auth/authkit/tokens.py" in diff
 
 
+def test_a_preset_proves_its_upgrade_the_way_its_own_ci_does(upgrade_server, tmp_path, monkeypatch):
+    import shutil
+
+    import openport.upgrade.testrun as testrun
+    from openport.server import upgrades
+
+    mono = tmp_path / "acme__mono"
+    shutil.copytree(AUTHKIT, mono / "apps" / "auth")
+    monkeypatch.setattr(upgrades, "fetch_repo", lambda repo, max_mb=None: (mono, False))
+    monkeypatch.setattr(upgrades, "PRESETS", [{"id": "mono", "label": "acme/mono", "detail": "a real repo", "repo": "acme/mono/apps/auth",
+                                               "tests": {"image": "node:20-test", "command": "npm ci && npm run build"}}])
+    scripted, seen = testrun.run_tests, []
+    monkeypatch.setattr(testrun, "run_tests", lambda folder, *, image, command: (seen.append((image, command)), scripted(folder, image=image, command=command))[1])
+
+    assert upgrade_server.get("/api/upgrade-presets").json() == [{"id": "mono", "label": "acme/mono", "detail": "a real repo", "repo": "acme/mono/apps/auth"}]
+    run = wait_for(upgrade_server, upgrade_server.post("/api/upgrades", json={"target": "mono"}).json()["id"])
+    assert run["status"] == "done" and run["target"] == "acme/mono/apps/auth", run["events"][-1]
+    assert seen and set(seen) == {("node:20-test", "cd apps/auth && npm ci && npm run build")}  # its CI's steps, in its folder
+
+
 def test_a_host_can_hold_the_server_to_runs_it_already_has(upgrade_server):
     replayed = upgrade_server.post("/api/upgrades", json={"target": "authkit"}).json()
     wait_for(upgrade_server, replayed["id"])

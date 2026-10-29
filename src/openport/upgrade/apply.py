@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,10 +65,11 @@ def _repo_files(root: Path):
             yield relative
 
 
-def changed_files(root: Path, folder: Path) -> list[str]:
-    """The repo's files that differ in the copy. Only the original's files count: bumps and fixes edit files
-    that exist, and anything new in the copy was made by an install or a test run (node_modules, .venv)."""
-    return [r.as_posix() for r in _repo_files(root) if (folder / r).is_file() and (folder / r).read_bytes() != (root / r).read_bytes()]
+def changed_files(root: Path, folder: Path, created: Iterable[str] = ()) -> list[str]:
+    """The repo's files that differ in the copy, and `created`, the files a fix added. Nothing else new in the
+    copy counts: it was made by an install or a test run (node_modules, .venv)."""
+    changed = [r.as_posix() for r in _repo_files(root) if (folder / r).is_file() and (folder / r).read_bytes() != (root / r).read_bytes()]
+    return changed + [name for name in dict.fromkeys(created) if (folder / name).is_file() and not (root / name).exists()]
 
 
 def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Path:
@@ -77,6 +79,7 @@ def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Pa
         remove_tree(dest)
     shutil.copytree(root, dest, symlinks=True, ignore=shutil.ignore_patterns(*SKIP_DIRS))
     for name in files:
+        (dest / name).parent.mkdir(parents=True, exist_ok=True)  # a file a fix created may be in a new folder
         shutil.copy2(folder / name, dest / name)
     return dest
 
@@ -180,6 +183,15 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
             rejected.append((edit, "outside the repo"))
         elif is_test_path(Path(edit.file).as_posix()):
             rejected.append((edit, "tests can't be changed to make them pass"))
+        elif SKIP_DIRS & set(Path(edit.file).parts):
+            rejected.append((edit, "not the repo's own code (dependencies and build output)"))
+        elif not edit.search:  # a new file the upgraded version needs
+            if path.exists() or (folder / edit.file).is_symlink():
+                rejected.append((edit, "it exists already: change it with a snippet to replace"))
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write(path, edit.replace)
+                applied.append(edit)
         elif not path.is_file():
             rejected.append((edit, "no such file"))
         else:
@@ -196,11 +208,14 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
     return applied, rejected
 
 
-def diff(root: Path, folder: Path) -> str:
-    """A unified diff of the repo's files that the upgrade changed in the copy (see changed_files)."""
+def diff(root: Path, folder: Path, created: Iterable[str] = ()) -> str:
+    """A unified diff of the repo's files that the upgrade changed in the copy, and the ones a fix created
+    (see changed_files)."""
     chunks: list[str] = []
-    for name in changed_files(root, folder):
-        old = (Path(root) / name).read_text(encoding="utf-8", errors="replace")
+    for name in changed_files(root, folder, created):
+        before = Path(root) / name
+        old = before.read_text(encoding="utf-8", errors="replace") if before.is_file() else ""
         new = (Path(folder) / name).read_text(encoding="utf-8", errors="replace")
-        chunks += difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}")
+        chunks += difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True),
+                                       f"a/{name}" if before.is_file() else "/dev/null", f"b/{name}")
     return "".join(chunks)

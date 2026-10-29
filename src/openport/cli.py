@@ -709,7 +709,7 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     verdict = "[green]Proven: the tests pass before and after the upgrade.[/green]" if run.proven else "[red]Not proven: see the test results.[/red]"
     console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
     if run.proven:  # the PR comes from the original's .git plus the changed files, never from the tested copy
-        pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir), out_dir.with_name(out_dir.name + ".pr"))
+        pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir, run.created), out_dir.with_name(out_dir.name + ".pr"))
         title, branch = upgrade_report.TITLE, UPGRADE_BRANCH
         if project:  # each project of a monorepo gets its own PR
             title, branch = f"{title} in {project}", f"{branch}-{project.replace('/', '-')}"

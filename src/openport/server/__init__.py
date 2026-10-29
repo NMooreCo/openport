@@ -123,7 +123,7 @@ def presets() -> list[dict]:
 
 @app.get("/api/upgrade-presets")
 def upgrade_presets() -> list[dict]:
-    return [{k: v for k, v in p.items() if k != "path"} for p in upgrades.PRESETS]
+    return [{k: v for k, v in p.items() if k not in ("path", "tests")} for p in upgrades.PRESETS]
 
 
 def _forget_old_runs() -> None:

@@ -21,6 +21,7 @@ Rules:
 - Change application code only, never tests: the tests define correct behaviour.
 - Make the smallest change that works with the new version. Never pin the old version back or undo the security fix.
 - Each edit replaces one exact snippet: copy `search` from the file character for character, including indentation, and make it long enough to appear only once.
+- If the new version needs a file the repo doesn't have yet (a framework that now requires one, say), give an edit with an empty `search` and the whole new file as `replace`.
 - If excerpts from changelogs are included, use them to understand what changed. Cite an excerpt in sources only if your fix follows something it says, with that sentence copied word for word as the quote. Citations are checked against the excerpts, and an empty list is normal.
 
 Respond with JSON only:
@@ -28,6 +29,14 @@ Respond with JSON only:
 
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".mjs")
 SOURCE_BUDGET = 40_000  # characters of source sent per request
+# Super reasons before it answers, and its reasoning counts against max_tokens: with a big repo's sources it can
+# spend the whole budget thinking and answer nothing. It gets room for both, and if it still runs out, the same
+# question again with reasoning off.
+MAX_TOKENS = 16_384
+
+
+class FixerSilent(RuntimeError):
+    """Super ran out of tokens before giving any answer, with reasoning on and off."""
 
 
 def source_files(folder: Path, test_output: str) -> dict[str, str]:
@@ -53,9 +62,9 @@ def parse_fix(text: str) -> tuple[list[Edit], str, list[dict]]:
         data = json.loads(match.group(0)) if match else {}
     except json.JSONDecodeError:
         data = {}
-    edits = [
-        Edit(str(e["file"]), str(e["search"]), str(e.get("replace", "")))
-        for e in data.get("edits", []) if isinstance(e, dict) and e.get("file") and e.get("search")
+    edits = [  # an empty search with a replacement is a new file
+        Edit(str(e["file"]), str(e.get("search") or ""), str(e.get("replace", "")))
+        for e in data.get("edits", []) if isinstance(e, dict) and e.get("file") and (e.get("search") or e.get("replace"))
     ]
     return edits, str(data.get("rationale") or "").strip(), parse_citations(data.get("sources"))
 
@@ -72,15 +81,16 @@ def make_fixer(client: OpenAI | None = None, model: str | None = None, meter: Us
         if notes:
             prompt += f"\n\nYour previous attempt:\n{notes}"
         prompt += "\n\nSource files:\n" + "\n\n".join(f"=== {name} ===\n{text}" for name, text in files.items())
-        start = time.perf_counter()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
-            max_tokens=8192,
-        )
-        if meter is not None:
-            meter.record(model, response.usage, time.perf_counter() - start)
-        edits, rationale, cited = parse_fix(response.choices[0].message.content or "")
-        return edits, rationale, verified(cited, research)  # only quotes that are really on the pages
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        for extra in ({}, {"extra_body": tokenfactory.reasoning(False)}):
+            start = time.perf_counter()
+            response = client.chat.completions.create(model=model, messages=messages, max_tokens=MAX_TOKENS, **extra)
+            if meter is not None:
+                meter.record(model, response.usage, time.perf_counter() - start)
+            choice = response.choices[0]
+            edits, rationale, cited = parse_fix(choice.message.content or "")
+            if edits or rationale or choice.finish_reason != "length":
+                return edits, rationale, verified(cited, research)  # only quotes that are really on the pages
+        raise FixerSilent("Nemotron Super ran out of tokens before answering, with reasoning on and then off")
 
     return fix

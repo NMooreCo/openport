@@ -19,9 +19,15 @@ from .pipeline import PIPELINE_LOCK, Run, _save
 
 PROJECT_FOLDER = re.compile(r"^[\w][\w.-]*(?:/[\w][\w.-]*)*$")  # apps/api: each part a name, none starting with a dot
 
+# A preset's `tests` are the image and command its own CI uses, where the ones OpenPort would pick don't fit: the
+# learn-claude-code site has no test suite, and its CI proves it by type-checking and building it.
 PRESETS = [
     {"id": "authkit", "label": "AuthKit", "detail": "Demo app: PyJWT 1.7.1 and requests 2.31.0 pinned, with tests", "path": "authkit"},
     {"id": "authkit-node", "label": "AuthKit (Node)", "detail": "The same in Node: jsonwebtoken 8.5.1 in package-lock.json, with tests", "path": "authkit-node"},
+    {"id": "learn-claude-code", "label": "shareAI-lab/learn-claude-code", "repo": "shareAI-lab/learn-claude-code/web",
+     "detail": "A real repo (79k stars): its Next.js site's vulnerable packages, proven by its own CI's type check and build",
+     "tests": {"image": "node:20.20.2-slim",
+               "command": "npm ci --no-audit --no-fund && npx tsc --noEmit && npm run build && echo 'CI passed: npm ci, tsc --noEmit, next build'"}},
 ]
 APPLY = os.getenv("OPENPORT_UPGRADE_APPLY", "1") != "0"  # set 0 to only choose versions
 
@@ -111,8 +117,10 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     ecosystems = {p.dep.ecosystem for p in plans if p.target}
     meter = UsageMeter()  # Super's fixes: what this run spends on Token Factory
 
+    own = next((p["tests"] for p in PRESETS if p.get("repo") == target and p.get("tests")), None)
+
     def tests(folder: Path):  # a monorepo's project: its suites run in its folder, with the whole repo there
-        setups = test_setups(folder / project, ecosystems)
+        setups = [("ci", own["image"], own["command"])] if own else test_setups(folder / project, ecosystems)
         return run_suites(folder, [(name, image, in_project(project, command)) for name, image, command in setups], run_tests=run_tests)
 
     out = config.RUNS_DIR / "upgrades" / (root.resolve().name + (f"-{project.replace('/', '-')}" if project else ""))
@@ -121,6 +129,8 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
                               fixer=make_fixer(meter=meter), on_event=event)
     finally:
         run.emit("cost", evals_usd=0.0, helper_usd=_cost(meter))
+    if result.fix_error:
+        run.emit("note", message=f"Nemotron Super couldn't be asked for a fix: {result.fix_error}")
     run.emit("stage", stage="pr")
     run.emit("upgrade_pr", body=report.render(result), diff=result.diff[:300_000], proven=result.proven)
 

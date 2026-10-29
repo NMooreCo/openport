@@ -52,6 +52,7 @@ class UpgradeRun:
     changelogs: list = field(default_factory=list)  # a changelog.Digest for each upgraded package whose changelog was found
     research: list[dict] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
+    created: list[str] = field(default_factory=list)  # files a fix added, from the repo's root
     diff: str = ""
     out: str = ""
     fix_error: str = ""  # why Super couldn't be asked for a fix (e.g. the API refused), if it couldn't
@@ -218,11 +219,12 @@ def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds
                 run.fix_error = f"{type(error).__name__}: {error}"[:300]
                 break
             applied, rejected = apply_edits(home, edits)
+            run.created += [repo_path(e.file) for e in applied if not e.search]
             current = tested() if applied else current
             run.rounds.append(FixRound(applied, rejected, rationale, sources, current))
             emit("round", run.rounds[-1])
             if current.ok:
                 break
             notes = f"You changed {len(applied)} snippet(s): {rationale}\n" + "".join(f"- rejected edit to {e.file}: {why}\n" for e, why in rejected)
-    run.diff = diff(root, out)
+    run.diff = diff(root, out, run.created)
     return run

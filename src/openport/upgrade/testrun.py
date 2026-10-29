@@ -66,8 +66,10 @@ def docker_command(folder: Path, image: str, command: str) -> list[str]:
     # The repo's own code runs here: no gaining privileges, and bounded memory, CPU and processes (a fork bomb or a
     # leak stops the run, not the machine). Root stays, to hand the installs back above.
     limits = ["--security-opt", "no-new-privileges", "--pids-limit", "2048", "--memory", "4g", "--cpus", "2"]
+    # No npm update notice after the runner's summary, and no telemetry from the repo's build (Next.js sends it).
+    quiet = ["-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "NPM_CONFIG_UPDATE_NOTIFIER=false", "-e", "NEXT_TELEMETRY_DISABLED=1"]
     return [
-        "docker", "run", "--rm", *limits, "-e", "PYTHONDONTWRITEBYTECODE=1",
+        "docker", "run", "--rm", *limits, *quiet,
         "-v", f"{Path(folder).resolve()}:/repo", "-w", "/repo", image, "sh", "-c", command,
     ]
 

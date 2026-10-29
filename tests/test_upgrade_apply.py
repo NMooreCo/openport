@@ -12,8 +12,8 @@ import pytest
 import yaml
 
 from openport.upgrade import Upgrade
-from openport.upgrade.apply import Edit, apply_bumps, apply_edits, bump_requirements, copy_repo, diff
-from openport.upgrade.fix import make_fixer, parse_fix, source_files
+from openport.upgrade.apply import Edit, apply_bumps, apply_edits, bump_requirements, changed_files, copy_repo, diff, make_pr_folder
+from openport.upgrade.fix import FixerSilent, make_fixer, parse_fix, source_files
 from openport.upgrade.lockfiles import Dependency
 from openport.upgrade.osv import Advisory
 from openport.upgrade.report import render
@@ -61,6 +61,30 @@ def test_edits_must_be_exact_single_and_outside_tests(tmp_path):
     patch = diff(AUTHKIT, copy)
     assert '-    return token.decode("utf-8")' in patch and "+PyJWT==2.14.0" in patch
     assert "PyJWT==1.7.1" in (AUTHKIT / "requirements.txt").read_text()  # the original is untouched
+
+
+def test_a_fix_can_add_a_file_the_new_version_needs_and_it_reaches_the_diff_and_the_pr(tmp_path):
+    # Next.js 16.4 won't build a top-level page.tsx without a root layout (learn-claude-code, seen live): the fix is a new file.
+    copy = copy_repo(AUTHKIT, tmp_path / "copy")
+    layout = Edit("web/src/app/layout.tsx", "", "export default function RootLayout({ children }) {\n  return children;\n}\n")
+    applied, rejected = apply_edits(copy, [
+        layout,
+        Edit("authkit/tokens.py", "", "everything"),  # a file that exists is changed with a snippet, never replaced
+        Edit("tests/test_new.py", "", "def test_ok(): pass"),  # nor a test added to make them pass
+        Edit("node_modules/pkg/index.js", "", "patched"),  # nor a dependency patched in place
+    ])
+    assert applied == [layout] and (copy / "web/src/app/layout.tsx").read_text() == layout.replace
+    assert [why for _, why in rejected] == [
+        "it exists already: change it with a snippet to replace",
+        "tests can't be changed to make them pass",
+        "not the repo's own code (dependencies and build output)",
+    ]
+    assert changed_files(AUTHKIT, copy) == []  # something new in the copy counts only when a fix made it
+    assert changed_files(AUTHKIT, copy, ["web/src/app/layout.tsx"]) == ["web/src/app/layout.tsx"]
+    patch = diff(AUTHKIT, copy, ["web/src/app/layout.tsx"])
+    assert patch.startswith("--- /dev/null\n+++ b/web/src/app/layout.tsx\n") and "+  return children;" in patch
+    pr = make_pr_folder(AUTHKIT, copy, ["web/src/app/layout.tsx"], tmp_path / "pr")
+    assert (pr / "web/src/app/layout.tsx").read_text() == layout.replace
 
 
 def test_an_edit_copied_with_the_wrong_indentation_lands_at_the_files(tmp_path):
@@ -648,6 +672,26 @@ def test_fixer_sees_failures_and_sources_and_cites_only_real_ones(tmp_path):
     prompt = fake.requests[0]["messages"][1]["content"]
     assert "PyJWT 1.7.1 -> 2.14.0" in prompt and quote in prompt and "=== authkit/tokens.py ===" in prompt
     assert parse_fix("no json") == ([], "", [])
+    new_file = parse_fix('{"edits": [{"file": "web/src/app/layout.tsx", "search": "", "replace": "export default ..."}]}')[0]
+    assert new_file == [Edit("web/src/app/layout.tsx", "", "export default ...")]
+
+
+def test_a_fixer_that_reasons_until_it_runs_out_asks_again_without_reasoning(tmp_path):
+    # Super spent all 8,192 tokens thinking about learn-claude-code's 40,000 characters of source, and said nothing (seen live).
+    reply = {"edits": [{"file": "a.py", "search": "x = 1", "replace": "x = 2"}], "rationale": "it moved", "sources": []}
+
+    def script(request):
+        thinking = ((request.get("extra_body") or {}).get("chat_template_kwargs") or {}).get("enable_thinking", True)
+        return completion(content=None, reasoning="hmm " * 50, finish_reason="length") if thinking else completion(content=json.dumps(reply))
+
+    fake = FakeTokenFactory(script)
+    edits, rationale, _ = make_fixer(client=fake, model="nvidia/super-test")([], [], "1 failed", {"a.py": "x = 1\n"})
+    assert edits == [Edit("a.py", "x = 1", "x = 2")] and rationale == "it moved"
+    assert [r["max_tokens"] for r in fake.requests] == [16_384, 16_384] and "extra_body" not in fake.requests[0]
+
+    silent = FakeTokenFactory(lambda request: completion(content=None, reasoning="hmm", finish_reason="length"))
+    with pytest.raises(FixerSilent):  # the rounds end with the reason, not with "no edits" said as if Super had answered
+        make_fixer(client=silent, model="nvidia/super-test")([], [], "1 failed", {"a.py": "x = 1\n"})
 
 
 def passing(summary="5 passed"):
