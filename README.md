@@ -12,7 +12,9 @@
 
 Built for the [Nebius x NVIDIA Global AI Hackathon](https://nebiusglobalaihackathon.devpost.com/) (Coding and Agentic Engineering track).
 
-> **Status:** in progress. The full plan is in [PLAN.md](PLAN.md), and build notes on Token Factory and Nemotron are in [FEEDBACK.md](FEEDBACK.md).
+**Try it:** the hosted dashboard at **https://nebius.narralogy.com** replays the recorded demo runs for anyone, and runs live ones for the judges. The pull requests those runs opened are real, in [narralogy-labs](https://github.com/narralogy-labs) on GitHub.
+
+Build notes on Token Factory and Nemotron, with what I'd improve, are in [FEEDBACK.md](FEEDBACK.md). The build plan and its progress log are in [PLAN.md](PLAN.md).
 
 ## Quickstart
 
@@ -194,7 +196,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | Rewriting prompts to fix failures (the tuning engineer) | Ultra | [`tune/engineer.py`](src/openport/tune/engineer.py) |
 | Grading free-text outputs (the LLM judge) | Ultra | [`evals/runner.py`](src/openport/evals/runner.py) |
 | Labelling generated eval cases | Ultra | [`capture/generate.py`](src/openport/capture/generate.py) |
-| Fixing the code a dependency upgrade broke | Super | [`upgrade/fix.py`](src/openport/upgrade/fix.py) |
+| Fixing the code a dependency upgrade broke (Ultra takes over when Super's fix fails) | Super, then Ultra | [`upgrade/fix.py`](src/openport/upgrade/fix.py) |
 | Inventing training inputs, and answering them as the teacher | Super, Ultra | [`distill.py`](src/openport/distill.py) |
 
 **Tavily is how OpenPort reads what changed since any model was trained:** pricing pages, NVIDIA's model guidance and package changelogs. Every quote it uses is checked word for word against the page Tavily returned.
