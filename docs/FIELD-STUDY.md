@@ -49,7 +49,7 @@ Everything was static. Each repo was shallow-cloned and read, never run, by Open
 | [zhayujie/CowAgent](https://github.com/zhayujie/CowAgent) | 47,562 | 1,133 | 1 OpenAI | 32 | 33 | 1 | – | 557 | 31 | 29 |
 | [LibreChat-AI/LibreChat](https://github.com/LibreChat-AI/LibreChat) | 46,258 | 6,580 | 1 OpenAI | – | 1 | 0 | LangChain | 2,697 | 3 | 1 |
 
-Calls count only the app's own code, not its tests, docs' samples, benchmarks or evals. "Vulnerable" counts dependency versions: a package locked at two versions counts twice. markitdown locks nothing (it ships a `pyproject.toml` without a lockfile).
+Calls count only the app's own code, not its tests, docs' samples, benchmarks or evals. "Vulnerable" counts dependency versions: a package locked at two versions counts twice. markitdown locks nothing (it ships a `pyproject.toml` without a lockfile). learn-claude-code's 8 are from the Oct 28 dry run; the Oct 29 upgrade of its `web` project found 7 vulnerable versions in 6 packages, 48 advisories, and fixed them all.
 
 ## What it changed in OpenPort
 

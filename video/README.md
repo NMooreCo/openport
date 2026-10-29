@@ -1,7 +1,7 @@
 # The demo video
 
 The submission video is built from this folder, end to end: narration in Nick's voice (Cartesia), screen captures
-of the real dashboard replaying the Oct 28 recordings, motion slides, captions and a synthesized music bed. Every
+of the real dashboard replaying the Oct 28 and 29 recordings, motion slides, captions and a synthesized music bed. Every
 number it says or shows comes from those recordings, the field study or a real `openport check` run.
 
 | Step | Command | Writes |
@@ -20,5 +20,5 @@ number it says or shows comes from those recordings, the field study or a real `
   and nothing calls Token Factory. The cursor, spotlights and scrolling come from `overlay.js`.
 - **The slides** (`slides/*.html`) are pure functions of time, rendered frame by frame. The CI slide shows the real
   output of `openport check` on SupportDesk with its triage prompt's priority rules deleted (10%, 3 of 31: FAIL).
-- **The Cartesia key** is read from `C:\Nick\.cartesia` (or `CARTESIA_KEY_FILE`) and never printed.
+- **The Cartesia key** is read from `~/.cartesia` (or the file `CARTESIA_KEY_FILE` names) and never printed.
 - Renders go to `out/`, which git ignores. Captures and slides render in the installed Microsoft Edge.

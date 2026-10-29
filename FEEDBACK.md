@@ -15,7 +15,7 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 1. **An Anthropic-compatible Messages endpoint.** 70 of the 207 calls (34%), in half the apps that make calls (7 of 14), are written for Anthropic's Messages API: 60 through its SDK, 10 over plain HTTP (49 of the 70 are in one app, learn-claude-code). None can move with a base-URL swap. DeepSeek and Moonshot serve such an endpoint for their own models, both of which Token Factory hosts. [Details](#anthropic-sdk-code-has-no-drop-in-path)
 2. **One line at the top of the switch guide: raise `max_tokens`, or turn reasoning off.** Reasoning tokens count against `max_tokens`, so a call sized for a closed model's direct answer comes back cut off. It broke preflight's review call, and the obvious fix (reasoning off) cost 17 points of accuracy. [Details](#reasoning-tokens-count-against-max_tokens)
 3. **`supported_features` that says what works.** For every Nemotron model it lists only `tools` and `reasoning`, yet JSON mode passed on all three tiers in my live tests, and strict JSON schemas on Super and Ultra. A router that trusts the field would never send the 7 JSON-mode and structured-output calls to Nemotron. [Details](#supported_features-leaves-out-json-support-that-works)
-4. **Say plainly whether the Responses API works, and on which models.** 10 calls in 4 apps use it (`responses.create`, `responses.parse`, or `/v1/responses` over HTTP). The API reference documents `POST /v1/responses`, but the switch guide's own example turns `responses.create` into `chat.completions.create` while saying no other changes are needed, so it reads as if a rewrite were needed (I thought so on Oct 23). [Details](#the-openai-responses-api-also-needs-rewriting)
+4. **Say plainly that the Responses API works, and on which models.** 10 calls in 4 apps use it (`responses.create`, `responses.parse`, or `/v1/responses` over HTTP). It does work: on Oct 28 `responses.create` answered on all five Nemotron models. But the switch guide's own example turns `responses.create` into `chat.completions.create` while saying no other changes are needed, so it reads as if a rewrite were needed (I thought so on Oct 23). [Details](#the-openai-responses-api-also-needs-rewriting)
 5. **Catalog fields tools can rely on:** a family or size, and a real `created` date. Nemotron 3.5 Lightning has Nano's size and price but not its name, so OpenPort's tier detection never tried it, and `created` is the time of the request for 9 of the 30 models. [Details](#the-catalog-doesnt-say-which-models-are-alike-or-when-one-arrived)
 6. **A higher request limit for Nano.** The tier evals pick for high-volume calls allows 100 requests a minute, a third of Super's. [Details](#nano-the-tier-for-high-volume-calls-has-the-lowest-request-limit)
 7. **A TypeScript framework integration.** 2 of the 20 apps reach models through the Vercel AI SDK, and 56 of the 207 calls are TypeScript, but the integrations page covers Python frameworks only. [Details](#the-integrations-cover-python-frameworks-not-typescript-ones)
@@ -37,7 +37,7 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 **[build] The docs disagree on whether the OpenAI Responses API works.** (Oct 23, corrected Oct 25)
 - Expected: `client.responses.create(...)` to work against the OpenAI-compatible surface.
 - What I wrote on Oct 23: only Chat Completions is compatible, so Responses-API calls must be rewritten to `chat.completions`. The [switch guide](https://docs.tokenfactory.nebius.com/switch) reads that way: its "before" example calls `client.responses.create(...)`, its Token Factory example calls `client.chat.completions.create(...)`, and it says "no other changes are required".
-- Correction (Oct 25): the API reference documents [`POST /v1/responses`](https://docs.tokenfactory.nebius.com/api-reference/inference/create-a-response) (OpenAPI spec version 20261022), with a Llama 3.3 example. So it probably works as written; I haven't been able to call it on Nemotron yet (no credit since Oct 24), and OpenPort's Monday checks will say.
+- Correction (Oct 25): the API reference documents [`POST /v1/responses`](https://docs.tokenfactory.nebius.com/api-reference/inference/create-a-response) (OpenAPI spec version 20261022), with a Llama 3.3 example. Checked Oct 28: in `openport smoke`, `responses.create` answered on all five Nemotron models (Nano, Super, Ultra, Lightning and Super VL), so Responses-API calls move as written. Only the switch guide still reads otherwise.
 - How common it is (field study, Oct 25): 10 of the 207 calls, in 4 of the 20 apps (AutoGPT and lobehub 4 each, hermes-agent and oh-my-openagent 1 each): 7 `responses.create`, 2 `responses.parse` and 1 plain HTTP post to `/v1/responses`. OpenAI recommends this API for new projects, so expect more.
 - Suggestion: make the switch guide's two examples the same call, and say which models `/v1/responses` serves and which of its features (built-in tools, `previous_response_id`, background mode) work.
 
@@ -58,9 +58,10 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 - Impact: a cheap high-volume extraction call that relies on strict schemas can't just drop onto Nano; it needs Super, or a prompt that coaxes schema-valid output. This is exactly what OpenPort's tuning ladder is for, but it's worth a docs note on which tiers support strict structured output.
 - Rechecked Oct 28: Nano still fails, now by running through its whole 4,096-token budget without closing the JSON (`LengthFinishReasonError`, 25 s). Super, Ultra, Lightning and Super VL all return schema-valid output in 1 to 10 s. (My own check had also graded the ticket's priority, a judgment the prompt gave no rules for; it now grades only schema adherence and the extracted fields.)
 - Confirmed in tuning: for SupportDesk's PII extraction call, adding prompt instructions on Nano made it *worse* (43% on tuning cases, 0% held-out); moving to Super fixed it (100% / 100%).
+- Update (Oct 28): with the check grading only the schema and the extracted fields, the recorded run's PII call passed on Nano as written (95% of its cases, 100% held out), so it stays on Nano.
 
 **[live] The reasoning switch is the most powerful tuning knob.** (Oct 24)
-- In `openport tune`, 4 of 5 calls ended up changing Nemotron's reasoning setting. Turning it **off** fixed format-following for classification, extraction and reply drafting (and cut output tokens). Turning it **on** let Nano handle a multi-step policy call that previously ran on Claude Opus — at 100% pass rate, $25.07 → $0.31 per 1,000 calls.
+- In `openport tune`, 4 of 5 calls ended up changing Nemotron's reasoning setting. Turning it **off** fixed format-following for classification, extraction and reply drafting (and cut output tokens). Turning it **on** let Nano handle a multi-step policy call that previously ran on Claude Opus — at 100% pass rate, $25.07 → $0.31 per 1,000 calls. (Re-measured Oct 28: still on Nano at 100%, $5.37 → $0.40, with a lower estimate of the original model's cost.)
 - Suggestion: a short guide on when to switch reasoning off (format-strict outputs) versus on (multi-step decisions) would help anyone porting from closed models.
 
 **[live] One recommended setting for every task can hurt strict calls.** (Oct 24)
@@ -84,7 +85,7 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 <a id="nano-the-tier-for-high-volume-calls-has-the-lowest-request-limit"></a>
 **[live] Nano, the tier for high-volume calls, has the lowest request limit.** (Oct 25)
 - Found: per the models list, Nemotron 3 Nano allows 100 requests a minute; Super, Ultra and Super VL allow 300, and Lightning 600.
-- Why it matters: Nano is where OpenPort's evals put the cheap, high-volume calls (SupportDesk's triage, refunds and policy; preflight's standards and PR description). At 100 a minute, an app making more than about 1.7 of those calls a second can't stay on the model its evals chose.
+- Why it matters: Nano is where OpenPort's evals put the cheap, high-volume calls (in the Oct 28 runs, SupportDesk's triage, PII and policy, and preflight's review and PR description). At 100 a minute, an app making more than about 1.7 of those calls a second can't stay on the model its evals chose.
 - Suggestion: a Nano limit at least as high as Super's, or a documented way to raise it.
 
 <a id="reasoning-tokens-count-against-max_tokens"></a>
@@ -105,6 +106,7 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 
 **[live] A plain base-URL swap does leave a real, measurable gap.** (Oct 24)
 - First `openport baseline` on SupportDesk (54 cases): a plain swap to Nemotron scores **74%** on Nano, **83%** on Super, **85%** on Ultra — none at parity with the original closed models.
+- Re-measured Oct 28 over all 118 cases: 62% on Nano, pooled. The 70% the README and video quote is the recorded run's mean of the five calls' own plain-swap rates.
 - The free-text reply call (strict tone/format rules) collapses on a plain swap: **0% / 25% / 38%** across the tiers, because Nemotron doesn't follow the app's sign-off and no-promises rules without tuning. The JSON/tool calls fare much better (refunds 100%, policy 89–100%).
 - Takeaway: the open models are capable, but "just change the base URL" is not safe to ship as-is — which is the whole reason OpenPort proves each call before porting it.
 
@@ -122,8 +124,8 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 - Found: the CLI installs on Ubuntu and macOS only, so on Windows OpenPort calls it through WSL (`OPENPORT_NEBIUS_CLI`). And `nebius ai job create` uses a GPU platform (H100) unless you name another, so a CPU-only job, like tuning that only calls Token Factory, bills GPU time by default unless you set a CPU platform. OpenPort refuses GPU platforms for tuning jobs unless asked.
 - Suggestion: a Windows build (or a note pointing to WSL), and either a CPU default for jobs or a confirmation when a job lands on a GPU.
 
-**[live] Spreading eval runs across Serverless Jobs; hosting the dashboard on an Endpoint.** (pending AI Cloud setup)
-- Setup friction, cold starts and parallel-run behaviour go here once it runs.
+**[build] Spreading eval runs across Serverless Jobs; hosting the dashboard on an Endpoint.** (Oct 24)
+- Built and unit-tested (`openport tune --jobs`, `scripts/deploy_endpoint.sh`), but not run: both need AI Cloud credit, which the hackathon doesn't provide, so there's nothing measured to report. The hosted dashboard runs on Cloudflare and calls Token Factory.
 
 ## Fine-tuning (SFT / LoRA)
 
@@ -145,6 +147,7 @@ What already works: 119 of the 207 calls (57%) are plain Chat Completions, which
 **[live] A finished fine-tune's adapter can't be downloaded once the balance hits zero.** (Oct 24)
 - The job succeeded (14 minutes of training, 193,041 tokens, checkpoints at steps 2, 4 and 6), and listing its checkpoints works, but fetching their files returns `402 Payment Required: You have exhausted your budget`. The training ran on credit I no longer have, so the weights are stuck until funds are added.
 - Suggestion: let an account download what it already paid for, or warn before a job starts that a later download needs a positive balance.
+- Update (Oct 28): once the account had funds again, the adapter downloaded (84 MB of LoRA weights).
 
 ---
 

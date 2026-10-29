@@ -43,7 +43,7 @@ Read off the recordings the video replays, so the narration matches the screen:
 
 | Value | Where it comes from |
 |---|---|
-| 70% plain swap, 96% after, 98% held-out | `examples/recorded/port-supportdesk.json`, the dashboard's tiles: the mean of the five calls' rates. (The separate pooled baseline over all 118 cases, `runs/baseline-supportdesk-20261028-083117.json`, gives 62% on Nano.) |
+| 70% plain swap, 96% after, 98% held-out | `examples/recorded/port-supportdesk.json`, the dashboard's tiles: the mean of the five calls' rates. (The separate pooled baseline over all 118 cases, `runs/baseline-supportdesk-20261028-083117.json`, a local run output not in the repo, gives 62% on Nano.) |
 | 5 of 5, $11.70 → $2.27 | the same recording's PR description; OpenPort's own cost $0.70 |
 | preflight: 4 of 4, $22.08 → $1.32 (94% less) | `examples/recorded/port-preflight.json`, re-recorded Oct 28 after the factory split: the diff analyzer and standards pass on Super, the PR describer and the review pass on Nano, all at 96% or more held out; $0.07 own cost |
 | 207 calls, 79 moved; 19 of 20 apps with a vulnerable pin | `docs/FIELD-STUDY.md`, rerun Oct 28 (unchanged) |
@@ -52,7 +52,7 @@ Read off the recordings the video replays, so the narration matches the screen:
 
 The review pass is preflight's borderline call. The recording moved it (99% of its cases, 96% held out), but the
 runbook's own tuning run just before it kept it (92% overall, 85% held out) and moved the other three, $16.72 →
-$0.81 (`runs/pr-jsliapark__preflight.md`). Both runs are real: each case is graded on one live reply, so a call near
+$0.81 (`runs/pr-jsliapark__preflight.md`, a local run output not in the repo). Both runs are real: each case is graded on one live reply, so a call near
 the bar can land either side. That's what the factory split is for: when one call stays, its neighbours still move.
 
 ## Still to do

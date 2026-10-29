@@ -14,11 +14,13 @@ Built for the [Nebius x NVIDIA Global AI Hackathon](https://nebiusglobalaihackat
 
 **Try it:** the hosted dashboard at **https://nebius.narralogy.com** replays the recorded demo runs for anyone, and runs live ones for the judges. The pull requests those runs opened are real, in [narralogy-labs](https://github.com/narralogy-labs) on GitHub.
 
+**Results:** SupportDesk, the demo app, moves all 5 of its calls: a plain swap passes 70% of their cases, OpenPort's tuning 96% (98% held out), at $11.70 → $2.27 per 1,000 runs of each call. [jsliapark/preflight](https://github.com/jsliapark/preflight), an open-source PR reviewer I didn't write, moves all 4 of its Claude Opus calls, 94% cheaper ($22.08 → $1.32). [learn-claude-code](#upgrade-vulnerable-dependencies) (79k stars) gets a security upgrade closing 48 advisories, proven by its own CI.
+
 Build notes on Token Factory and Nemotron, with what I'd improve, are in [FEEDBACK.md](FEEDBACK.md). The build plan and its progress log are in [PLAN.md](PLAN.md).
 
 ## Quickstart
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and git. Some steps need more: Node.js and npm for TypeScript apps and the dashboard, Docker for `upgrade --apply`, and the [GitHub CLI](https://cli.github.com/) for `pr --open`.
 
 ```bash
 uv sync
@@ -55,7 +57,7 @@ uv run openport baseline examples/supportdesk
 For a repo that has no eval spec yet, draft one. `openport capture` scans the repo and writes a starter `openport.evals.yaml` with a call site, a grader and a dataset per LLM call. The grader is chosen from the output shape (field checks for JSON and tool calls, a Nemotron Ultra judge for free text). Point it at recorded calls to fill the datasets, or let Super invent inputs and label them — with Nemotron Ultra by default, or with `--label-with original` to run the app through its original closed model (needs that provider's key). Generated cases are flagged for review, and calls the harness can't run (a method whose class needs arguments to build, a TypeScript function that isn't exported) are listed in `CAPTURE_NOTES.md`, with what it would take. Where the client comes from doesn't matter: while a test runs, the OpenAI and Anthropic SDKs' own calls, sync or async, are routed to Nemotron, and so are plain HTTP requests to LLM endpoints. A call in a class's method runs on an instance built for each case; `init:` in the spec gives the arguments, when building one takes some. The result is runnable by `openport tune`.
 
 ```bash
-uv run openport capture examples/supportdesk --logs triage.triage_ticket=logs/triage.jsonl
+uv run openport capture examples/supportdesk --logs triage.triage_ticket=examples/supportdesk/evals/triage.jsonl
 uv run openport capture jsliapark/preflight --generate 10   # needs NEBIUS_API_KEY
 ```
 
@@ -106,7 +108,7 @@ uv run openport pr runs/ports/jsliapark__preflight          # dry run: writes ru
 uv run openport pr runs/ports/jsliapark__preflight --open   # opens the PR in your fork
 ```
 
-Keep it honest after merging. `openport port` adds a GitHub Action (when the repo has an eval spec) that runs this on every pull request and fails if any call drops below the bar recorded in `openport.yaml`. It needs a `NEBIUS_API_KEY` repository secret.
+Keep it honest after merging. `openport port` adds a GitHub Action (when the repo has an eval spec) that runs this on every pull request and fails if any call drops below the bar recorded in `openport.yaml`. It needs a `NEBIUS_API_KEY` repository secret. To run the same check by hand, from the ported repo:
 
 ```bash
 uv run openport check .
@@ -131,11 +133,11 @@ uv run openport upgrade-action path/to/repo         # do it every Monday, as a G
 
 **Monorepos.** A lockfile in a subproject is upgraded with `--project <folder>`: its package manager and tests run in that folder, in a copy of the whole repo, so path dependencies on its neighbours still resolve, and its PR and branch are its own. The dry run says which folder each vulnerable package is locked in. `upgrade-action --project` writes a weekly workflow per project.
 
-**Every week, on its own.** `openport upgrade-action` adds a GitHub Actions workflow that runs the same upgrade every Monday and opens a PR, or updates last week's, only when the repo's tests prove it. When they can't, the run fails, so someone hears about it. It needs a `NEBIUS_API_KEY` repository secret (and `TAVILY_API_KEY` for the changelog quotes). It hasn't run on GitHub yet: it installs OpenPort from this repo, which goes public at submission.
+**Every week, on its own.** `openport upgrade-action` adds a GitHub Actions workflow that runs the same upgrade every Monday and opens a PR, or updates last week's, only when the repo's tests prove it. When they can't, the run fails, so someone hears about it. It needs a `NEBIUS_API_KEY` repository secret (and `TAVILY_API_KEY` for the changelog quotes). It hasn't run on GitHub yet.
 
 On a real repo, [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) (79k stars, one of the field study's 20), `openport upgrade` moved its Next.js site off 6 vulnerable packages, closing 48 advisories, 38 of them in Next.js (16.1.6 → 16.4.1). The proof is the repo's own CI, run as it runs it: `npm ci`, `tsc --noEmit` and `next build`. It passed before; after the bump the build failed, because Next.js 16.4 won't build a page that has no root layout. Super's first fix didn't pass and was undone; Ultra's added a seven-line root layout that passes its children through, and the CI passed. The recorded run replays on the dashboard, and its PR is [in a fork](https://github.com/narralogy-labs/shareAI-lab-learn-claude-code/pull/1).
 
-On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's two fixes (drop `.decode()`, add `algorithms=["HS256"]`) bring them back to 5 of 5. Its Node twin, `authkit-node`, moves jsonwebtoken 8.5.1 to 9.0.0 (3 advisories) through npm, and its tests pass before and after, so it needs no code change.
+On the `authkit` example (PyJWT 1.7.1, requests 2.31.0): 15 advisories fixed. The tests pass before, 4 of 5 fail after the bump to PyJWT 2.14.0, and Super's fix (drop `.decode()`, add `algorithms=["HS256"]`) brings them back to 5 of 5. Its Node twin, `authkit-node`, moves jsonwebtoken 8.5.1 to 9.0.0 (3 advisories) through npm, and its tests pass before and after, so it needs no code change.
 
 ## Field study: 20 popular AI apps
 
@@ -143,7 +145,7 @@ OpenPort's scanner, port and upgrade dry run ran over the 20 most-starred open-s
 
 ## Dashboard
 
-Watch a whole run live. A port shows the calls found, each tuning attempt, the code changes and the PR description. An upgrade shows the advisories, the version chosen for each package, the tests before and after, each of Super's fixes with its sources, and the PR.
+Watch a whole run live. A port shows the calls found, each tuning attempt, the code changes and the PR description. An upgrade shows the advisories, the version chosen for each package, the tests before and after, each fix (Super's, then Ultra's when Super's fails) with any sources it cites, and the PR.
 
 ```bash
 cd dashboard && npm install && npm run build && cd ..
@@ -156,9 +158,9 @@ A hosted dashboard can't push to your repos, so it opens pull requests in a GitH
 
 The hosted dashboard, at **https://nebius.narralogy.com**, opens on a page that explains OpenPort and plays the recorded demos for anyone; live runs there are for the hackathon's judges, behind a password in the submission's testing instructions. It runs on **Cloudflare**: the same Docker image in a Cloudflare Container behind a Worker, with the API keys as Worker secrets (never baked into the image). [`deploy/cloudflare/`](deploy/cloudflare/README.md) has the config and the steps. The hackathon's rules count Token Factory calls as using the Nebius platform and give no AI Cloud credit, so the dashboard doesn't run on AI Cloud. For anyone who has it, `scripts/deploy_endpoint.sh` puts the same image on a **Nebius Serverless Endpoint**, with the keys taken from a MysteryBox secret.
 
-A **static replay** of the dashboard plays the demos' recorded runs with no server, key or credit behind it: `uv run python scripts/static_replay.py` builds it into `site/`, for any static host (`deploy/cloudflare/replay/` serves it free on Cloudflare). Once the repo is public, `.github/workflows/pages.yml` publishes it on GitHub Pages, so the demo keeps working whatever happens to the server or the credit.
+A **static replay** of the dashboard plays the demos' recorded runs with no server, key or credit behind it: `uv run python scripts/static_replay.py` builds it into `site/`, for any static host (`deploy/cloudflare/replay/` serves it free on Cloudflare). `.github/workflows/pages.yml` publishes it on GitHub Pages, so the demo keeps working whatever happens to the server or the credit.
 
-A public dashboard shouldn't run up the key's bill, so the demos replay recorded runs (`examples/recorded`, labelled as recorded and dated) and "Run it live" starts a fresh one. Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (2 in the image; the Cloudflare deployment sets 1).
+A public dashboard shouldn't run up the key's bill, so the demos replay recorded runs (`examples/recorded`, labelled as recorded and dated) and "Run it live" starts a fresh one. Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (2 in the image; the Cloudflare deployment sets 5).
 
 Testing a call imports the repo's code and runs it inside the server, next to the API keys. So the Docker image sets `OPENPORT_RUN_REPO_CODE=vetted`: a public deployment runs code only for its bundled demo apps and for OpenPort's eval packs, which pin the exact commit that was reviewed (preflight's is `7a00fa2`). Any other repo is scanned and ported untuned, and the launcher says so up front. Locally, OpenPort tests whatever repo you point it at.
 
@@ -178,7 +180,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |
 | `deploy/cloudflare/` | The hosted dashboard: a Worker and Container config for the live dashboard, and one for the static replay |
-| `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the re-measure and recordings that wait on Token Factory credit, as one checked sequence) |
+| `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the Oct 28 re-measure and recordings, as one checked sequence) |
 | `tests/` | Offline tests (no API keys needed) |
 
 ## How OpenPort uses NVIDIA Nemotron and Nebius

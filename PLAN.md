@@ -1,5 +1,7 @@
 # OpenPort: build plan
 
+> The sections down to Progress are the plan as written on Oct 23, kept as it was. What was built and measured is in the dated Progress log below, the [README](README.md) and [docs/VIDEO.md](docs/VIDEO.md); where they differ (hosting on Cloudflare rather than a Serverless Endpoint, say), they're right.
+
 **Hackathon:** Nebius x NVIDIA Global AI Hackathon
 **Track:** Coding and Agentic Engineering. Also aiming for the Best Use of Tavily bonus and the Most Valuable Feedback prize.
 **Deadline:** Fri Oct 30, 2026, 10:00am PT. **My target: submit Thu Oct 29 evening.**
@@ -19,7 +21,7 @@ Why this fits the judges: Token Factory's business is winning workloads from clo
 
 **Headline number** (the first thing a judge should see, in the video and at the top of every report):
 
-> Swapping the base URL alone: **X% quality**. After OpenPort: **Y% quality**, at **Z% of the cost**.
+> Swapping the base URL alone: **70%** of SupportDesk's cases pass. After OpenPort: **96%** (98% held out), at **19% of the cost** ($11.70 → $2.27 per 1,000 runs of each call; measured Oct 28).
 
 ## Facts checked (Oct 23)
 
@@ -90,7 +92,7 @@ flowchart LR
   - the "plain swap vs. OpenPort" headline number
   - then the PR link and the report
 
-  Vite + React frontend; FastAPI backend sending live updates via server-sent events. Deployed as a container on a **Nebius Serverless Endpoint**.
+  Vite + React frontend; FastAPI backend sending live updates via server-sent events. Planned as a container on a **Nebius Serverless Endpoint**; it runs on Cloudflare instead (see README).
 - **CLI** for developers: `openport scan | port | tune | pr`. A thin layer over the same code the dashboard calls.
 - **GitHub Action** (`openport/eval-gate`) for CI.
 - The demo repos come preloaded so judges can click one button.
@@ -124,7 +126,7 @@ Rejected: repos that already read a base URL from config (nothing to port), mult
 
 The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/VIDEO.md); this is the outline.
 
-- **0:00–0:15 The problem.** "Switching to open models is a three-line change. Almost nobody does it, because nobody can prove it won't break." Headline: plain swap **74%** (measured Oct 24, Nano) → OpenPort **Y%**, at **Z%** of the cost.
+- **0:00–0:15 The problem.** "Switching to open models is a three-line change. Almost nobody does it, because nobody can prove it won't break." Headline: plain swap **70%** → OpenPort **96%** (98% held out), at **19%** of the cost (measured Oct 28).
 - **0:15–0:30** Paste SupportDesk into the dashboard. The scan finds 5 calls across the OpenAI and Anthropic SDKs.
 - **0:30–1:10** The tuning board, live:
   - Nano misses a call → Tavily pulls Nemotron guidance → Ultra rewrites the prompt → it passes → locked.
@@ -139,8 +141,8 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 ### Submission requirements (from the Devpost page, checked Oct 24)
 
 - **Video:** 3 minutes or shorter, a **public YouTube** video showing the project working and how it uses Token Factory and Nemotron.
-- **Code:** a **public** repository with an open-source license visible at the top (MIT is in place; the repo is private until I submit).
-- **Working demo:** a URL to a hosted app or test build. The dashboard needs to be deployed (a Nebius Serverless Endpoint is encouraged). Backup that never expires: the static replay on GitHub Pages (`scripts/static_replay.py`, `.github/workflows/pages.yml`); when the repo goes public, set Settings > Pages > Source to GitHub Actions and run the `pages` workflow.
+- **Code:** a **public** repository with an open-source license visible at the top (MIT is in place).
+- **Working demo:** a URL to a hosted app or test build. Deployed at https://nebius.narralogy.com, on Cloudflare (a Nebius Serverless Endpoint was encouraged, but needs AI Cloud credit). Backup that never expires: the static replay on GitHub Pages (`scripts/static_replay.py`, `.github/workflows/pages.yml`); when the repo goes public, set Settings > Pages > Source to GitHub Actions and run the `pages` workflow.
 - **README:** setup instructions, how OpenPort uses Nemotron, where Token Factory helped, and any other Nebius tools used.
 - **Feedback** on Token Factory, AI Cloud and the NVIDIA models (FEEDBACK.md).
 - **Credits:** $25 of Token Factory credits via the [promo form](https://nebius.com/promo-code?utm_promo_event_code=2026-devpost-global-ai-hack&utm_promo_code_type=Token_Factory&utm_promo_activation_code=NEBIUS-DEVPOST-GLOBAL26) (activation code `NEBIUS-DEVPOST-GLOBAL26`), plus another $25 (and Tavily credits) by joining the free [Nebius Builders Program](https://dev.nebius.com/builders).
@@ -283,7 +285,7 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - 162 offline tests.
 
 **Sat 24 (night): the demo deck, and the fine-tune starts training.**
-- Slides: the [OpenPort demo deck](https://claude.ai/artifact/7sCexTSrzz65KbvYVCs4os) (private), 10 slides, one per beat of `docs/VIDEO.md`, with the voiceover in each slide's speaker notes. Pass rates match the PRs (all cases and held-out); the costs, the plain-swap headline and the URLs stay bracketed placeholders until the re-measure.
+- Slides: a 10-slide demo deck, one per beat of `docs/VIDEO.md`, with the voiceover in each slide's speaker notes (superseded by the video).
 - The fine-tune left the queue after 2 h 21 min and started training. The follower then stopped on a 500 from the events list while the job carried on; it now retries server errors at the next poll (up to 20 in a row), and the CLI says how to pick the job up again.
 - **The fine-tune succeeded** (Llama 3.1 8B LoRA, 14 minutes of training, 193,041 tokens), but its adapter won't download until the account has funds again (`402`). Next: `openport finetune --job ftjob-ba4f5926762e41f2ad0e612e9c9516ca` to download it, then serve it (a Dedicated Endpoint bills GPU-hours, so ask first, or vLLM on AI Cloud) and run the reply drafter's evals on it.
 - Found while checking the deck: the AuthKit upgrade recording predates quote checking, so re-record it once credit is back (`docs/VIDEO.md`).
@@ -349,13 +351,13 @@ The full voiceover, shot list and recording runbook are in [docs/VIDEO.md](docs/
 - **Bug 2, one call held the others back.** preflight ported 0 of 4 in two runs, each time because one call (a different one each time) missed the held-out bar by a case, and all four reach their client through the one `get_client()` factory. The port now splits a factory-built client the way it already split a module-level one: the calls that pass get a second, cached factory on Nemotron beside the original (`get_client_nemotron()`), and the call that stays keeps `get_client()` untouched. Re-tuned and re-ported: **3 of 4 move** (two on Nano, the diff analyzer on Super, all at 100% held out), $16.72 → $0.81 per thousand runs of each (95% less); the main review pass stays at 85% held out. The dashboard recording made right after moved **4 of 4**, the review pass on Nano at 96% held out, $22.08 → $1.32 (94% less): the review pass sits near the bar and lands either side from run to run, which is the case the split is for.
 - **Bug 3, a misleading reason.** A call that missed only the held-out bar said "no Nemotron tier reached 90% (best: nano at 96%)". It now says which bar it missed: "no Nemotron tier reached 90% on the held-out cases (best: super, 92% overall but 85% held out)".
 - **Hosting on Cloudflare, not AI Cloud.** The hackathon's FAQ counts Token Factory calls as using the platform and gives no AI Cloud credit, so the dashboard runs as the same Docker image in a Cloudflare Container behind a Worker at `nebius.narralogy.com` (`deploy/cloudflare/live`, keys as Worker secrets, one instance that sleeps when idle), with the static replay as a free fallback (`deploy/cloudflare/replay`). Both dry-run clean; the image replays the recordings with no keys. Serverless Jobs, the Serverless Endpoint and serving the student stay built but unclaimed.
-- 245 offline tests.
+- 245 offline tests (273 by Oct 29).
 - **The demo video, built end to end** (`video/`, 2:47): narration in Nick's cloned voice on Cartesia, screen captures of the real dashboard replaying the Oct 28 recordings with each event moved onto its narration cue, motion slides rendered frame by frame, captions lit word by word, a synthesized music bed ducked under the voice, mastered to −14 LUFS. The CI beat shows a real `openport check` failing a trimmed triage prompt (10%, 3 of 31). `docs/VIDEO.md` maps each judging criterion to the moment that shows it. Left: the YouTube upload.
 - **The video, re-cut Oct 29** (2:52): the dashboard shots re-captured in the restyled look; the port scene's pull request is the real one on GitHub (narralogy-labs/supportdesk#1); the upgrade scene is learn-claude-code (79k stars, 48 advisories, its own CI, Super's fix undone, Ultra's passing) in place of AuthKit. Left: the YouTube upload, `video/out/openport-demo.mp4`.
 
-**Still open for Fri 23:**
+**Fri 23 setup (all done):**
 - Done (Oct 24): API keys added; `openport smoke` and `openport baseline examples/supportdesk` run live.
-- Done (Oct 24): GitHub repo created at NMooreCo/openport (private until submission).
+- Done (Oct 24): GitHub repo created at NMooreCo/openport (public at submission).
 - Done (Oct 24): both credit grants requested (promo form and Builders Program).
 - Done: demo repos chosen (preflight + probly; see Demo targets).
 
@@ -389,5 +391,5 @@ Pitch: "OpenPort keeps your app open and current. It moves your LLM calls onto o
 
 - Backend / agent: Python 3.12, FastAPI, the `openai` SDK pointed at Token Factory, `tavily-python`, tree-sitter for the TypeScript scan, and the GitHub REST API for branches and PRs.
 - Frontend: Vite + React + Tailwind, live updates via server-sent events.
-- Compute: Token Factory (inference + fine-tuning), Nebius Serverless Jobs (eval runs), Nebius Serverless Endpoint (hosting).
+- Compute: Token Factory (inference + fine-tuning). Planned: Nebius Serverless Jobs (eval runs) and a Serverless Endpoint (hosting), built but not run without AI Cloud credit; the dashboard runs on Cloudflare.
 - CI: a GitHub Action wrapping the CLI's eval command.

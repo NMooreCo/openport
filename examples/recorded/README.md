@@ -15,3 +15,4 @@ To record one, run the demo on a local dashboard (`openport serve`), then copy i
 | `port-receipts.json` | The receipt reader, Oct 28: gpt-4o-mini's image call on Nemotron 3.5 Super VL, 23 of 24 receipts, every held-out one |
 | `upgrade-authkit.json` | AuthKit, Oct 28: 15 advisories; PyJWT 1.7.1 → 2.14.0 and requests 2.31.0 → 2.33.0; tests 5 passed → 4 failed → 5 passed after Super's fix to `authkit/tokens.py`, quoting PyJWT's changelog |
 | `upgrade-authkit-node.json` | AuthKit (Node), Oct 24: jsonwebtoken 8.5.1 → 9.0.0, with its changelog's notes; 5 passed before and after |
+| `upgrade-learn-claude-code.json` | shareAI-lab/learn-claude-code's `web` project, Oct 29: 48 advisories in 6 packages, Next.js 16.1.6 → 16.4.1; its own CI (`npm ci`, `tsc --noEmit`, `next build`) passed → the build broke → Super's fix was undone → Ultra's root layout passed |

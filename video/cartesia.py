@@ -1,6 +1,6 @@
 """Cartesia text-to-speech for the demo video's narration: the voice lookup, and speech with word timestamps.
 
-The API key is read from the file named by CARTESIA_KEY_FILE (default C:\\Nick\\.cartesia) and never printed.
+The API key is read from the file named by CARTESIA_KEY_FILE (default ~/.cartesia) and never printed.
 """
 
 import base64
@@ -17,7 +17,7 @@ SAMPLE_RATE = 44100
 
 
 def _headers() -> dict:
-    key = Path(os.getenv("CARTESIA_KEY_FILE", r"C:\Nick\.cartesia")).read_text(encoding="utf-8").strip()
+    key = Path(os.getenv("CARTESIA_KEY_FILE", Path.home() / ".cartesia")).read_text(encoding="utf-8").strip()
     return {"Authorization": f"Bearer {key}", "Cartesia-Version": VERSION}
 
 

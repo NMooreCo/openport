@@ -15,8 +15,8 @@ anyone with AI Cloud.
 
 `narralogy.com` must be a zone on the same Cloudflare account. On deploy, Wrangler adds the DNS record and
 certificate for `nebius.narralogy.com`; if that hostname already has a DNS record, delete it first. Redirect rules
-run before Workers, so the zone's own redirect to narralogy.ai ("Route To Narralogy.ai") skips this hostname
-(`http.host ne "nebius.narralogy.com"`); without that, visitors land on Narralogy. The zone's bot check also answers
+run before Workers, so any zone-wide redirect has to skip this hostname
+(`http.host ne "nebius.narralogy.com"`); without that, visitors land wherever it points. The zone's bot check also answers
 scripts like `curl` with a 403 challenge, which browsers pass on their own. The dashboard is also at
 `https://openport-dashboard.nmooreco.workers.dev`, which no zone rule touches. Start Docker, then:
 
@@ -38,13 +38,13 @@ The container uses the `durable_object` scheduling policy (Cloudflare wouldn't c
 the Worker's Durable Object starts it: it picks the image and the instance size, waits for the server inside to
 answer, and forwards every request to it.
 
-Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (1, set in `live/wrangler.jsonc`). The
+Live runs stop for the day once they've spent `OPENPORT_DAILY_BUDGET_USD` (5, set in `live/wrangler.jsonc`). The
 server forgets that when the container sleeps, so the Worker also counts the new runs started each UTC day in its
-Durable Object's storage: past `NEW_RUNS_PER_DAY` (20), it tells the server to only show runs it already has (the
+Durable Object's storage: past `NEW_RUNS_PER_DAY` (30), it tells the server to only show runs it already has (the
 recorded demos always play). A deploy that brings a new image replaces the running container at the next request. One
 instance serves everyone, so a run started by one visitor streams to the next. A live run's result lasts until the
 container sleeps; the recordings are in the image, so the demos always come back. There's no Docker inside the
-container, so a live upgrade stops after choosing safe versions; the AuthKit demo replays its recording.
+container, so a live upgrade stops after choosing safe versions; the upgrade demos (AuthKit, its Node twin and learn-claude-code) replay their recordings.
 
 ### Live runs for the judges
 
