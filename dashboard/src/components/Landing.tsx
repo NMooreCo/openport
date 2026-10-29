@@ -1,11 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import * as api from "../api";
 import { useSite } from "../site";
 import { JudgeUnlock } from "./JudgeUnlock";
 import type { Mode } from "./Launcher";
 import { CountUp, Reveal, useCount, useInView } from "./landing/motion";
-import { NetworkCanvas } from "./landing/NetworkCanvas";
-import { PrCard } from "./landing/PrCard";
+import { PortFlow } from "./landing/PortFlow";
 
 const REPO = "https://github.com/NMooreCo/openport";
 
@@ -178,9 +177,22 @@ function UpgradeTimeline() {
   );
 }
 
+/** Whether the page has scrolled off its top, where the header gets its own background. */
+function useScrolled(): boolean {
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const update = () => setScrolled(window.scrollY > 8);
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    return () => window.removeEventListener("scroll", update);
+  }, []);
+  return scrolled;
+}
+
 /** The front page: what OpenPort is, what it proved, how it's built, and the demos to try. */
 export function Landing() {
   const site = useSite();
+  const scrolled = useScrolled();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const video = site?.video_url ? youtubeId(site.video_url) : null;
@@ -198,8 +210,14 @@ export function Landing() {
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[#05070d] text-slate-200">
-      <header className="fixed inset-x-0 top-3 z-50 px-3 sm:top-4">
-        <nav className="glass mx-auto flex max-w-6xl items-center justify-between gap-3 rounded-2xl px-4 py-2.5 sm:px-5">
+      {/* Clear over the hero; once scrolled, near-opaque, so the page passing under it never shows through (some
+          browsers draw no backdrop blur) */}
+      <header
+        className={`fixed inset-x-0 top-0 z-50 border-b transition-colors duration-300 ${
+          scrolled ? "border-white/10 bg-[#05070d]/90 backdrop-blur-xl" : "border-transparent"
+        }`}
+      >
+        <nav className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
           <a href="#" className="flex items-center gap-2 font-display text-lg font-semibold text-white">
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400 to-cyan-500 shadow-[0_0_18px_rgba(52,211,153,0.5)]" aria-hidden>
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="#04121a" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
@@ -218,26 +236,26 @@ export function Landing() {
         </nav>
       </header>
 
-      <section className="relative isolate flex min-h-[100svh] items-center overflow-hidden pt-28 pb-20">
-        <NetworkCanvas className="absolute inset-0 -z-10 h-full w-full opacity-80" />
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(60rem_40rem_at_15%_20%,rgba(16,185,129,0.16),transparent_60%),radial-gradient(50rem_35rem_at_85%_70%,rgba(34,211,238,0.12),transparent_60%)]" aria-hidden />
+      <section className="relative isolate overflow-hidden pt-28 pb-24 sm:pt-32">
+        <div className="hero-grid absolute inset-0 -z-10" aria-hidden />
+        <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(50rem_32rem_at_50%_8%,rgba(16,185,129,0.16),transparent_65%),radial-gradient(45rem_30rem_at_50%_75%,rgba(34,211,238,0.10),transparent_65%)]" aria-hidden />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-40 bg-gradient-to-b from-transparent to-[#05070d]" aria-hidden />
-        <div className="mx-auto grid w-full max-w-6xl items-center gap-14 px-4 lg:grid-cols-[1.2fr_1fr]">
+        <div className="mx-auto max-w-6xl px-4 text-center">
           <Reveal>
             <span className="glass inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs text-slate-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
               Nebius × NVIDIA Global AI Hackathon · Coding and Agentic Engineering
             </span>
-            <h1 className="mt-6 font-display text-5xl leading-[1.02] font-semibold tracking-tight text-white sm:text-7xl">
+            <h1 className="mt-7 font-display text-5xl leading-[1.02] font-semibold tracking-tight text-white sm:text-7xl">
               Move to open models.
               <br />
               <span className="text-gradient">Prove it first.</span>
             </h1>
-            <p className="mt-6 max-w-xl text-lg leading-relaxed text-slate-300">
+            <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-slate-300">
               OpenPort is an agent that finds every OpenAI and Anthropic call in your code, tests each one on NVIDIA Nemotron via Nebius
               Token Factory, tunes it until it passes, and opens the pull request with the evidence.
             </p>
-            <div className="mt-9 flex flex-wrap items-center gap-3">
+            <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
               <button
                 disabled={Boolean(busy)}
                 onClick={() => open(DEMOS[0])}
@@ -247,18 +265,10 @@ export function Landing() {
               </button>
               <a href="#app" className="glass rounded-xl px-6 py-3.5 text-sm font-medium text-white transition hover:border-emerald-400/40">Open the dashboard</a>
             </div>
-            <a href="#how" onClick={scrollTo("how")} className="mt-6 inline-block text-sm text-slate-400 underline decoration-white/20 underline-offset-4 hover:text-white">
-              See how it works
-            </a>
           </Reveal>
-          <Reveal delay={200}>
-            <PrCard />
+          <Reveal delay={250} className="mt-16">
+            <PortFlow />
           </Reveal>
-        </div>
-        <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 sm:block" aria-hidden>
-          <div className="flex h-9 w-6 justify-center rounded-full border border-white/25 pt-2">
-            <span className="scroll-hint h-1.5 w-1 rounded-full bg-white/70" />
-          </div>
         </div>
       </section>
 

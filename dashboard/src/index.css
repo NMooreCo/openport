@@ -40,18 +40,30 @@ body {
 }
 .reveal { opacity: 0; transform: translateY(26px); transition: opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1), transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1); }
 .reveal.in { opacity: 1; transform: none; }
-.float { animation: float 7s ease-in-out infinite; }
 .travel { animation: travel 3.6s cubic-bezier(0.55, 0, 0.45, 1) infinite; }
 .ring-pulse { animation: ring-pulse 3.6s ease-out infinite; }
 @keyframes shimmer { to { background-position: 220% center; } }
-@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
 @keyframes travel { from { left: 0%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } to { left: 100%; opacity: 0; } }
 @keyframes ring-pulse { 0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); } 70%, 100% { box-shadow: 0 0 0 14px rgba(52, 211, 153, 0); } }
-@keyframes scroll-hint { 0% { transform: translateY(0); opacity: 1; } 80% { transform: translateY(10px); opacity: 0; } 100% { opacity: 0; } }
-.scroll-hint { animation: scroll-hint 1.8s ease-in-out infinite; }
+/* The hero: a faint grid behind SupportDesk's calls flowing through the port. */
+.hero-grid {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 65% at 55% 40%, #000 30%, transparent 75%);
+  mask-image: radial-gradient(ellipse 75% 65% at 55% 40%, #000 30%, transparent 75%);
+}
+/* The port: an arc circling it, and a second, faster one the other way while a call is tested. */
+.gate-ring {
+  background: conic-gradient(transparent 0 55%, rgba(52, 211, 153, 0.2) 75%, #34d399 93%, #a7f3d0 96%, transparent 96.5%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  animation: gate-spin 4s linear infinite;
+}
+.gate-ring-fast { animation-duration: 1.2s; animation-direction: reverse; }
+@keyframes gate-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .reveal { opacity: 1; transform: none; transition: none; }
-  .text-gradient, .float, .travel, .ring-pulse, .scroll-hint { animation: none; }
+  .text-gradient, .travel, .ring-pulse, .gate-ring { animation: none; }
 }
 
 /* The PR description, rendered from Markdown. */
