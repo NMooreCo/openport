@@ -38,6 +38,55 @@ def test_parse_toml_lock():
     assert deps[0].source == "uv.lock"
 
 
+def test_a_lockfiles_own_project_and_local_or_git_packages_arent_pypi_releases():
+    # hermes-agent's uv.lock has the project itself as hermes-agent 0.0.0, a name PyPI's advisories also use
+    uv = """
+[[package]]
+name = "hermes-agent"
+version = "0.0.0"
+source = { editable = "." }
+
+[[package]]
+name = "helper"
+version = "0.1.0"
+source = { directory = "libs/helper" }
+
+[[package]]
+name = "forked"
+version = "1.0.0"
+source = { git = "https://github.com/acme/forked?rev=main#abc123" }
+
+[[package]]
+name = "tornado"
+version = "6.5.10"
+source = { registry = "https://pypi.org/simple" }
+"""
+    assert names(lockfiles.parse_toml_lock(uv, "uv.lock")) == {("tornado", "6.5.10")}
+    poetry = """
+[[package]]
+name = "mylib"
+version = "0.2.0"
+
+[package.source]
+type = "directory"
+url = "../mylib"
+
+[[package]]
+name = "internal"
+version = "3.0.0"
+
+[package.source]
+type = "legacy"
+url = "https://pypi.example.com/simple"
+reference = "private"
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+"""
+    assert names(lockfiles.parse_toml_lock(poetry, "poetry.lock")) == {("internal", "3.0.0"), ("requests", "2.31.0")}
+
+
 def test_parse_package_lock_v3():
     data = {
         "lockfileVersion": 3,

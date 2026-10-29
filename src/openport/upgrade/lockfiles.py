@@ -46,13 +46,24 @@ def parse_requirements(text: str) -> list[Dependency]:
     return deps
 
 
+def _from_registry(pkg: dict) -> bool:
+    """Whether a locked package came from a package index. The project itself (uv's `editable = "."`), a path or
+    git dependency isn't a release on PyPI, so another package's advisories under the same name aren't its."""
+    origin = pkg.get("source")
+    if not isinstance(origin, dict):
+        return True  # poetry.lock's PyPI packages have no source
+    if "type" in origin:  # poetry.lock: [package.source] type = "legacy" is a package index
+        return origin["type"] == "legacy"
+    return "registry" in origin  # uv.lock: registry, or editable, virtual, directory, path, git, url
+
+
 def parse_toml_lock(text: str, source: str) -> list[Dependency]:
     """uv.lock and poetry.lock both list packages as `[[package]]` tables with name and version."""
     data = tomllib.loads(text)
     deps: list[Dependency] = []
     for pkg in data.get("package", []):
         name, version = pkg.get("name"), pkg.get("version")
-        if name and version:
+        if name and version and _from_registry(pkg):
             deps.append(Dependency(str(name), str(version), "PyPI", source))
     return deps
 
