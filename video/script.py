@@ -36,7 +36,8 @@ SCENES = [
                 "at least a week, and runs the repo's own CI in a container. The upgrade breaks the build. "
                 "Nemotron Super's fix fails, so it's undone. Ultra's fix passes, and it's proven."),
     ("built", "Every model inside OpenPort is Nemotron on Token Factory. Nano reads pricing pages. Super writes test inputs and fixes code. "
-              "Ultra tunes prompts and judges answers. Super VL takes the calls that read images. And Tavily grounds every change in a quoted source."),
+              "Ultra tunes prompts and judges answers. Super VL takes the calls that read images. "
+              "And Tavily brings in what no model was trained on: NVIDIA's guidance, changelogs and prices, every quote checked word for word."),
     ("close", "Open models, proven before you ship. OpenPort. Prove it, then port it. Try it now at nebius dot narralogy dot com."),
 ]
 

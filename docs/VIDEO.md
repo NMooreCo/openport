@@ -1,6 +1,6 @@
 # Demo video
 
-2:52, for a public YouTube upload. The hackathon asks for 3 minutes or less "showing your project working — how
+2:58, for a public YouTube upload. The hackathon asks for 3 minutes or less "showing your project working — how
 you used Nebius Token Factory and NVIDIA Nemotron". The video is built end to end by [`video/`](../video/README.md):
 narration in Nick's voice (Cartesia), screen captures of the real dashboard replaying the Oct 28 and 29 recordings, motion
 slides, captions and a synthesized music bed. To change a line, edit `video/script.py` and rebuild.
@@ -14,7 +14,7 @@ slides, captions and a synthesized music bed. To change a line, edit `video/scri
 | Potential impact: a real problem for a real audience, shown working | 0:00 lock-in with no proof the switch is safe; 1:28 preflight, code I didn't write, 94% cheaper; the field study (207 calls in the 20 most-starred AI apps, 79 moved as-is; 19 of 20 pin a vulnerable dependency) |
 | Quality of the idea: creative use of Token Factory and Nemotron | an agent that proves a model swap before making it, tuning each call onto the cheapest Nemotron tier that passes; Nemotron fixing the code a security upgrade broke, Super first, then Ultra |
 | Coding and Agentic Engineering track: agents that write, run and test code | it runs each call's code against labelled cases, writes the port and the PR, runs a real repo's own CI in a container, and fixes the code |
-| Best Use of Tavily | 0:44 NVIDIA's guidance for the exact model; 2:22 every change grounded in a quoted source (guidance, changelogs, pricing) |
+| Best Use of Tavily | 0:44 NVIDIA's guidance for the exact model; 2:22 what no model was trained on: NVIDIA's guidance, changelogs and prices, every quote checked word for word |
 
 ## Narration
 
@@ -30,8 +30,8 @@ slides, captions and a synthesized music bed. To change a line, edit `video/scri
 | 1:28 | It works on code I didn't write. Preflight, an open-source AI code reviewer: all four Claude Opus calls move, ninety-four percent cheaper. Across the twenty most-starred open-source AI apps, OpenPort finds two hundred seven LLM calls, and moves seventy-nine of them as they are. | preflight's run and tiles; the field study |
 | 1:47 | And it keeps you honest. A GitHub Action reruns the evals on every pull request. Break a prompt, and the build fails. | A PR trimming the triage prompt; the real `openport check` output: 10% (3/31), FAIL |
 | 1:55 | Nineteen of those twenty apps also pin a dependency with a known vulnerability. So the same agent fixes those too. On learn-claude-code, a repo with seventy-nine thousand stars, it finds forty-eight advisories, picks fixes that have been out at least a week, and runs the repo's own CI in a container. The upgrade breaks the build. Nemotron Super's fix fails, so it's undone. Ultra's fix passes, and it's proven. | 19 of 20; the upgrade run: 48 advisories, next 16.1.6 → 16.4.1 (14 days old), the CI timeline: passing, the build broken, Super's fix undone, Ultra's passing |
-| 2:22 | Every model inside OpenPort is Nemotron on Token Factory. Nano reads pricing pages. Super writes test inputs and fixes code. Ultra tunes prompts and judges answers. Super VL takes the calls that read images. And Tavily grounds every change in a quoted source. | The architecture card, each model lit as it's named (Ultra's card adds that it fixes the code Super can't) |
-| 2:41 | Open models, proven before you ship. OpenPort. Prove it, then port it. Try it now at nebius dot narralogy dot com. | The URL, the repo, the stack |
+| 2:22 | Every model inside OpenPort is Nemotron on Token Factory. Nano reads pricing pages. Super writes test inputs and fixes code. Ultra tunes prompts and judges answers. Super VL takes the calls that read images. And Tavily brings in what no model was trained on: NVIDIA's guidance, changelogs and prices, every quote checked word for word. | The architecture card, each model lit as it's named (Ultra's card adds that it fixes the code Super can't) |
+| 2:46 | Open models, proven before you ship. OpenPort. Prove it, then port it. Try it now at nebius dot narralogy dot com. | The URL, the repo, the stack |
 
 Not claimed, because they weren't run: Serverless Jobs and the Serverless Endpoint (they need AI Cloud credit, which
 the hackathon doesn't provide; the code and tests are in the repo), and the fine-tuned student (not yet served or
