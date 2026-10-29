@@ -8,7 +8,7 @@ number it says or shows comes from those recordings, the field study or a real `
 |---|---|---|
 | Narration | `uv run --no-sync python video/script.py narrate [scene ...]` | `out/narration/<scene>.wav` and word timings |
 | Timeline | `uv run --no-sync python video/timeline.py` | prints where each scene sits |
-| Dashboard shots | `uv run --no-project --with playwright --with httpx python video/capture.py [shot ...]` | `out/shots/{supportdesk,preflight,authkit}.mp4` |
+| Dashboard shots | `uv run --no-project --with playwright --with httpx python video/capture.py [shot ...]` | `out/shots/{supportdesk,preflight,upgrade}.mp4` |
 | Slides | `uv run --no-project --with playwright python video/render_slides.py [slide ...]` | `out/shots/slide-*.mp4` |
 | Music | `uv run --no-project --with numpy python video/music.py` | `out/music.wav` |
 | Cut | `uv run --no-project --with numpy python video/build.py` | `out/openport-demo.mp4`, a voice-only copy, `out/thumbnail.png` |

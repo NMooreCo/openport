@@ -1,20 +1,20 @@
 # Demo video
 
-2:47, for a public YouTube upload. The hackathon asks for 3 minutes or less "showing your project working — how
+2:52, for a public YouTube upload. The hackathon asks for 3 minutes or less "showing your project working — how
 you used Nebius Token Factory and NVIDIA Nemotron". The video is built end to end by [`video/`](../video/README.md):
-narration in Nick's voice (Cartesia), screen captures of the real dashboard replaying the Oct 28 recordings, motion
+narration in Nick's voice (Cartesia), screen captures of the real dashboard replaying the Oct 28 and 29 recordings, motion
 slides, captions and a synthesized music bed. To change a line, edit `video/script.py` and rebuild.
 
 ## What it covers, against the judging criteria
 
 | Criterion | Where the video shows it |
 |---|---|
-| Technological implementation: how well it's built, how it uses Token Factory and Nemotron | 0:31–1:27 the agent runs the app's own code on Nemotron via Token Factory, Tavily research, Ultra tuning up the Nano → Super → Ultra ladder with held-out cases, the code diff and PR; 2:17 every model inside OpenPort is Nemotron |
-| Design: a complete product, not a proof of concept | the hosted dashboard throughout, the PR with its evidence, the GitHub Action gate (1:46), the upgrader (1:54), the URL and repo at the close |
-| Potential impact: a real problem for a real audience, shown working | 0:00 lock-in with no proof the switch is safe; 1:27 preflight, code I didn't write, 94% cheaper; the field study (207 calls in the 20 most-starred AI apps, 79 moved as-is; 19 of 20 pin a vulnerable dependency) |
-| Quality of the idea: creative use of Token Factory and Nemotron | an agent that proves a model swap before making it, tuning each call onto the cheapest Nemotron tier that passes; Nemotron fixing the code a security upgrade broke |
-| Coding and Agentic Engineering track: agents that write, run and test code | it runs each call's code against labelled cases, writes the port and the PR, runs the app's tests in a container, and fixes the code |
-| Best Use of Tavily | 0:44 NVIDIA's guidance for the exact model; 2:17 every change grounded in a quoted source (guidance, changelogs, pricing) |
+| Technological implementation: how well it's built, how it uses Token Factory and Nemotron | 0:31–1:27 the agent runs the app's own code on Nemotron via Token Factory, Tavily research, Ultra tuning up the Nano → Super → Ultra ladder with held-out cases, the code diff and the real PR on GitHub; 2:22 every model inside OpenPort is Nemotron |
+| Design: a complete product, not a proof of concept | the hosted dashboard throughout, the PR with its evidence, the GitHub Action gate (1:47), the upgrader (1:55) on a 79k-star repo, the URL and repo at the close |
+| Potential impact: a real problem for a real audience, shown working | 0:00 lock-in with no proof the switch is safe; 1:28 preflight, code I didn't write, 94% cheaper; the field study (207 calls in the 20 most-starred AI apps, 79 moved as-is; 19 of 20 pin a vulnerable dependency) |
+| Quality of the idea: creative use of Token Factory and Nemotron | an agent that proves a model swap before making it, tuning each call onto the cheapest Nemotron tier that passes; Nemotron fixing the code a security upgrade broke, Super first, then Ultra |
+| Coding and Agentic Engineering track: agents that write, run and test code | it runs each call's code against labelled cases, writes the port and the PR, runs a real repo's own CI in a container, and fixes the code |
+| Best Use of Tavily | 0:44 NVIDIA's guidance for the exact model; 2:22 every change grounded in a quoted source (guidance, changelogs, pricing) |
 
 ## Narration
 
@@ -26,12 +26,12 @@ slides, captions and a synthesized music bed. To change a line, edit `video/scri
 | 0:31 | Then it runs each call, the app's own code, on NVIDIA Nemotron, served by Nebius Token Factory, against hand-labeled cases. Swapped in as written, the reply drafter passes nothing. | Attempts land; the reply drafter's "Nano 0%" |
 | 0:44 | So the agent goes to work. Tavily pulls NVIDIA's own guidance for that exact model. Nemotron Ultra reads the failures and rewrites the prompt and settings. Each fix is retested on Nano first, then Super, then Ultra, and it only counts if it passes cases Ultra never saw. | Tavily's sources; the tiers climbing; "Passes on Ultra … held-out" |
 | 1:02 | All five calls move. A plain swap passed seventy percent of their cases; now it's ninety-six, and ninety-eight on cases tuning never saw. Cost per thousand runs: eleven seventy, down to two twenty-seven. | The tiles, spotlit as they're said |
-| 1:16 | Then it writes the code: precise edits, a small runtime that runs Anthropic SDK code on Nemotron, and a pull request with every number and every source. | Code changes, then the PR table |
-| 1:27 | It works on code I didn't write. Preflight, an open-source AI code reviewer: all four Claude Opus calls move, ninety-four percent cheaper. Across the twenty most-starred open-source AI apps, OpenPort finds two hundred seven LLM calls, and moves seventy-nine of them as they are. | preflight's run and tiles; the field study |
-| 1:46 | And it keeps you honest. A GitHub Action reruns the evals on every pull request. Break a prompt, and the build fails. | A PR trimming the triage prompt; the real `openport check` output: 10% (3/31), FAIL |
-| 1:54 | Nineteen of those twenty apps also pin a dependency with a known vulnerability. So the same agent fixes those too. In AuthKit, it finds fifteen advisories, picks the fix that's been out at least a week, and runs the app's own tests in a container. Four break. Nemotron Super reads the changelog, fixes the code, never the tests, and all five pass. | 19 of 20; the upgrade run: advisories, 1.7.1 → 2.14.0 (47 days old), the test timeline, Super's quoted fix |
-| 2:17 | Every model inside OpenPort is Nemotron on Token Factory. Nano reads pricing pages. Super writes test inputs and fixes code. Ultra tunes prompts and judges answers. Super VL takes the calls that read images. And Tavily grounds every change in a quoted source. | The architecture card, each model lit as it's named |
-| 2:35 | Open models, proven before you ship. OpenPort. Prove it, then port it. Try it now at nebius dot narralogy dot com. | The URL, the repo, the stack |
+| 1:16 | Then it writes the code: precise edits, a small runtime that runs Anthropic SDK code on Nemotron, and a real pull request on GitHub, with every number and every source. | Code changes, then the PR: its link on GitHub (narralogy-labs/supportdesk#1) and its table |
+| 1:28 | It works on code I didn't write. Preflight, an open-source AI code reviewer: all four Claude Opus calls move, ninety-four percent cheaper. Across the twenty most-starred open-source AI apps, OpenPort finds two hundred seven LLM calls, and moves seventy-nine of them as they are. | preflight's run and tiles; the field study |
+| 1:47 | And it keeps you honest. A GitHub Action reruns the evals on every pull request. Break a prompt, and the build fails. | A PR trimming the triage prompt; the real `openport check` output: 10% (3/31), FAIL |
+| 1:55 | Nineteen of those twenty apps also pin a dependency with a known vulnerability. So the same agent fixes those too. On learn-claude-code, a repo with seventy-nine thousand stars, it finds forty-eight advisories, picks fixes that have been out at least a week, and runs the repo's own CI in a container. The upgrade breaks the build. Nemotron Super's fix fails, so it's undone. Ultra's fix passes, and it's proven. | 19 of 20; the upgrade run: 48 advisories, next 16.1.6 → 16.4.1 (14 days old), the CI timeline: passing, the build broken, Super's fix undone, Ultra's passing |
+| 2:22 | Every model inside OpenPort is Nemotron on Token Factory. Nano reads pricing pages. Super writes test inputs and fixes code. Ultra tunes prompts and judges answers. Super VL takes the calls that read images. And Tavily grounds every change in a quoted source. | The architecture card, each model lit as it's named (Ultra's card adds that it fixes the code Super can't) |
+| 2:41 | Open models, proven before you ship. OpenPort. Prove it, then port it. Try it now at nebius dot narralogy dot com. | The URL, the repo, the stack |
 
 Not claimed, because they weren't run: Serverless Jobs and the Serverless Endpoint (they need AI Cloud credit, which
 the hackathon doesn't provide; the code and tests are in the repo), and the fine-tuned student (not yet served or
@@ -48,7 +48,7 @@ Read off the recordings the video replays, so the narration matches the screen:
 | preflight: 4 of 4, $22.08 → $1.32 (94% less) | `examples/recorded/port-preflight.json`, re-recorded Oct 28 after the factory split: the diff analyzer and standards pass on Super, the PR describer and the review pass on Nano, all at 96% or more held out; $0.07 own cost |
 | 207 calls, 79 moved; 19 of 20 apps with a vulnerable pin | `docs/FIELD-STUDY.md`, rerun Oct 28 (unchanged) |
 | 10% (3/31), needs 90%: FAIL | `openport check` on the ported SupportDesk with the triage prompt's priority rules deleted, run Oct 28 |
-| 15 advisories, PyJWT 1.7.1 → 2.14.0, 5 pass → 4 fail → 5 pass | `examples/recorded/upgrade-authkit.json`, re-recorded live Oct 28, each change quoted from PyJWT's changelog |
+| learn-claude-code: 79k stars, 48 advisories in 6 packages (postcss is pinned at two versions, so the dashboard counts 7), none left open, CI passing → build broken → Super's fix undone → Ultra's passing | `examples/recorded/upgrade-learn-claude-code.json`, recorded live Oct 29 on shareAI-lab/learn-claude-code's `web` project; its CI is `npm ci`, `tsc --noEmit`, `next build`; the pull request is narralogy-labs/shareAI-lab-learn-claude-code#1, on a fork |
 
 The review pass is preflight's borderline call. The recording moved it (99% of its cases, 96% held out), but the
 runbook's own tuning run just before it kept it (92% overall, 85% held out) and moved the other three, $16.72 →

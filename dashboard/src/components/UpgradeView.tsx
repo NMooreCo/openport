@@ -37,10 +37,10 @@ function UpgradeMetrics({ state }: { state: UpgradeState }) {
     tests = state.pr.proven
       ? { value: "Proven", sub: `pass before and after: ${shortSummary(final)}`, tone: "text-pass" }
       : { value: "Not proven", sub: state.before?.ok ? `after the upgrade: ${shortSummary(final)}` : "already failing before the upgrade", tone: "text-fail" };
-  } else if (final) {
-    tests = { value: shortSummary(final), sub: "after the upgrade", tone: final.ok ? "text-pass" : "text-fail" };
+  } else if (final) {  // a summary can be a whole CI line: it goes under the verdict
+    tests = { value: final.ok ? "Passing" : "Failing", sub: `after the upgrade: ${shortSummary(final)}`, tone: final.ok ? "text-pass" : "text-fail" };
   } else if (state.before) {
-    tests = { value: shortSummary(state.before), sub: "before the upgrade", tone: "text-white" };
+    tests = { value: state.before.ok ? "Passing" : "Failing", sub: `before the upgrade: ${shortSummary(state.before)}`, tone: "text-white" };
   }
 
   return (

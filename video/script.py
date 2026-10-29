@@ -1,7 +1,7 @@
 """The demo video's narration, one entry per scene, and the step that voices it.
 
 Every number here is read off the recordings the video shows (docs/VIDEO.md, "Numbers"), the field study
-(docs/FIELD-STUDY.md) or the AuthKit upgrade recording. Numbers are spelled out so the voice reads them as meant.
+(docs/FIELD-STUDY.md) or the learn-claude-code upgrade recording. Numbers are spelled out so the voice reads them as meant.
 
 Usage: uv run --no-sync python video/script.py narrate [scene ...]   (writes video/out/narration/<scene>.wav + .json)
 """
@@ -27,13 +27,14 @@ SCENES = [
     ("result", "All five calls move. A plain swap passed seventy percent of their cases; now it's ninety-six, "
                "and ninety-eight on cases tuning never saw. Cost per thousand runs: eleven seventy, down to two twenty-seven."),
     ("code", "Then it writes the code: precise edits, a small runtime that runs Anthropic SDK code on Nemotron, "
-             "and a pull request with every number and every source."),
+             "and a real pull request on GitHub, with every number and every source."),
     ("real", "It works on code I didn't write. Preflight, an open-source AI code reviewer: all four Claude Opus calls move, ninety-four percent cheaper. "
              "Across the twenty most-starred open-source AI apps, OpenPort finds two hundred seven LLM calls, and moves seventy-nine of them as they are."),
     ("ci", "And it keeps you honest. A GitHub Action reruns the evals on every pull request. Break a prompt, and the build fails."),
     ("upgrade", "Nineteen of those twenty apps also pin a dependency with a known vulnerability. So the same agent fixes those too. "
-                "In AuthKit, it finds fifteen advisories, picks the fix that's been out at least a week, and runs the app's own tests in a container. "
-                "Four break. Nemotron Super reads the changelog, fixes the code, never the tests, and all five pass."),
+                "On learn-claude-code, a repo with seventy-nine thousand stars, it finds forty-eight advisories, picks fixes that have been out "
+                "at least a week, and runs the repo's own CI in a container. The upgrade breaks the build. "
+                "Nemotron Super's fix fails, so it's undone. Ultra's fix passes, and it's proven."),
     ("built", "Every model inside OpenPort is Nemotron on Token Factory. Nano reads pricing pages. Super writes test inputs and fixes code. "
               "Ultra tunes prompts and judges answers. Super VL takes the calls that read images. And Tavily grounds every change in a quoted source."),
     ("close", "Open models, proven before you ship. OpenPort. Prove it, then port it. Try it now at nebius dot narralogy dot com."),

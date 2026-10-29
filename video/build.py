@@ -30,7 +30,7 @@ CUTS = [
     ("slide-field", cue("real", "Across") - 0.25),
     ("slide-ci", span("ci")[0]),
     ("slide-vuln", span("upgrade")[0]),
-    ("authkit", cue("upgrade", "So") - 0.35),
+    ("upgrade", cue("upgrade", "So") - 0.35),
     ("slide-built", span("built")[0]),
     ("slide-close", span("close")[0]),
 ]

@@ -18,7 +18,7 @@
   // inside the element `within` names, if any.
   const starts = (e, text) => e.textContent.trim().startsWith(text);
   const find = (text, closest, within) => {
-    const scope = within ? find(within, "article, section, li, div.rounded-xl") : document;
+    const scope = within ? find(within, "article, section, li, div.panel") : document;
     if (!scope) return null;
     for (const e of scope.querySelectorAll("body *")) {
       if (!starts(e, text) || [...e.children].some((c) => starts(c, text)) || e.closest("#__cursor, script, style")) continue;
@@ -125,6 +125,7 @@
       let alive = true;
       const follow = () => {
         if (!alive) return;
+        if (!el.isConnected) el = find(text, closest, within) || el;  // re-rendered as a new element: a step that finished
         const r = el.getBoundingClientRect();
         Object.assign(ring.style, { left: `${r.left - pad}px`, top: `${r.top - pad}px`, width: `${r.width + 2 * pad}px`, height: `${r.height + 2 * pad}px` });
         requestAnimationFrame(follow);

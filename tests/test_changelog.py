@@ -131,7 +131,8 @@ def test_the_cheapest_tavily_call_that_finds_the_changelog_wins():
     tools = {"search": search, "extract": extract, "site_map": site_map, "homes_for": lambda dep: homes[dep.name]}
 
     found = changelog_digest(upgrade("jsonwebtoken", "8.5.1", "9.0.0", "npm"), **tools)
-    assert found.url == "https://github.com/auth0/node-jsonwebtoken/blob/HEAD/CHANGELOG.md" and found.title == "Change Log"
+    assert found.url == "https://github.com/auth0/node-jsonwebtoken/blob/HEAD/CHANGELOG.md"
+    assert found.title == "jsonwebtoken changelog"  # its file's own heading, "Change Log", doesn't say whose
     assert calls == [("extract", 8)]  # the repo's changelog files, read at once: no search needed
     calls.clear()
     found = changelog_digest(upgrade("PyJWT", "1.7.1", "2.0.0", "PyPI"), **tools)
@@ -146,3 +147,13 @@ def test_a_declared_changelog_is_read_before_guessing_at_the_repo():
     homes = ["https://requests.readthedocs.io", "https://github.com/psf/requests", "https://github.com/psf/requests/blob/main/HISTORY.md"]
     assert first_candidates(homes)[:2] == ["https://github.com/psf/requests/blob/main/HISTORY.md",
                                            "https://raw.githubusercontent.com/psf/requests/HEAD/CHANGELOG.md"]
+
+
+
+def test_a_changelog_page_is_named_for_its_package_when_its_heading_is_generic():
+    from openport.upgrade.changelog import _title
+
+    releases = "https://github.com/lovell/sharp/releases"
+    assert _title("## Navigation Menu\n\n## v0.35.5\n", "sharp", releases) == "sharp releases"  # GitHub's page chrome
+    assert _title("# Change Log\n\n## 8.5.23\n", "postcss", "https://github.com/postcss/postcss/blob/HEAD/CHANGELOG.md") == "postcss changelog"
+    assert _title("# Changelog — PyJWT\n", "PyJWT") == "Changelog — PyJWT"  # one that says whose stays

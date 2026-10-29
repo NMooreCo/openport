@@ -32,7 +32,7 @@ OPEN_DELAY = 0.05  # from a preset's click to its event stream opening (measured
 FPS = 30
 DEBUG = bool(os.getenv("CAPTURE_DEBUG"))  # print probes of the page's state during a take
 
-RUNS = {"supportdesk": "9b7c60061434", "preflight": "9c19765c2483", "authkit": "600f692beb03"}
+RUNS = {"supportdesk": "9b7c60061434", "preflight": "9c19765c2483", "upgrade": "9f2984826d79"}  # the last: learn-claude-code
 # Notes when each replayed event reaches the page, to check the schedule held.
 ARRIVALS = """(() => {
   window.__arrivals = [];
@@ -72,11 +72,11 @@ def v(call: str) -> str:
 
 def supportdesk() -> Shot:
     F, T, U, R, C = "find", "test", "tune", "result", "code"
-    shot = Shot("supportdesk", span(F)[0], span(C)[1], f"{BASE}/")
+    shot = Shot("supportdesk", span(F)[0], span(C)[1], f"{BASE}/#app")
     click = cue(F, "repo.") + 0.15
     shot.at(cue(F, "Point") - 0.1, v('moveTo("SupportDesk", "button", 800)'))
     shot.at(click, v('click("SupportDesk", "button")'))
-    shot.at(cue(F, "works") - 0.2, v("scrollTo(240, 1400)"))
+    shot.at(cue(F, "works") - 0.2, v('scrollToText("LLM calls found", "div.panel", 1400, 64)'))
     shot.at(cue(F, "JSON") - 0.1, v('spot("OpenAI · json", null, 1000, 6)'))
     shot.at(cue(F, "tools") - 0.1, v('spot("OpenAI · tools", null, 1400, 6)'))
     shot.at(span(T)[0] + 0.1, v("scrollTo(0, 900)"))
@@ -89,16 +89,17 @@ def supportdesk() -> Shot:
     shot.at(cue(U, "Nano") - 0.25, v('spot("Nano 0%", "ul, ol", 3700, 8)'))
     shot.at(cue(U, "passes") + 0.9, v('spot("Passes on", null, 2400, 8, "replies.draft_reply")'))
     shot.at(span(R)[0] + 0.05, v("scrollTo(0, 1000)"))
-    shot.at(cue(R, "plain") - 0.1, v('spot("Plain swap passes", "div.rounded-xl", 2500, 6)'))
-    shot.at(cue(R, "now") - 0.1, v('spot("After OpenPort", "div.rounded-xl", 3600, 6)'))
-    shot.at(cue(R, "Cost") - 0.15, v('spot("Cost per 1k", "div.rounded-xl", 3900, 6)'))
+    shot.at(cue(R, "plain") - 0.1, v('spot("Plain swap passes", "div.panel", 2500, 6)'))
+    shot.at(cue(R, "now") - 0.1, v('spot("After OpenPort", "div.panel", 3600, 6)'))
+    shot.at(cue(R, "Cost") - 0.15, v('spot("Cost per 1k", "div.panel", 3900, 6)'))
     shot.at(span(C)[0] + 0.05, v('scrollToText("Code changes", "section", 1200, 70)'))
     shot.at(cue(C, "writes") + 0.2, v('moveTo("Code changes", "button", 700)'))
     shot.at(cue(C, "code:") + 0.35, v('click("Code changes", "button")'))
     shot.at(cue(C, "precise") + 0.2, v("scrollBy(520, 4300)"))
     shot.at(cue(C, "and") - 0.9, v('scrollToText("Code changes", "section", 700, 70)'))
     shot.at(cue(C, "and") - 0.3, v('moveTo("Pull request", "button", 500)'))
-    shot.at(cue(C, "pull") - 0.05, v('click("Pull request", "button")'))
+    shot.at(cue(C, "real") - 0.05, v('click("Pull request", "button")'))
+    shot.at(cue(C, "GitHub,") - 0.2, v('spot("Opened on GitHub", "a", 1300, 6)'))
     shot.at(cue(C, "number") - 0.2, v('spot("Call", "table", 1900, 8)'))
 
     tune_events = {  # event index -> where it lands
@@ -119,12 +120,12 @@ def supportdesk() -> Shot:
 
 def preflight() -> Shot:
     S = "real"
-    shot = Shot("preflight", span(S)[0], cue(S, "Across") - 0.25, f"{BASE}/")
+    shot = Shot("preflight", span(S)[0], cue(S, "Across") - 0.25, f"{BASE}/#app")
     click = cue(S, "write.") - 0.2
     shot.at(span(S)[0] + 0.3, v('moveTo("jsliapark/preflight", "button", 900)'))
     shot.at(click, v('click("jsliapark/preflight", "button")'))
-    shot.at(cue(S, "move,") + 0.1, v('spot("After OpenPort", "div.rounded-xl", 1900, 6)'))
-    shot.at(cue(S, "ninety-four") - 0.1, v('spot("Cost per 1k", "div.rounded-xl", 2000, 6)'))
+    shot.at(cue(S, "move,") + 0.1, v('spot("After OpenPort", "div.panel", 1900, 6)'))
+    shot.at(cue(S, "ninety-four") - 0.1, v('spot("Cost per 1k", "div.panel", 2000, 6)'))
     first, settled = cue(S, "Preflight,") - 0.3, cue(S, "move,") - 1.4
     targets = [click + OPEN_DELAY + i * 0.12 for i in range(7)]
     targets += [first + (settled - first) * i / 7 for i in range(8)]  # the eight attempts
@@ -134,29 +135,30 @@ def preflight() -> Shot:
     return shot
 
 
-def authkit() -> Shot:
+def upgrade() -> Shot:
     S = "upgrade"
-    shot = Shot("authkit", cue(S, "So") - 0.35, span(S)[1], f"{BASE}/#upgrade")
-    click = cue(S, "In") - 0.1
-    shot.at(cue(S, "So") - 0.2, v('moveTo("AuthKit", "button", 1100)'))
-    shot.at(click, v('click("AuthKit", "button")'))
-    shot.at(cue(S, "fifteen") + 0.1, v('spot("Known advisories", "div.rounded-xl", 1300, 6)'))
-    shot.at(cue(S, "picks") - 0.1, v('spot("PyJWT", "article, div.rounded-xl", 2300, 6)'))
+    shot = Shot("upgrade", cue(S, "So") - 0.35, span(S)[1], f"{BASE}/#upgrade")
+    click = cue(S, "On") + 0.05
+    shot.at(cue(S, "So") - 0.2, v('moveTo("shareAI-lab/learn-claude-code", "button", 1100)'))
+    shot.at(click, v('click("shareAI-lab/learn-claude-code", "button")'))
+    shot.at(cue(S, "forty-eight") + 0.1, v('spot("Known advisories", "div.panel", 1300, 6)'))
+    shot.at(cue(S, "picks") - 0.1, v('spot("next", "article", 2300, 6)'))
     follow = cue(S, "container.") + 0.25  # once the changelogs are in above the tests, so the view moves once
     shot.at(follow, v(f'pin("The repo", "h2", 64, {(shot.end - follow) * 1000:.0f}, null, 0.22)'))
-    shot.at(cue(S, "Four") + 0.05, v('spot("After the version bump", "li", 1900, 6)'))
-    shot.at(cue(S, "fixes", 2) + 0.1, v('spot("Fix 1", "li", 4200, 6)'))
+    shot.at(cue(S, "breaks") + 0.05, v('spot("After the version bump", "li", 1900, 6)'))
+    shot.at(cue(S, "Super's") - 0.1, v('spot("Fix 1", "li", 2600, 6)'))
+    shot.at(cue(S, "Ultra's") - 0.1, v('spot("Fix 2", "li", 3000, 6)'))
     targets = [click + OPEN_DELAY, click + OPEN_DELAY + 0.1, click + OPEN_DELAY + 0.3,  # fetch, find, deps
-               cue(S, "fifteen") - 0.1, cue(S, "fifteen"),  # advisories, test stage
-               cue(S, "runs") + 0.4, cue(S, "container.") - 0.1, cue(S, "container.") + 0.2,  # before, bumped, changelogs
-               cue(S, "Four"), cue(S, "Four") + 0.1,  # after the bump, fix stage
-               cue(S, "reads"), cue(S, "fixes", 2),  # research, fix
-               cue(S, "fixes", 2) + 0.05, cue(S, "fixes", 2) + 0.1, cue(S, "fixes", 2) + 0.2, cue(S, "pass.")]
-    shot.click, shot.events[RUNS["authkit"]] = click, schedule(click, targets)
+               cue(S, "finds") + 0.1, cue(S, "forty-eight"),  # advisories, test stage
+               cue(S, "CI") + 0.2, cue(S, "container.") - 0.1, cue(S, "container.") + 0.2,  # before, bumped, changelogs
+               cue(S, "breaks"), cue(S, "breaks") + 0.1, cue(S, "build.") + 0.3,  # after the bump, fix stage, research
+               cue(S, "fails,"), cue(S, "passes,"),  # Super's fix, undone; Ultra's, passing
+               cue(S, "passes,") + 0.05, cue(S, "passes,") + 0.1, cue(S, "passes,") + 0.2, cue(S, "proven."), cue(S, "proven.") + 0.1]
+    shot.click, shot.events[RUNS["upgrade"]] = click, schedule(click, targets)
     return shot
 
 
-SHOTS = {"supportdesk": supportdesk, "preflight": preflight, "authkit": authkit}
+SHOTS = {"supportdesk": supportdesk, "preflight": preflight, "upgrade": upgrade}
 
 
 async def record(page: Page, shot: Shot, frames: Path) -> tuple[float, list[tuple[float, Path]]]:

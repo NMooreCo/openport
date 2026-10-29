@@ -194,9 +194,15 @@ def _display(url: str) -> str:
     return f"https://github.com/{raw[1]}/{raw[2]}/blob/HEAD/{raw[3]}" if raw else url
 
 
-def _title(markdown: str, name: str) -> str:
+# A first heading that doesn't say whose changelog it is: GitHub's page chrome, or the file's own bare title
+GENERIC_TITLE = re.compile(r"^(navigation menu|change ?log|changes|history|news|releases?|release notes)$", re.I)
+
+
+def _title(markdown: str, name: str, url: str = "") -> str:
     first = next((_clean(line.lstrip("#")) for line in markdown.splitlines() if re.match(r"#{1,2}\s+\S", line.strip())), "")
-    return first if first and not _version(first, name) and len(first) <= 80 else f"{name} changelog"
+    if first and not _version(first, name) and len(first) <= 80 and not GENERIC_TITLE.match(first):
+        return first
+    return f"{name} releases" if re.search(r"/releases/?$", url) else f"{name} changelog"
 
 
 def first_candidates(homes: list[str]) -> list[str]:
@@ -250,7 +256,7 @@ def changelog_digest(upgrade, *, search=None, extract=None, site_map=None, homes
         pages = extract(batch)
         for url in batch:
             markdown = pages.get(url)
-            if markdown and (found := digest(name, old, new, _display(url), _title(markdown, name), markdown)):
+            if markdown and (found := digest(name, old, new, _display(url), _title(markdown, name, url), markdown)):
                 return found
     return None
 
