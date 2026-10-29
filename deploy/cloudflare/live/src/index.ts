@@ -16,11 +16,16 @@ const RUN_STARTS = new Set(["/api/runs", "/api/upgrades"]);
 // Wrong passwords one address may try in an hour; past that its guesses aren't checked until the next hour.
 const MISSES_PER_HOUR = 20;
 
+const sha256 = (text: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+
 /** Whether two secrets match, taking the same time whatever they hold. */
 async function same(given: string, secret: string): Promise<boolean> {
-	const encode = (text: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-	const [a, b] = await Promise.all([encode(given), encode(secret)]);
+	const [a, b] = await Promise.all([sha256(given), sha256(secret)]);
 	return crypto.subtle.timingSafeEqual(a, b);
+}
+
+async function digest(text: string): Promise<string> {
+	return [...new Uint8Array(await sha256(text))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // `openport serve` in the repo's Dockerfile.
@@ -100,27 +105,30 @@ export class Dashboard extends DurableObject<Env> {
 	private async start(): Promise<void> {
 		const container = this.ctx.container!;
 		const image = container.images.dashboard;
-		if (container.running && (await this.ctx.storage.get<string>("image")) !== image) {
-			// A deploy brought a new image: replace the old container now rather than when it next idles out.
-			await container.destroy("a new image was deployed");
+		// Worker secrets reach the container as environment variables. One that isn't set is left out: with no
+		// keys the dashboard still replays its recorded runs.
+		const env = Object.fromEntries(
+			Object.entries({
+				NEBIUS_API_KEY: this.env.NEBIUS_API_KEY,
+				TAVILY_API_KEY: this.env.TAVILY_API_KEY,
+				OPENPORT_DAILY_BUDGET_USD: this.env.OPENPORT_DAILY_BUDGET_USD,
+			}).filter((entry): entry is [string, string] => Boolean(entry[1])),
+		);
+		// What the running container was started with, as a digest (no secret is stored). A deploy with a new image,
+		// or a new key or budget, replaces it now rather than when it next idles out.
+		const wanted = await digest(JSON.stringify([image, env]));
+		if (container.running && (await this.ctx.storage.get<string>("started-with")) !== wanted) {
+			await container.destroy("its image or settings changed");
 		}
 		if (!container.running) {
-			await this.ctx.storage.put("image", image);
+			await this.ctx.storage.put("started-with", wanted);
 			container.start({
 				image,
 				// 1/2 vCPU, 4 GiB, 8 GB disk.
 				instance: "standard-1",
 				// Live runs call Token Factory, Tavily and GitHub.
 				enableInternet: true,
-				// Worker secrets reach the container as environment variables. One that isn't set is left out: with no
-				// keys the dashboard still replays its recorded runs.
-				env: Object.fromEntries(
-					Object.entries({
-						NEBIUS_API_KEY: this.env.NEBIUS_API_KEY,
-						TAVILY_API_KEY: this.env.TAVILY_API_KEY,
-						OPENPORT_DAILY_BUDGET_USD: this.env.OPENPORT_DAILY_BUDGET_USD,
-					}).filter((entry): entry is [string, string] => Boolean(entry[1])),
-				),
+				env,
 			});
 		}
 		await container.setInactivityTimeout(IDLE_MS);
