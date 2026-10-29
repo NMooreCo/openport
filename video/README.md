@@ -11,7 +11,7 @@ number it says or shows comes from those recordings, the field study or a real `
 | Dashboard shots | `uv run --no-project --with playwright --with httpx python video/capture.py [shot ...]` | `out/shots/{supportdesk,preflight,upgrade}.mp4` |
 | Slides | `uv run --no-project --with playwright python video/render_slides.py [slide ...]` | `out/shots/slide-*.mp4` |
 | Music | `uv run --no-project --with numpy python video/music.py` | `out/music.wav` |
-| Cut | `uv run --no-project --with numpy python video/build.py` | `out/openport-demo.mp4`, a voice-only copy, `out/thumbnail.png` |
+| Cut | `uv run --no-project --with numpy python video/build.py` | `out/openport-demo.mp4` (captions burned in), a voice-only copy, `out/openport-demo-youtube.mp4` (no burned-in captions) with its captions file `out/openport-demo.srt`, `out/thumbnail.png` |
 
 - **The script** is `script.py`: one line of narration per scene. Change a line, re-voice that scene, then rerun
   everything after it: the timeline moves, and the shots, slides and captions follow it.

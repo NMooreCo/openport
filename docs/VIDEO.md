@@ -57,5 +57,6 @@ the bar can land either side. That's what the factory split is for: when one cal
 
 ## Still to do
 
-- Upload `video/out/openport-demo.mp4` to YouTube as public (thumbnail: `video/out/thumbnail.png`), and put the link
+- Upload `video/out/openport-demo-youtube.mp4` to YouTube as public, with `video/out/openport-demo.srt` as its English
+  captions (the picture has none burned in, so viewers can turn them on or off) and `video/out/thumbnail.png`, and put the link
   in the Devpost submission.

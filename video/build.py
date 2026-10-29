@@ -1,7 +1,9 @@
 """Cut the demo video together: the clips in order, the narration on its timeline, captions, music, master.
 
 Clips come from capture.py (the dashboard) and render_slides.py (the slides); the music from music.py.
-Writes video/out/openport-demo.mp4, a narration-only copy (openport-demo-voice-only.mp4) and a thumbnail.
+Writes video/out/openport-demo.mp4 (captions burned in), a narration-only copy (openport-demo-voice-only.mp4), the
+upload for YouTube (openport-demo-youtube.mp4, no burned-in captions) with its captions file (openport-demo.srt), and
+a thumbnail.
 Usage: uv run --no-project --with numpy python video/build.py
 """
 
@@ -20,6 +22,14 @@ FPS = 30
 DIP = 0.16  # each cut dips through the dark background for this long on either side
 MUSIC_DB = -4  # the bed's level going into the mix, before it ducks under the voice
 CAPTIONED = {"find", "test", "tune", "result", "code", "real", "ci", "upgrade", "built"}  # the rest show their words on screen
+# What the script spells out for the voice, written as a reader expects it in the .srt (longest first)
+WRITTEN = [
+    ("nebius dot narralogy dot com", "nebius.narralogy.com"), ("nineteen of those twenty", "19 of those 20"),
+    ("seventy-nine thousand", "79,000"), ("two hundred seven", "207"), ("ninety-four percent", "94%"),
+    ("seventy percent", "70%"), ("twenty most-starred", "20 most-starred"), ("eleven seventy", "$11.70"),
+    ("two twenty-seven", "$2.27"), ("seventy-nine of", "79 of"), ("ninety-six", "96%"), ("ninety-eight", "98%"),
+    ("forty-eight", "48"),
+]
 
 # (clip, where it starts in the video); each runs until the next one starts
 CUTS = [
@@ -65,27 +75,67 @@ def _ts(seconds: float) -> str:
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
+def _written(words: list[tuple[str, float, float]]) -> list[tuple[str, float, float]]:
+    """The words with each WRITTEN phrase merged into its written form, keeping the last word's punctuation."""
+    bare = [w.lower().strip(".,:;!?") for w, _, _ in words]
+    out, i = [], 0
+    while i < len(words):
+        for spoken, written in WRITTEN:
+            n = len(spoken.split())
+            if bare[i:i + n] == spoken.split():
+                last = words[i + n - 1][0]
+                out.append((written + last[len(last.rstrip(".,:;!?")):], words[i][1], words[i + n - 1][2]))
+                i += n
+                break
+        else:
+            out.append(words[i])
+            i += 1
+    return out
+
+
+def lines(scene: str, written: bool = False) -> list[tuple[list, float, float]]:
+    """A scene's narration as short caption lines: (words, start, end), each word (text, start, end) in video seconds.
+    With `written`, numbers and the URL read as written rather than as said."""
+    words = [(w, voice_starts()[scene] + s, voice_starts()[scene] + e) for w, s, e in narration(scene)["words"]]
+    if written:
+        words = _written(words)
+    chunks, chunk = [], []
+    for i, word in enumerate(words):
+        chunk.append(word)
+        text = " ".join(w for w, _, _ in chunk)
+        nxt = words[i + 1] if i + 1 < len(words) else None
+        if (not nxt or len(chunk) >= 7 or len(text) >= 40 or (re.search(r"[.,:;]$", word[0]) and len(chunk) >= 3)
+                or (nxt and nxt[1] - word[2] > 0.45)):
+            chunks.append(chunk)
+            chunk = []
+    out = []
+    for i, chunk in enumerate(chunks):
+        end = chunk[-1][2] + 0.3
+        if i + 1 < len(chunks):
+            end = min(end, chunks[i + 1][0][1] - 0.08)
+        out.append((chunk, chunk[0][1] - 0.06, end))
+    return out
+
+
+def subtitles() -> Path:
+    """The whole narration as an .srt file, for YouTube's closed captions (the slides' scenes too)."""
+    def stamp(seconds: float) -> str:
+        ms = max(0, round(seconds * 1000))
+        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+    cues = [(start, end, " ".join(w for w, _, _ in chunk)) for name, _ in SCENES for chunk, start, end in lines(name, written=True)]
+    path = OUT / "openport-demo.srt"
+    path.write_text("\n".join(f"{i}\n{stamp(a)} --> {stamp(b)}\n{text}\n" for i, (a, b, text) in enumerate(cues, 1)), encoding="utf-8")
+    return path
+
+
 def captions() -> Path:
     """Short caption lines from the narration's word timings; each word brightens as it's said."""
     events = []
     for name, _ in SCENES:
         if name not in CAPTIONED:
             continue
-        words = [(w, voice_starts()[name] + s, voice_starts()[name] + e) for w, s, e in narration(name)["words"]]
-        chunks, chunk = [], []
-        for i, word in enumerate(words):
-            chunk.append(word)
-            text = " ".join(w for w, _, _ in chunk)
-            nxt = words[i + 1] if i + 1 < len(words) else None
-            if (not nxt or len(chunk) >= 7 or len(text) >= 40 or (re.search(r"[.,:;]$", word[0]) and len(chunk) >= 3)
-                    or (nxt and nxt[1] - word[2] > 0.45)):
-                chunks.append(chunk)
-                chunk = []
-        for i, chunk in enumerate(chunks):
-            start = chunk[0][1] - 0.06
-            end = chunk[-1][2] + 0.3
-            if i + 1 < len(chunks):
-                end = min(end, chunks[i + 1][0][1] - 0.08)
+        for chunk, start, end in lines(name):
             # Each {\kN} lasts N centiseconds and lights the word after it when it begins: an empty one first holds
             # the line until its first word, then each word lasts until the next one starts.
             line = f"{{\\k{max(0, round((chunk[0][1] - start) * 100))}}}"
@@ -152,13 +202,16 @@ def mix(voice: Path, with_music: bool) -> Path:
 
 def main(audio_only: bool = False) -> None:
     voice = voice_track()
-    video = OUT / "picture.mp4" if audio_only else picture(captions())
-    for with_music, name in ((True, "openport-demo.mp4"), (False, "openport-demo-voice-only.mp4")):
+    captioned = OUT / "picture.mp4" if audio_only else picture(captions())
+    clean = OUT / "picture-nocaps.mp4" if audio_only else picture(None)
+    for video, with_music, name in ((captioned, True, "openport-demo.mp4"), (captioned, False, "openport-demo-voice-only.mp4"),
+                                    (clean, True, "openport-demo-youtube.mp4")):  # the upload: its captions are the .srt
         audio = mix(voice, with_music)
         ffmpeg("-i", str(video), "-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k",
                "-shortest", "-movflags", "+faststart", str(OUT / name))
         print(f"{OUT / name}")
     ffmpeg("-ss", "4.0", "-i", str(OUT / "shots" / "slide-reveal.mp4"), "-frames:v", "1", "-vf", "scale=1280:720", str(OUT / "thumbnail.png"))
+    print(subtitles())
 
 
 if __name__ == "__main__":
