@@ -35,6 +35,12 @@ def _tests(run) -> str:
     return "-" if run is None else f"{'✅' if run.ok else '❌'} {run.summary or ('passed' if run.ok else 'failed')}"
 
 
+def nemotron(model: str) -> str:
+    """The tier a fix's model is, as the PR names it: "Nemotron Super", "Nemotron Ultra"."""
+    tier = next((t for t in ("ultra", "super", "nano") if t in model.lower()), "")
+    return f"Nemotron {tier.capitalize()}" if tier else (model or "Nemotron Super")
+
+
 def render(run: UpgradeRun, min_age_days: int = 7) -> str:
     lines = [
         f"## {TITLE}",
@@ -77,15 +83,21 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
     if run.before and not run.before.ok:
         lines += ["", "> The tests were already failing before the upgrade, so this PR can't prove the upgrade is safe."]
     if run.fix_error:
-        lines += ["", f"> The upgrade broke the tests, and Nemotron Super couldn't be asked for a fix ({run.fix_error})."]
+        lines += ["", f"> The upgrade broke the tests, and Nemotron couldn't be asked for a fix ({run.fix_error})."]
 
-    applied = [fix for fix in run.rounds if fix.edits]
-    if applied:
-        lines += ["", "### Code changes", "", "The upgrade broke the tests, so Nemotron Super changed the application code (never the tests):", ""]
-        for fix in applied:
-            files = ", ".join(sorted({f"`{e.file}`" for e in fix.edits}))
-            based_on = "".join(f"\n  - Based on [{s['title']}]({s['url']}): “{s['quote']}”" for s in fix.sources)
-            lines.append(f"- {files}: {fix.rationale}{based_on}")
+    # A fix that didn't pass was undone, so the code holds only the one that did (the last round, if it passed).
+    kept = run.rounds[-1] if run.rounds and run.rounds[-1].edits and run.rounds[-1].tests.ok else None
+    undone = [fix for fix in run.rounds if fix.edits and fix is not kept]
+    if kept or undone:
+        lines += ["", "### Code changes", ""]
+        if kept:
+            files = ", ".join(sorted({f"`{e.file}`" for e in kept.edits}))
+            based_on = "".join(f"\n  - Based on [{s['title']}]({s['url']}): “{s['quote']}”" for s in kept.sources)
+            lines += [f"The upgrade broke the tests, so {nemotron(kept.model)} changed the application code (never the tests):", "",
+                      f"- {files}: {kept.rationale}{based_on}"]
+        if undone:
+            lines.append(f"- Tried first and undone, because the tests still failed: " + "; ".join(
+                f"{nemotron(fix.model)}'s change to {', '.join(sorted({f'`{e.file}`' for e in fix.edits}))} ({fix.rationale})" for fix in undone) + ".")
         rejected = [(edit, why) for fix in run.rounds for edit, why in fix.rejected]
         if rejected:
             lines.append(f"- {len(rejected)} proposed edit(s) weren't applied: " + "; ".join(f"`{e.file}` ({why})" for e, why in rejected) + ".")

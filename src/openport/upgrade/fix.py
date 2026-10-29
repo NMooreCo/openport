@@ -39,13 +39,23 @@ class FixerSilent(RuntimeError):
     """Super ran out of tokens before giving any answer, with reasoning on and off."""
 
 
+def project_paths(folder: Path, limit: int = 800) -> list[str]:
+    """Every file in the project, as paths, so a fix names real ones (a stylesheet's, say) instead of guessing."""
+    paths = [p.relative_to(folder).as_posix() for p in sorted(folder.rglob("*"))
+             if p.is_file() and not (SKIP_DIRS | {".git"}) & set(p.relative_to(folder).parts)]
+    return paths[:limit]
+
+
 def source_files(folder: Path, test_output: str) -> dict[str, str]:
-    """The repo's source files (not tests), the ones named in the failure first, within a size budget."""
+    """The repo's source files (not tests) within a size budget: the ones the failure names first, then the ones
+    beside them (a framework's error in src/app/page.tsx is usually about the files in src/app), then the rest."""
     files = [p for p in sorted(folder.rglob("*"))
              if p.is_file() and p.suffix in SOURCE_SUFFIXES and not SKIP_DIRS & set(p.relative_to(folder).parts)]
     relative = {p: p.relative_to(folder).as_posix() for p in files}
     candidates = [p for p in files if not is_test_path(relative[p])]
-    candidates.sort(key=lambda p: relative[p] not in test_output)  # named in the traceback first
+    named = [p for p in candidates if relative[p] in test_output]
+    near = {p.parent for p in named} - {folder}  # a config file at the root (next.config.ts) makes nothing near
+    candidates.sort(key=lambda p: 0 if p in named else 1 if any(d == p.parent or d in p.parents for d in near) else 2)
     chosen, used = {}, 0
     for path in candidates:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -69,28 +79,40 @@ def parse_fix(text: str) -> tuple[list[Edit], str, list[dict]]:
     return edits, str(data.get("rationale") or "").strip(), parse_citations(data.get("sources"))
 
 
-def make_fixer(client: OpenAI | None = None, model: str | None = None, meter: UsageMeter | None = None):
+def make_fixer(client: OpenAI | None = None, model: str | None = None, meter: UsageMeter | None = None, stronger: str | None = None):
+    """Super's fix first; if it doesn't make the tests pass, the next rounds go to `stronger` (Ultra), the ladder
+    the port climbs. On learn-claude-code, Super rewrote both of Next.js's layouts where Ultra added the one line of
+    layout 16.4 asks for (seen live). The model each round used is kept on the fixer as `last_model`."""
     client = client or tokenfactory.client()
-    model = model or tokenfactory.tiers()["super"]
+    if model is None:
+        tiers = tokenfactory.tiers()
+        model, stronger = tiers["super"], stronger or tiers.get("ultra")
+    stronger = stronger or model
 
-    def fix(upgrades: list[dict], research: list[dict], test_output: str, files: dict[str, str], notes: str = "") -> tuple[list[Edit], str, list[dict]]:
+    def fix(upgrades: list[dict], research: list[dict], test_output: str, files: dict[str, str], notes: str = "",
+            paths: list[str] = (), attempt: int = 0) -> tuple[list[Edit], str, list[dict]]:
+        chosen = model if attempt == 0 else stronger
+        fix.last_model = chosen
         prompt = "Upgrades:\n" + "\n".join(f"- {u['name']} {u['from']} -> {u['to']}" for u in upgrades)
         if research:
             prompt += "\n\nWhat changed (found with Tavily):\n" + "\n".join(f"- {s['title']} ({s['url']}): {s['excerpt']}" for s in research)
         prompt += f"\n\nFailing tests:\n<<<\n{test_output[-6000:]}\n>>>"
         if notes:
             prompt += f"\n\nYour previous attempt:\n{notes}"
+        if paths:
+            prompt += "\n\nEvery file in the project (paths only):\n" + "\n".join(paths)
         prompt += "\n\nSource files:\n" + "\n\n".join(f"=== {name} ===\n{text}" for name, text in files.items())
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
         for extra in ({}, {"extra_body": tokenfactory.reasoning(False)}):
             start = time.perf_counter()
-            response = client.chat.completions.create(model=model, messages=messages, max_tokens=MAX_TOKENS, **extra)
+            response = client.chat.completions.create(model=chosen, messages=messages, max_tokens=MAX_TOKENS, **extra)
             if meter is not None:
-                meter.record(model, response.usage, time.perf_counter() - start)
+                meter.record(chosen, response.usage, time.perf_counter() - start)
             choice = response.choices[0]
             edits, rationale, cited = parse_fix(choice.message.content or "")
             if edits or rationale or choice.finish_reason != "length":
                 return edits, rationale, verified(cited, research)  # only quotes that are really on the pages
-        raise FixerSilent("Nemotron Super ran out of tokens before answering, with reasoning on and then off")
+        raise FixerSilent(f"{chosen} ran out of tokens before answering, with reasoning on and then off")
 
+    fix.last_model = model
     return fix

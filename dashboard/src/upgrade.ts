@@ -33,7 +33,14 @@ export interface FixRound {
   sources: Source[];
   rejected: { file: string; reason: string }[];
   tests: TestResult | null; // null when every proposed edit was rejected, so the tests didn't run again
+  model?: string; // the Nemotron that proposed it: Super first, then Ultra (older recordings don't say: Super)
 }
+
+/** "Nemotron Ultra", from a model ID like nvidia/Nemotron-3-Ultra-550b-a55b. */
+export const nemotron = (model?: string) => {
+  const tier = ["ultra", "super", "nano"].find((t) => model?.toLowerCase().includes(t));
+  return tier ? `Nemotron ${tier[0].toUpperCase()}${tier.slice(1)}` : "Nemotron Super";
+};
 
 /** What changed upstream, quoted from a package's own changelog (found and read with Tavily). */
 export interface Changelog {
@@ -92,7 +99,7 @@ export function reduceUpgrade(state: UpgradeState, event: RunEvent): UpgradeStat
     case "research":
       return { ...state, research: event.sources };
     case "fix": {
-      const round = { files: event.files, rationale: event.rationale, sources: event.sources, rejected: event.rejected, tests: event.tests };
+      const round = { files: event.files, rationale: event.rationale, sources: event.sources, rejected: event.rejected, tests: event.tests, model: event.model };
       return { ...state, fixes: [...state.fixes, round] };
     }
     case "upgrade_pr":

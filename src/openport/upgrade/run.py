@@ -23,7 +23,7 @@ from typing import Callable
 from . import Upgrade, plan_upgrades, read_lockfiles
 from .apply import Edit, _read, _write, apply_bumps, apply_edits, copy_repo, diff, remove_tree
 from .bump import LOCKFILES, added_versions, bump_steps, too_new
-from .fix import source_files
+from .fix import project_paths, source_files
 from .lockfiles import Dependency
 from .registry import fetch_releases
 from .testrun import TestRun, run_in_container
@@ -39,6 +39,7 @@ class FixRound:
     rationale: str
     sources: list[dict]  # pages the fix followed, each with the sentence it quoted: {"title", "url", "quote"}
     tests: TestRun
+    model: str = ""  # the Nemotron that proposed it: Super first, Ultra once Super's fix hasn't passed
 
 
 @dataclass
@@ -66,6 +67,28 @@ class UpgradeRun:
     def proven(self) -> bool:
         """The tests passed before the upgrade and pass after it."""
         return bool(self.before and self.before.ok and self.final and self.final.ok)
+
+
+def _snapshot(home: Path, edits: list[Edit]) -> dict[str, bytes | None]:
+    """What each file an edit names holds before the edits (None: it doesn't exist yet), inside `home` only."""
+    root, saved = home.resolve(), {}
+    for edit in edits:
+        path = (home / edit.file).resolve()
+        if root in path.parents and not (home / edit.file).is_symlink():
+            saved[edit.file] = path.read_bytes() if path.is_file() else None
+    return saved
+
+
+def _restore(home: Path, saved: dict[str, bytes | None], applied: list[Edit]) -> None:
+    """Undo the applied edits: each file back as it was, and a file one of them created gone again."""
+    for name in dict.fromkeys(e.file for e in applied):
+        if name not in saved:
+            continue
+        path = home / name
+        if saved[name] is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(saved[name])
 
 
 def in_project(project: str, command: str) -> str:
@@ -212,19 +235,27 @@ def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds
         if researcher is not None or run.research:
             emit("research", run.research)
         summary = [{"name": p.dep.name, "from": p.dep.version, "to": p.target.version} for p in run.upgraded]
-        for _ in range(rounds):
+        for attempt in range(rounds):
             try:  # the tests ran in the project's folder, so the paths in their output start there
-                edits, rationale, sources = fixer(summary, run.research, current.output, source_files(home, current.output), notes)
+                edits, rationale, sources = fixer(summary, run.research, current.output, source_files(home, current.output), notes,
+                                                  paths=project_paths(home), attempt=attempt)
             except Exception as error:  # e.g. Token Factory refusing the request: report it, keep the bump and the tests
                 run.fix_error = f"{type(error).__name__}: {error}"[:300]
                 break
+            before = _snapshot(home, edits)
             applied, rejected = apply_edits(home, edits)
-            run.created += [repo_path(e.file) for e in applied if not e.search]
+            failing = current
             current = tested() if applied else current
-            run.rounds.append(FixRound(applied, rejected, rationale, sources, current))
+            run.rounds.append(FixRound(applied, rejected, rationale, sources, current, getattr(fixer, "last_model", "")))
             emit("round", run.rounds[-1])
             if current.ok:
+                run.created += [repo_path(e.file) for e in applied if not e.search]
                 break
-            notes = f"You changed {len(applied)} snippet(s): {rationale}\n" + "".join(f"- rejected edit to {e.file}: {why}\n" for e, why in rejected)
+            # A fix that didn't pass is undone: the next round (Ultra, after Super) starts from the code the upgrade
+            # broke, told what was tried, and nothing it didn't need reaches the PR.
+            _restore(home, before, applied)
+            notes = (f"That changed {len(applied)} snippet(s) and was undone, because the tests still failed ({current.summary}): {rationale}\n"
+                     + "".join(f"- rejected edit to {e.file}: {why}\n" for e, why in rejected))
+            current = failing
     run.diff = diff(root, out, run.created)
     return run

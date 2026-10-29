@@ -108,7 +108,7 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
         elif kind == "research":
             run.emit("research", sources=[{"title": s["title"], "url": s["url"]} for s in data])
         elif kind == "round":
-            run.emit("fix", files=sorted({e.file for e in data.edits}), rationale=data.rationale, sources=data.sources,
+            run.emit("fix", files=sorted({e.file for e in data.edits}), rationale=data.rationale, sources=data.sources, model=data.model,
                      rejected=[{"file": e.file, "reason": why} for e, why in data.rejected], tests=_tests(data.tests) if data.edits else None)
 
     run.emit("stage", stage="test")

@@ -13,7 +13,7 @@ import yaml
 
 from openport.upgrade import Upgrade
 from openport.upgrade.apply import Edit, apply_bumps, apply_edits, bump_requirements, changed_files, copy_repo, diff, make_pr_folder
-from openport.upgrade.fix import FixerSilent, make_fixer, parse_fix, source_files
+from openport.upgrade.fix import FixerSilent, make_fixer, parse_fix, project_paths, source_files
 from openport.upgrade.lockfiles import Dependency
 from openport.upgrade.osv import Advisory
 from openport.upgrade.report import render
@@ -557,7 +557,7 @@ def test_the_pr_quotes_what_changed_upstream_and_super_reads_those_releases_firs
                    "## 2.0.0\nDrop support for Python 2 and Python 3.0-3.5")
     seen = {}
 
-    def fixer(upgrades, research, output, files, notes):
+    def fixer(upgrades, research, output, files, notes, paths=(), attempt=0):
         seen["research"] = research
         return [], "nothing to change", []
 
@@ -581,12 +581,12 @@ def test_the_pr_quotes_what_changed_upstream_and_super_reads_those_releases_firs
 def test_a_fixer_that_cant_be_reached_ends_the_rounds_with_a_note(tmp_path):
     results = iter([passing(), failing()])
 
-    def fixer(*args):
+    def fixer(*args, **kwargs):
         raise RuntimeError("Error code: 402 - budget exhausted")
 
     run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade()], run_tests=lambda folder: next(results), fixer=fixer)
     assert not run.proven and run.rounds == [] and run.fix_error == "RuntimeError: Error code: 402 - budget exhausted"
-    assert "Nemotron Super couldn't be asked for a fix (RuntimeError: Error code: 402 - budget exhausted)" in render(run)
+    assert "Nemotron couldn't be asked for a fix (RuntimeError: Error code: 402 - budget exhausted)" in render(run)
 
 
 def test_tests_run_in_a_container_with_only_the_copy_mounted(tmp_path):
@@ -676,6 +676,23 @@ def test_fixer_sees_failures_and_sources_and_cites_only_real_ones(tmp_path):
     assert new_file == [Edit("web/src/app/layout.tsx", "", "export default ...")]
 
 
+def test_the_fixer_sees_the_files_beside_the_failing_one_and_every_path(tmp_path):
+    # learn-claude-code: Next.js named src/app/page.tsx, and the fix needed src/app/[locale]/layout.tsx and where
+    # globals.css lives; with 40,000 characters of other source ahead of them alphabetically, Super guessed (seen live).
+    for name, size in [("next.config.ts", 100), ("lib/aaa.ts", 30_000), ("lib/bbb.ts", 9_000), ("src/app/page.tsx", 200),
+                       ("src/app/[locale]/layout.tsx", 900), ("src/app/globals.css", 50), ("node_modules/x/index.js", 10)]:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x" * size)
+    files = source_files(tmp_path, "./src/app/page.tsx\nError: page.tsx doesn't have a root layout.")
+    assert list(files)[:2] == ["src/app/page.tsx", "src/app/[locale]/layout.tsx"]  # named, then beside it
+    paths = project_paths(tmp_path)
+    assert "src/app/globals.css" in paths and not any(p.startswith("node_modules/") for p in paths)
+
+    fake = FakeTokenFactory(lambda request: completion(content='{"edits": [], "rationale": "nothing"}'))
+    make_fixer(client=fake, model="nvidia/super-test")([], [], "1 failed", files, paths=paths)
+    assert "Every file in the project (paths only):\n" in fake.requests[0]["messages"][1]["content"]
+
+
 def test_a_fixer_that_reasons_until_it_runs_out_asks_again_without_reasoning(tmp_path):
     # Super spent all 8,192 tokens thinking about learn-claude-code's 40,000 characters of source, and said nothing (seen live).
     reply = {"edits": [{"file": "a.py", "search": "x = 1", "replace": "x = 2"}], "rationale": "it moved", "sources": []}
@@ -706,7 +723,7 @@ def test_upgrade_is_proven_end_to_end(tmp_path):
     results = iter([passing(), failing(), passing()])  # before, after the bump, after Super's fix
     fix_calls = []
 
-    def fixer(upgrades, research, output, files, notes):
+    def fixer(upgrades, research, output, files, notes, paths=(), attempt=0):
         fix_calls.append((upgrades, research, output))
         cited = [{"title": "PyJWT changelog", "url": "https://pyjwt.readthedocs.io/changelog", "quote": "jwt.encode now returns a str"}]
         return [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", cited
@@ -727,6 +744,37 @@ def test_upgrade_is_proven_end_to_end(tmp_path):
     assert "Never auto-merged" in body
 
 
+def test_a_fix_that_doesnt_pass_is_undone_and_ultra_tries_next(tmp_path):
+    # learn-claude-code: Super's first try rewrote both layouts and broke the build again; Ultra's one-line layout passed.
+    results = iter([passing(), failing(), failing("1 failed"), passing()])  # before, after the bump, Super's fix, Ultra's fix
+    seen = []
+
+    def fixer(upgrades, research, output, files, notes, paths=(), attempt=0):
+        seen.append((attempt, notes, files["authkit/tokens.py"]))
+        fixer.last_model = ["nvidia/super-test", "nvidia/ultra-test"][min(attempt, 1)]
+        if attempt == 0:  # a wrong change, and a file it didn't need
+            return [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return None"), Edit("authkit/extra.py", "", "x = 1\n")], "guess", []
+        return [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", []
+
+    run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade()], run_tests=lambda folder: next(results), fixer=fixer)
+    assert run.proven and [r.model for r in run.rounds] == ["nvidia/super-test", "nvidia/ultra-test"]
+    # Ultra started from the code the bump broke, told what Super tried
+    assert seen[1][0] == 1 and 'return token.decode("utf-8")' in seen[1][2] and "was undone" in seen[1][1]
+    assert not (tmp_path / "out" / "authkit" / "extra.py").exists() and run.created == []
+    assert "+    return token\n" in run.diff and "return None" not in run.diff and "extra.py" not in run.diff
+    body = render(run)
+    assert "so Nemotron Ultra changed the application code" in body and "Tried first and undone" in body and "Nemotron Super's change" in body
+
+
+def test_the_fixer_asks_super_first_then_ultra():
+    fake = FakeTokenFactory(lambda request: completion(content='{"edits": [], "rationale": "nothing"}'))
+    fixer = make_fixer(client=fake, model="nvidia/super-test", stronger="nvidia/ultra-test")
+    fixer([], [], "1 failed", {}, attempt=0)
+    assert fixer.last_model == "nvidia/super-test"
+    fixer([], [], "1 failed", {}, attempt=1)
+    assert [r["model"] for r in fake.requests] == ["nvidia/super-test", "nvidia/ultra-test"] and fixer.last_model == "nvidia/ultra-test"
+
+
 def test_a_round_with_no_applied_edit_is_a_note_not_a_test_result(tmp_path):
     results = iter([passing(), failing(), passing()])
     proposals = iter([
@@ -734,7 +782,7 @@ def test_a_round_with_no_applied_edit_is_a_note_not_a_test_result(tmp_path):
         [Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")],
     ])
     run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade()], run_tests=lambda folder: next(results),
-                       fixer=lambda *args: (next(proposals), "fix", []))
+                       fixer=lambda *args, **kwargs: (next(proposals), "fix", []))
     body = render(run)
     assert run.proven and len(run.rounds) == 2
     assert body.count("| After OpenPort's fix |") == 1  # only the round that changed code re-ran the tests
@@ -744,5 +792,5 @@ def test_a_round_with_no_applied_edit_is_a_note_not_a_test_result(tmp_path):
 def test_upgrade_without_breakage_needs_no_fix(tmp_path):
     results = iter([passing(), passing()])
     run = upgrade_repo(AUTHKIT, tmp_path / "out", plans=[upgrade("requests", "2.31.0", "2.33.0")],
-                       run_tests=lambda folder: next(results), fixer=lambda *a: (_ for _ in ()).throw(AssertionError("not needed")))
+                       run_tests=lambda folder: next(results), fixer=lambda *a, **k: (_ for _ in ()).throw(AssertionError("not needed")))
     assert run.proven and run.rounds == []

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { RunInfo } from "../App";
 import type { Source } from "../run";
 import {
-  UPGRADE_STAGE_LABELS, UPGRADE_STAGES, advisoryUrl, finalTests, shortSummary, upgraded, useUpgrade,
+  UPGRADE_STAGE_LABELS, UPGRADE_STAGES, advisoryUrl, finalTests, nemotron, shortSummary, upgraded, useUpgrade,
   type Changelog, type FixRound, type Package, type TestResult, type UpgradeState,
 } from "../upgrade";
 import { GitHubPr } from "./GitHubPr";
@@ -146,7 +146,7 @@ function ResearchStep({ sources }: { sources: Source[] }) {
 
 function FixStep({ fix, index }: { fix: FixRound; index: number }) {
   const title = fix.files.length
-    ? `Fix ${index + 1}: Nemotron Super edited ${fix.files.join(", ")}`
+    ? `Fix ${index + 1}: ${nemotron(fix.model)} edited ${fix.files.join(", ")}${fix.tests && !fix.tests.ok ? " (undone: the tests still failed)" : ""}`
     : `Fix ${index + 1}: every proposed edit was rejected, so the tests didn't run again`;
   return (
     <Step title={title} result={fix.tests}>
@@ -213,7 +213,7 @@ function Tests({ state }: { state: UpgradeState }) {
         {state.research.length > 0 && <ResearchStep sources={state.research} />}
         {state.fixes.map((fix, i) => <FixStep key={i} fix={fix} index={i} />)}
         {fixing && state.afterBump && !state.afterBump.ok && !state.fixes.some((f) => f.tests?.ok) && (
-          <Step title={`Fix ${state.fixes.length + 1}: Nemotron Super is reading the failures and the code`} active />
+          <Step title={`Fix ${state.fixes.length + 1}: Nemotron ${state.fixes.length ? "Ultra" : "Super"} is reading the failures and the code`} active />
         )}
       </ol>
     </section>
@@ -262,7 +262,7 @@ export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive?: () =
       <ResultTabs body={state.pr?.body} diff={state.pr?.diff} files={files} github={<GitHubPr run={run} ready={false} />} />
 
       <footer className="border-t border-line pt-4 text-xs text-muted">
-        Advisories from OSV.dev · release dates from PyPI and npm · fixes by NVIDIA Nemotron Super on Nebius Token Factory
+        Advisories from OSV.dev · release dates from PyPI and npm · fixes by NVIDIA Nemotron Super, then Ultra, on Nebius Token Factory
       </footer>
     </Shell>
   );

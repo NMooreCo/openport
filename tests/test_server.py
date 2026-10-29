@@ -186,7 +186,7 @@ def upgrade_server(tmp_path, monkeypatch):
                     Target("2.14.0", datetime(2026, 9, 11, tzinfo=timezone.utc), 43, ["CVE-2022-29217"], []), "upgrade")]
     results = iter([TestRun(True, 0, "5 passed", "", 1.0), TestRun(False, 1, "4 failed, 1 passed", "AttributeError", 1.0),
                     TestRun(True, 0, "5 passed", "", 1.0)])
-    fix = lambda *args: ([Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", [])
+    fix = lambda *args, **kwargs: ([Edit("authkit/tokens.py", 'return token.decode("utf-8")', "return token")], "PyJWT 2 returns str", [])
     monkeypatch.setattr(upgrades, "plan_upgrades", lambda deps: plan)
     monkeypatch.setattr("openport.upgrade.testrun.run_tests", lambda folder, *, image, command: next(results))  # the real signature
     monkeypatch.setattr("openport.upgrade.fix.make_fixer", lambda *, meter=None: fix)
