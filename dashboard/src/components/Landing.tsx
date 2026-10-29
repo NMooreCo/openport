@@ -22,7 +22,7 @@ const RESULTS = [
   { title: "SupportDesk", what: "5 calls on OpenAI and Anthropic", to: 96, from: 70, format: (n: number) => `${Math.round(n)}%`, detail: "of test cases pass after tuning, up from 70% on a plain swap; 98% of held-out ones" },
   { title: "preflight", what: "an open-source AI PR reviewer I didn't write", to: 94, format: (n: number) => `${Math.round(n)}%`, detail: "cheaper: all 4 Claude Opus calls on Nemotron, $22.08 → $1.32 per 1,000 runs" },
   { title: "Field study", what: "the 20 most-starred open-source AI apps", to: 207, format: (n: number) => `${Math.round(n)}`, detail: "LLM calls found; 79 move to Nemotron as they are, and every other one says why it stays" },
-  { title: "AuthKit upgrade", what: "15 advisories in PyJWT and requests", to: 15, format: (n: number) => `${Math.round(n)}`, detail: "advisories fixed, proven by the app's own tests: 5 pass, 4 break, then all 5 pass after Super's fix" },
+  { title: "learn-claude-code upgrade", what: "a 79k-star repo's Next.js site, code I didn't write", to: 48, format: (n: number) => `${Math.round(n)}`, detail: "advisories closed across 6 packages. Next.js 16.4 broke the build; Ultra's fix passes the repo's own CI" },
 ];
 
 const MODELS = [
@@ -40,7 +40,9 @@ const DEMOS: { target: string; mode: Mode; label: string; detail: string; pr?: s
   { target: "supportdesk", mode: "port", label: "SupportDesk", detail: "5 calls on OpenAI + Anthropic, 118 labelled cases", pr: `${PRS}/supportdesk/pull/1` },
   { target: "preflight", mode: "port", label: "jsliapark/preflight", detail: "an open-source AI PR reviewer: 4 Claude Opus calls", pr: `${PRS}/jsliapark-preflight/pull/1` },
   { target: "receipts", mode: "port", label: "Receipt reader", detail: "a gpt-4o-mini call that reads photos, on Super VL", pr: `${PRS}/receipts/pull/1` },
+  { target: "learn-claude-code", mode: "upgrade", label: "shareAI-lab/learn-claude-code", detail: "a 79k-star repo: Next.js 16.4 broke its build, Ultra fixed it", pr: `${PRS}/shareAI-lab-learn-claude-code/pull/1` },
   { target: "authkit", mode: "upgrade", label: "AuthKit upgrade", detail: "vulnerable PyJWT and requests, proven by its tests", pr: `${PRS}/authkit/pull/1` },
+  { target: "authkit-node", mode: "upgrade", label: "AuthKit (Node)", detail: "jsonwebtoken 8 to 9 through npm, proven by its tests", pr: `${PRS}/authkit-node/pull/1` },
 ];
 
 function youtubeId(url: string): string | null {
@@ -149,11 +151,13 @@ function Ladder() {
   );
 }
 
+// shareAI-lab/learn-claude-code's recorded upgrade (Oct 29), its own CI each time: npm ci, tsc --noEmit, next build.
 function UpgradeTimeline() {
   const steps = [
-    { label: "Before the upgrade", result: "5 passed", ok: true },
-    { label: "PyJWT 1.7.1 → 2.14.0", result: "4 failed", ok: false },
-    { label: "Nemotron Super's fix to authkit/tokens.py", result: "5 passed", ok: true },
+    { label: "learn-claude-code's own CI, before", result: "passes", ok: true },
+    { label: "Next.js 16.1.6 → 16.4.1, and 5 more", result: "build fails", ok: false },
+    { label: "Nemotron Super's fix", result: "fails, undone", ok: false },
+    { label: "Nemotron Ultra's fix: src/app/layout.tsx", result: "passes", ok: true },
   ];
   return (
     <ol className="relative space-y-4 border-l border-white/10 pl-6">
@@ -171,8 +175,9 @@ function UpgradeTimeline() {
       <li>
         <Reveal delay={700}>
           <blockquote className="text-sm leading-relaxed text-slate-400">
-            Each change quotes PyJWT's own changelog: <span className="text-slate-200">"Tokens are returned as string instead of a byte string."</span> The
-            tests are never edited to pass.
+            Next.js 16.4 won't build a page without a root layout. Super's first try didn't pass and was undone; Ultra added the seven-line
+            layout that passes its children through. <span className="text-slate-200">48 advisories closed, in a pull request with the evidence</span>,
+            opened in a fork. The repo's own checks are never edited to pass.
           </blockquote>
         </Reveal>
       </li>
@@ -358,8 +363,8 @@ export function Landing() {
         <section className="grid items-center gap-14 py-24 sm:py-32 lg:grid-cols-2">
           <Heading kicker="And it keeps you patched" title="Security upgrades, proven by your own tests">
             <code className="font-mono text-base text-emerald-300">openport upgrade</code> finds dependencies with known advisories, picks the
-            release that fixes them and has been out at least a week, runs your tests in a throwaway container, has Nemotron Super fix what
-            the upgrade broke, and opens a pull request only if the tests prove it.
+            release that fixes them and has been out at least a week, runs your tests in a throwaway container, has Nemotron fix what the
+            upgrade broke (Super first, then Ultra), and opens a pull request only if the tests prove it.
           </Heading>
           <UpgradeTimeline />
         </section>
@@ -381,10 +386,10 @@ export function Landing() {
 
         <section id="try" className="scroll-mt-28 py-24 sm:py-32">
           <Heading kicker="Try it" title="Watch the recorded runs, or run it live">
-            The demos replay runs recorded live on Oct 28, faster than they ran, at no cost. The dashboard also scans and ports any public
+            The demos replay runs recorded live on Oct 28 and 29, faster than they ran, at no cost. The dashboard also scans and ports any public
             GitHub repo.
           </Heading>
-          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {DEMOS.map((demo, i) => (
               <Reveal key={demo.target} delay={i * 80}>
                 <div className="glass flex h-full flex-col rounded-2xl p-5 transition hover:-translate-y-0.5 hover:border-emerald-400/50">
