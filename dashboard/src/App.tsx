@@ -16,6 +16,7 @@ export interface RunInfo {
   target: string;
   recorded: boolean; // a recorded run of a demo, replayed
   created: number;
+  github: string | null; // its pull request on GitHub, once opened
 }
 
 export default function App() {
@@ -39,7 +40,7 @@ export default function App() {
     api.run(runId)
       .then((data) => current && setRun({
         id: data.id, label: data.label, kind: data.kind === "upgrade" ? "upgrade" : "port",
-        target: data.target, recorded: Boolean(data.recorded), created: data.created,
+        target: data.target, recorded: Boolean(data.recorded), created: data.created, github: data.github ?? null,
       }))
       .catch(() => {
         if (current) location.hash = "app";

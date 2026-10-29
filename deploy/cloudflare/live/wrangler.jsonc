@@ -2,7 +2,8 @@
 // Needs the Workers Paid plan. The keys are Worker secrets (`npx wrangler secret put NEBIUS_API_KEY --config
 // live/wrangler.jsonc`, and TAVILY_API_KEY), passed to the container when it starts; they're never in the image.
 // JUDGE_PASSWORD, also a secret, keeps live runs for whoever has it; without it, anyone may start them.
-// See deploy/cloudflare/README.md.
+// GITHUB_TOKEN, a secret too, is a fine-grained token for the SANDBOX_ORG organization: with it, a finished live
+// port's pull request can be opened there. See deploy/cloudflare/README.md.
 {
 	"$schema": "../node_modules/wrangler/config-schema.json",
 	"name": "openport-dashboard",
@@ -37,6 +38,10 @@
 		// New runs started per UTC day, counted by the Worker so a sleeping container can't reset it. Replays of the
 		// recorded demos don't count; past the cap, only they and runs the server already has are shown.
 		"NEW_RUNS_PER_DAY": "30",
+		// The GitHub organization pull requests are opened in (with GITHUB_TOKEN set), each in a fork of the repo
+		// ported, so its maintainers aren't notified; and how many may be opened per UTC day.
+		"SANDBOX_ORG": "narralogy-labs",
+		"NEW_PRS_PER_DAY": "20",
 		// The demo video, embedded on the front page once it's on YouTube.
 		"VIDEO_URL": ""
 	}

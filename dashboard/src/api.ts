@@ -16,6 +16,7 @@ export interface RunSummary {
   target: string;
   recorded?: boolean;
   created: number;
+  github?: string | null; // its pull request, once opened on GitHub
 }
 
 export interface ServerEvent {
@@ -49,11 +50,13 @@ export async function info(): Promise<{ vetted_only: boolean }> {
   return STATIC ? { vetted_only: false } : fetch("/api/info").then((r) => json(r));
 }
 
-/** Whether live runs need the judges' password, whether this browser has given it, and the demo video. */
+/** Whether live runs need the judges' password, whether this browser has given it, the demo video, and the GitHub
+ * organization the server opens pull requests in (null when it can't). */
 export interface Site {
   gated: boolean;
   judge: boolean;
   video_url: string | null;
+  github_org?: string | null;
 }
 
 // The judges' password: kept in this browser only, and sent only with the requests that start runs.
@@ -101,6 +104,12 @@ export async function start(target: string, mode: Mode, live = false): Promise<s
     body: JSON.stringify({ target, live }),
   });
   return (await json<RunSummary>(response)).id;
+}
+
+/** Open a finished live port's pull request on GitHub (or get the one already opened); returns its URL. */
+export async function openOnGitHub(id: string): Promise<string> {
+  const response = await fetch(`/api/runs/${id}/github`, { method: "POST", headers: judgeHeader() });
+  return (await json<{ url: string }>(response)).url;
 }
 
 export async function run(id: string): Promise<RunSummary> {

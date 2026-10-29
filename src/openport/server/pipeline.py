@@ -63,9 +63,14 @@ class Run:
         """What the run spent on Token Factory, from its own events."""
         return sum((e.get("evals_usd") or 0) + (e.get("helper_usd") or 0) for e in self.events if e["type"] in ("cost", "captured"))
 
+    @property
+    def github(self) -> str | None:
+        """The pull request opened on GitHub from this run, if one was."""
+        return next((e["url"] for e in reversed(self.events) if e["type"] == "github"), None)
+
     def summary(self) -> dict:
         return {"id": self.id, "kind": self.kind, "target": self.target, "label": self.label, "status": self.status,
-                "created": self.created, "recorded": self.recorded}
+                "created": self.created, "recorded": self.recorded, "github": self.github}
 
 
 def load_runs(folder: Path, recorded: bool = False) -> list[Run]:

@@ -11,13 +11,15 @@ function Tab({ selected, onClick, children }: { selected: boolean; onClick: () =
   );
 }
 
-/** A run's result: the pull request description and the code changes behind it. */
-export function ResultTabs({ body, diff, files }: { body?: string; diff?: string; files: number }) {
+/** A run's result: the pull request description and the code changes behind it, and above them, `github`: the
+ * pull request on GitHub, or the way to open it there. */
+export function ResultTabs({ body, diff, files, github }: { body?: string; diff?: string; files: number; github?: ReactNode }) {
   const [tab, setTab] = useState<"pr" | "diff">("pr");
   if (body == null && diff == null) return null;
   const showDiff = diff != null && (tab === "diff" || body == null);
   return (
-    <section aria-label="Result">
+    <section aria-label="Result" className="space-y-4">
+      {github}
       <div className="flex gap-1 border-b border-line" role="tablist">
         {body != null && <Tab selected={!showDiff} onClick={() => setTab("pr")}>Pull request</Tab>}
         {diff != null && (
@@ -26,7 +28,7 @@ export function ResultTabs({ body, diff, files }: { body?: string; diff?: string
           </Tab>
         )}
       </div>
-      <div className="mt-4">{showDiff ? <DiffView diff={diff} /> : body != null ? <PrView body={body} /> : null}</div>
+      <div>{showDiff ? <DiffView diff={diff} /> : body != null ? <PrView body={body} /> : null}</div>
     </section>
   );
 }

@@ -34,8 +34,9 @@ def replays(recorded: Path) -> list[tuple[dict, dict]]:
         preset = next((p for p in presets if p["kind"] == kind and data["target"] in (p["id"], p.get("repo"))), None)
         if preset is None or data.get("status") != "done":
             continue
+        github = next((e["url"] for e in reversed(data["events"]) if e["type"] == "github"), None)  # its PR, opened on GitHub
         entry = {"id": data["id"], "preset": preset["id"], "kind": kind, "target": data["target"], "label": preset["label"],
-                 "detail": preset["detail"], "created": data["created"]}
+                 "detail": preset["detail"], "created": data["created"], "github": github}
         found.append((entry, data))
     newest = {}
     for entry, data in sorted(found, key=lambda pair: pair[0]["created"]):

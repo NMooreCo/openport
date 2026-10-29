@@ -5,6 +5,7 @@ import {
   UPGRADE_STAGE_LABELS, UPGRADE_STAGES, advisoryUrl, finalTests, shortSummary, upgraded, useUpgrade,
   type Changelog, type FixRound, type Package, type TestResult, type UpgradeState,
 } from "../upgrade";
+import { GitHubPr } from "./GitHubPr";
 import { Tile } from "./Metrics";
 import { ResultTabs } from "./ResultTabs";
 import { Shell } from "./Shell";
@@ -257,7 +258,8 @@ export function UpgradeView({ run, onRunLive }: { run: RunInfo; onRunLive?: () =
 
       {(state.before || state.stages.test === "active") && <Tests state={state} />}
 
-      <ResultTabs body={state.pr?.body} diff={state.pr?.diff} files={files} />
+      {/* An upgrade's pull request is opened from the CLI, where its tests can run: a recorded one links to it. */}
+      <ResultTabs body={state.pr?.body} diff={state.pr?.diff} files={files} github={<GitHubPr run={run} ready={false} />} />
 
       <footer className="border-t border-line pt-4 text-xs text-muted">
         Advisories from OSV.dev · release dates from PyPI and npm · fixes by NVIDIA Nemotron Super on Nebius Token Factory

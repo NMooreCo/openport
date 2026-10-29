@@ -1,6 +1,7 @@
 import type { RunInfo } from "../App";
 import { STAGE_LABELS, STAGES, tierName, useRun } from "../run";
 import { CallCard } from "./CallCard";
+import { GitHubPr } from "./GitHubPr";
 import { Metrics } from "./Metrics";
 import { ResultTabs } from "./ResultTabs";
 import { Shell } from "./Shell";
@@ -38,7 +39,12 @@ export function PortView({ run, onRunLive }: { run: RunInfo; onRunLive?: () => P
         )}
       </section>
 
-      <ResultTabs body={state.pr?.body} diff={state.ported?.diff} files={changedFiles} />
+      <ResultTabs
+        body={state.pr?.body}
+        diff={state.ported?.diff}
+        files={changedFiles}
+        github={<GitHubPr run={run} ready={state.status === "done" && state.pr != null && changedFiles > 0} />}
+      />
 
       {state.models && (
         <footer className="border-t border-line pt-4 text-xs text-muted">

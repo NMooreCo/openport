@@ -10,6 +10,8 @@ const CALLS = [
   { name: "handle_refund_request", file: "refunds.py", was: "gpt-5", tier: 1, plain: 96, after: 100 },
   { name: "extract_pii", file: "pii.py", was: "gpt-5-mini", tier: 0, plain: 95, after: 95 },
 ];
+// The pull request opened on GitHub from that run.
+const PULL_REQUEST = "https://github.com/narralogy-labs/supportdesk/pull/1";
 const TIERS = [
   { name: "Nano", size: "30B-A3B" },
   { name: "Super", size: "120B-A12B" },
@@ -342,7 +344,10 @@ export function PortFlow() {
         </div>
       </div>
       <p className="relative mt-10 text-center text-xs text-slate-500">
-        SupportDesk's recorded run, replayed: each call moves to the smallest Nemotron that passes its held-out cases.
+        SupportDesk's recorded run, replayed: each call moves to the smallest Nemotron that passes its held-out cases.{" "}
+        <a href={PULL_REQUEST} target="_blank" rel="noreferrer" className="text-emerald-300 underline decoration-emerald-300/30 underline-offset-2 hover:text-emerald-200">
+          See its pull request on GitHub ↗
+        </a>
       </p>
     </div>
   );

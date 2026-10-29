@@ -3,18 +3,22 @@
 import asyncio
 import json
 import os
+import re
+import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.datastructures import MutableHeaders
 
-from .. import config
+from .. import config, report, sandbox
+from ..port import _diff
 from . import pipeline, upgrades
 from .pipeline import Run, load_runs, resolve_target, run_pipeline
 
@@ -23,6 +27,12 @@ MAX_QUEUED = 3
 KEPT_RUNS = 100  # finished runs kept in memory; older ones go (their files in runs/dashboard stay)
 IN_FLIGHT_USD = 1.0  # what a live run may still spend, counted against the daily budget until it finishes
 REPLAY_SPEED, REPLAY_MAX_GAP = 20, 1.5  # a recorded run replays 20x faster, no pause over 1.5 s
+# With a token for a GitHub organization set aside for it, a finished port's pull request can be opened there
+# (src/openport/sandbox.py): in a fork, for a repo from GitHub, so the original's maintainers aren't notified.
+GITHUB_TOKEN = os.getenv("OPENPORT_GITHUB_TOKEN") or None
+SANDBOX_ORG = os.getenv("OPENPORT_SANDBOX_ORG") or None
+OPENING = threading.Lock()  # one pull request at a time
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 app = FastAPI(title="OpenPort", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
@@ -86,7 +96,12 @@ def info() -> dict:
 def site() -> dict:
     """Whether live runs need the judges' password (and whether this visitor has given it), and the demo video.
     Run by itself, the server has no gate; behind deploy/cloudflare, the Worker answers this instead."""
-    return {"gated": False, "judge": True, "video_url": os.getenv("OPENPORT_VIDEO_URL") or None}
+    return {"gated": False, "judge": True, "video_url": os.getenv("OPENPORT_VIDEO_URL") or None, "github_org": github_org()}
+
+
+def github_org() -> str | None:
+    """The organization this server opens pull requests in, if it has a token for one."""
+    return SANDBOX_ORG if GITHUB_TOKEN and SANDBOX_ORG else None
 
 
 def spent_today() -> float:
@@ -168,6 +183,77 @@ def start_upgrade(body: StartRun, request: Request) -> dict:
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return _launch("upgrade", target, label, local, upgrades.run_pipeline, body.live, _reuse_only(request))
+
+
+def _head(folder: Path) -> str | None:
+    """The commit a clone (and so its port, which copies the clone's .git) started from."""
+    try:
+        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", str(folder), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out if COMMIT.match(out) else None
+
+
+@app.post("/api/runs/{run_id}/github")
+def open_on_github(run_id: str, request: Request) -> dict:
+    """Open the pull request a finished port wrote, in this server's GitHub organization: in its fork of the repo
+    (so the repo's maintainers aren't notified), or for a demo app, in the app's own repo there."""
+    run = runs.get(run_id)
+    if run is None:
+        raise HTTPException(404, "No such run")
+    if run.github:
+        return {"url": run.github, "opened": False}
+    org = github_org()
+    if org is None:
+        raise HTTPException(503, "This server isn't set up to open pull requests on GitHub. `openport pr --open` opens one "
+                                 "from your own machine, with your GitHub login.")
+    reuse_only = _reuse_only(request)
+    if reuse_only == "judges":
+        raise HTTPException(403, "Opening pull requests on GitHub is for the hackathon's judges: unlock it with the password in "
+                                 "the submission's testing instructions.")
+    if reuse_only:
+        raise HTTPException(429, "This demo has opened all the pull requests it can today. `openport pr --open` opens one from "
+                                 "your own machine, with your GitHub login.")
+    ported = next((e for e in run.events if e["type"] == "ported"), None)
+    pr = next((e for e in run.events if e["type"] == "pr"), None)
+    if run.kind != "port" or run.recorded or run.status != "done" or ported is None or pr is None:
+        raise HTTPException(409, "Only a finished live port has a pull request to open.")
+    files = [*ported["changed"], *ported["added"]]
+    if not files:
+        raise HTTPException(409, "This port changed no files, so there's no pull request to open.")
+
+    target, _, local = resolve_target(run.target)
+    if local is None:
+        pack = pipeline.eval_pack_for(target)
+        source = config.RUNS_DIR / "repos" / (pack.commit[:12] if pack and pack.commit else "") / target.replace("/", "__")
+    else:
+        source = local
+    folder = config.RUNS_DIR / "ports" / source.resolve().name
+    # The port's folder is reused by the target's next run: open only the change this run made (a diff the run had
+    # to cut short can't be compared, so it's taken as is).
+    try:
+        cut = len(ported["diff"]) >= 300_000
+        same = cut or sorted(_diff(source, folder, files).splitlines()) == sorted(ported["diff"].splitlines())
+    except OSError:
+        same = False
+    if not same:
+        raise HTTPException(409, f"{run.label} has been ported again since this run, so its pull request is no longer here to "
+                                 "open. Run it again and open that one.")
+    where = (f"a fork of [{target}](https://github.com/{target}), so its maintainers weren't notified" if local is None
+             else "the demo app's own repo, whose main branch is the app before the port")
+    note = f"> Opened by OpenPort's hosted demo in `{org}`, an organization for its pull requests, on {where}.\n\n"
+    with OPENING:
+        if run.github:  # opened while this request waited
+            return {"url": run.github, "opened": False}
+        try:
+            opened = sandbox.open_pr(GITHUB_TOKEN, org, folder, files, report.TITLE, note + pr["body"], f"openport/nemotron-{run.id}",
+                                     upstream=None if local else target, original=local, base_commit=None if local else _head(folder))
+        except (sandbox.GitHubError, httpx.HTTPError) as error:
+            raise HTTPException(502, f"GitHub didn't take the pull request: {error}") from None
+        run.emit("github", url=opened.url, repo=opened.repo)
+        pipeline._save(run)
+    return {"url": opened.url, "opened": opened.new}
 
 
 @app.get("/api/runs/{run_id}")

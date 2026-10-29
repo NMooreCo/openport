@@ -9,10 +9,17 @@ interface Env {
 	// Set as a secret, live runs are for whoever has it (the hackathon's judges); everyone else sees the replays.
 	JUDGE_PASSWORD?: string;
 	VIDEO_URL?: string;
+	// A token for a GitHub organization set aside for OpenPort's pull requests (SANDBOX_ORG), as a secret: with it, a
+	// finished live port's pull request can be opened there.
+	GITHUB_TOKEN?: string;
+	SANDBOX_ORG?: string;
+	NEW_PRS_PER_DAY: string;
 }
 
 // Requests that can start a run (and spend Token Factory and Tavily credit) rather than replay one.
 const RUN_STARTS = new Set(["/api/runs", "/api/upgrades"]);
+// Requests that open a run's pull request on GitHub.
+const PR_OPENS = /^\/api\/runs\/[a-f0-9]+\/github$/;
 // Wrong passwords one address may try in an hour; past that its guesses aren't checked until the next hour.
 const MISSES_PER_HOUR = 20;
 
@@ -64,28 +71,37 @@ export class Dashboard extends DurableObject<Env> {
 		forwarded.headers.delete("x-openport-judge"); // the password stops here
 
 		// The server caps a day's spend, but it forgets when the container sleeps. This object's storage doesn't:
-		// it counts the runs started each UTC day, and past the cap the server may only show runs it already has.
-		// With a judges' password set, a run can only start for someone who gives it.
+		// it counts the runs started, and the pull requests opened, each UTC day, and past the cap the server may only
+		// show what it already has. With a judges' password set, either needs someone who gives it.
 		const starting = request.method === "POST" && RUN_STARTS.has(url.pathname);
-		const day = `new-runs:${new Date().toISOString().slice(0, 10)}`;
-		const started = starting ? ((await this.ctx.storage.get<number>(day)) ?? 0) : 0;
-		if (starting && this.env.JUDGE_PASSWORD && !(await this.isJudge(request))) {
+		const opening = request.method === "POST" && PR_OPENS.test(url.pathname);
+		const date = new Date().toISOString().slice(0, 10);
+		const counter = starting ? `new-runs:${date}` : opening ? `new-prs:${date}` : null;
+		const cap = Number((starting ? this.env.NEW_RUNS_PER_DAY : this.env.NEW_PRS_PER_DAY) || 20);
+		const used = counter ? ((await this.ctx.storage.get<number>(counter)) ?? 0) : 0;
+		if (counter && this.env.JUDGE_PASSWORD && !(await this.isJudge(request))) {
 			forwarded.headers.set("x-openport-reuse-only", "judges");
-		} else if (starting && started >= Number(this.env.NEW_RUNS_PER_DAY || 20)) {
+		} else if (counter && used >= cap) {
 			forwarded.headers.set("x-openport-reuse-only", "1");
 		}
 		const response = await this.ctx.container!.getTcpPort(PORT).fetch(forwarded);
-		if (starting && response.ok) {
-			const run = (await response.clone().json().catch(() => null)) as { reused?: boolean } | null;
-			if (run?.reused === false) await this.ctx.storage.put(day, started + 1);
+		if (counter && response.ok) {
+			const answer = (await response.clone().json().catch(() => null)) as { reused?: boolean; opened?: boolean } | null;
+			if (starting ? answer?.reused === false : answer?.opened === true) await this.ctx.storage.put(counter, used + 1);
 		}
 		return response;
 	}
 
-	/** The page's /api/site: whether live runs need the password, whether this visitor gave it, and the video. */
+	/** The page's /api/site: whether live runs need the password, whether this visitor gave it, the video, and the
+	 * GitHub organization pull requests open in. */
 	private async site(request: Request): Promise<Response> {
 		const gated = Boolean(this.env.JUDGE_PASSWORD);
-		const body = { gated, judge: gated ? await this.isJudge(request) : true, video_url: this.env.VIDEO_URL || null };
+		const body = {
+			gated,
+			judge: gated ? await this.isJudge(request) : true,
+			video_url: this.env.VIDEO_URL || null,
+			github_org: this.env.GITHUB_TOKEN && this.env.SANDBOX_ORG ? this.env.SANDBOX_ORG : null,
+		};
 		return Response.json(body, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
 	}
 
@@ -112,6 +128,8 @@ export class Dashboard extends DurableObject<Env> {
 				NEBIUS_API_KEY: this.env.NEBIUS_API_KEY,
 				TAVILY_API_KEY: this.env.TAVILY_API_KEY,
 				OPENPORT_DAILY_BUDGET_USD: this.env.OPENPORT_DAILY_BUDGET_USD,
+				OPENPORT_GITHUB_TOKEN: this.env.GITHUB_TOKEN,
+				OPENPORT_SANDBOX_ORG: this.env.SANDBOX_ORG,
 			}).filter((entry): entry is [string, string] => Boolean(entry[1])),
 		);
 		// What the running container was started with, as a digest (no secret is stored). A deploy with a new image,

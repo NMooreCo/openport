@@ -62,6 +62,23 @@ before anything reaches the container. Without the secret, there's no gate. Live
 `OPENPORT_DAILY_BUDGET_USD` (5) and `NEW_RUNS_PER_DAY` (30). To embed the demo video on the front page, set
 `VIDEO_URL` in `live/wrangler.jsonc` to its YouTube link and deploy again.
 
+### Opening pull requests on GitHub
+
+With a token, a finished live port's pull request can be opened on GitHub from the dashboard ("Open on GitHub"), in
+an organization set aside for it: a repo from GitHub is forked there and the PR opened inside the fork, so its
+maintainers aren't notified. Make the organization (free), name it in `SANDBOX_ORG` in `live/wrangler.jsonc`
+(`narralogy-labs`), and create a fine-grained token at GitHub > Settings > Developer settings > Fine-grained
+tokens with the organization as its resource owner, access to all its repositories, and read and write on
+Administration (to fork and create repos), Contents, Pull requests and Workflows (a port adds a workflow file). Then:
+
+```bash
+npx wrangler secret put GITHUB_TOKEN --config live/wrangler.jsonc
+```
+
+The token reaches only the container, can't touch any repo outside the organization, and is never put in a URL or a
+command line. Opening a PR takes the judges' password like a live run, and at most `NEW_PRS_PER_DAY` (20) a day.
+The organization's repos have Actions turned off, since a port's workflow would fail there without its secrets.
+
 To redeploy after changing the code or the recordings, run `npm run deploy:live` again. It rebuilds the image and
 rolls it out.
 

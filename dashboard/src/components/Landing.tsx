@@ -33,11 +33,13 @@ const MODELS = [
   { name: "Tavily", tag: "research", role: "Grounds every change in a quoted source: NVIDIA's guidance, changelogs, pricing pages." },
 ];
 
-const DEMOS: { target: string; mode: Mode; label: string; detail: string }[] = [
-  { target: "supportdesk", mode: "port", label: "SupportDesk", detail: "5 calls on OpenAI + Anthropic, 118 labelled cases" },
-  { target: "preflight", mode: "port", label: "jsliapark/preflight", detail: "an open-source AI PR reviewer: 4 Claude Opus calls" },
-  { target: "receipts", mode: "port", label: "Receipt reader", detail: "a gpt-4o-mini call that reads photos, on Super VL" },
-  { target: "authkit", mode: "upgrade", label: "AuthKit upgrade", detail: "vulnerable PyJWT and requests, proven by its tests" },
+// `pr`: the pull request opened on GitHub from the recorded run each demo replays, in OpenPort's organization for them.
+const PRS = "https://github.com/narralogy-labs";
+const DEMOS: { target: string; mode: Mode; label: string; detail: string; pr?: string }[] = [
+  { target: "supportdesk", mode: "port", label: "SupportDesk", detail: "5 calls on OpenAI + Anthropic, 118 labelled cases", pr: `${PRS}/supportdesk/pull/1` },
+  { target: "preflight", mode: "port", label: "jsliapark/preflight", detail: "an open-source AI PR reviewer: 4 Claude Opus calls", pr: `${PRS}/jsliapark-preflight/pull/1` },
+  { target: "receipts", mode: "port", label: "Receipt reader", detail: "a gpt-4o-mini call that reads photos, on Super VL", pr: `${PRS}/receipts/pull/1` },
+  { target: "authkit", mode: "upgrade", label: "AuthKit upgrade", detail: "vulnerable PyJWT and requests, proven by its tests", pr: `${PRS}/authkit/pull/1` },
 ];
 
 function youtubeId(url: string): string | null {
@@ -391,15 +393,20 @@ export function Landing() {
           <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {DEMOS.map((demo, i) => (
               <Reveal key={demo.target} delay={i * 80}>
-                <button
-                  disabled={Boolean(busy)}
-                  onClick={() => open(demo)}
-                  className="glass group h-full w-full rounded-2xl p-5 text-left transition hover:-translate-y-0.5 hover:border-emerald-400/50 disabled:opacity-50"
-                >
+                <div className="glass flex h-full flex-col rounded-2xl p-5 transition hover:-translate-y-0.5 hover:border-emerald-400/50">
                   <span className="block font-mono text-sm text-white">{demo.label}</span>
                   <span className="mt-1 block text-xs leading-relaxed text-muted">{demo.detail}</span>
-                  <span className="mt-4 block text-sm text-emerald-300 transition group-hover:translate-x-1">{busy === demo.target ? "Opening…" : "Watch the run →"}</span>
-                </button>
+                  <span className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pt-4 text-sm">
+                    <button disabled={Boolean(busy)} onClick={() => open(demo)} className="group text-emerald-300 disabled:opacity-50">
+                      <span className="inline-block transition group-hover:translate-x-1">{busy === demo.target ? "Opening…" : "Watch the run →"}</span>
+                    </button>
+                    {demo.pr && (
+                      <a href={demo.pr} target="_blank" rel="noreferrer" className="text-xs text-slate-400 hover:text-white">
+                        Its PR on GitHub ↗
+                      </a>
+                    )}
+                  </span>
+                </div>
               </Reveal>
             ))}
           </div>
@@ -410,7 +417,9 @@ export function Landing() {
                 <h3 className="font-display text-xl font-semibold text-white">For the judges: live runs</h3>
                 <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">
                   With the password from the submission's testing instructions, "Run it live" on any demo calls Nemotron on Token Factory for
-                  real, with Tavily's research, and you watch the agent work as it happens.
+                  real, with Tavily's research, and you watch the agent work as it happens. Paste any public GitHub repo in the dashboard to port
+                  it, then "Open on GitHub" opens its pull request for real, in a fork in OpenPort's own organization, so the repo's
+                  maintainers aren't notified.
                 </p>
                 <JudgeUnlock />
               </div>
