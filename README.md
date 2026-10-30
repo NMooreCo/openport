@@ -20,6 +20,30 @@ Built for the [Nebius x NVIDIA Global AI Hackathon](https://nebiusglobalaihackat
 
 Build notes on Token Factory and Nemotron, with what I'd improve, are in [FEEDBACK.md](FEEDBACK.md). The build plan and its progress log are in [PLAN.md](PLAN.md).
 
+## For the judges
+
+Where each thing the submission asks for is:
+
+| Asked for | Where |
+|---|---|
+| Setup instructions | [Quickstart](#quickstart) |
+| How OpenPort uses NVIDIA Nemotron | [How OpenPort uses NVIDIA Nemotron](#how-openport-uses-nvidia-nemotron) |
+| Where Token Factory accelerated the work | [Where Token Factory accelerated the work](#where-token-factory-accelerated-the-work) |
+| Other Nebius tools and services | [Other Nebius tools and services](#other-nebius-tools-and-services) |
+| How it uses Tavily (the Best Use of Tavily prize) | [How OpenPort uses Tavily](#how-openport-uses-tavily) |
+| Feedback on Token Factory, AI Cloud and the NVIDIA models | [FEEDBACK.md](FEEDBACK.md) |
+| An OSI-approved open-source license | [MIT](LICENSE) |
+
+### Testing it
+
+The password for live runs is in the file uploaded with the Devpost submission, which only judges can see.
+
+1. **Watch a recorded run (no password).** Open https://nebius.narralogy.com, click **Open the dashboard** and pick a demo: SupportDesk, jsliapark/preflight or Receipt reader. For an upgrade, click **Upgrade dependencies** and pick shareAI-lab/learn-claude-code or AuthKit. The dashboard replays a real run from Oct 28 or 29, labelled as recorded, and nothing calls Token Factory while it plays. When it ends, **Pull request** shows the PR description, **Code changes** the diff, and **Opened on GitHub** links to the real pull request that run opened.
+2. **Run one live.** Enter the password in the **Judges' password** box (on the front page under *Try it*, or in a recorded run's banner) and click **Unlock live runs**. Then open a demo and click **Run it live**: OpenPort tests each call on Nemotron through Token Factory, with Tavily's research, and you watch it climb the tiers. Receipt reader takes about 40 seconds, jsliapark/preflight about 4 minutes, SupportDesk about 10. You can also paste any public GitHub repo: the hosted server only runs code it has vetted (the demos, and preflight at a pinned commit), so another repo is scanned and ported without being tested, and the dashboard says so.
+3. **Open a real pull request.** When a live port finishes, click **Open on GitHub**. The PR opens in [narralogy-labs](https://github.com/narralogy-labs): in the demo app's own repo, or in a fork for a repo from GitHub, so its maintainers aren't notified. Clicking again returns the same PR.
+
+Live upgrades on the hosted server stop after choosing the safe versions, because the server can't run Docker for the repo's tests; the recorded upgrades show the whole flow, and `uv run openport upgrade examples/authkit --apply` runs it end to end locally. The hosted demo caps live use at $5 of Token Factory spend and 30 new runs a day; past that, the recorded runs still play.
+
 ## Quickstart
 
 Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and git. Some steps need more: Node.js and npm for TypeScript apps and the dashboard, Docker for `upgrade --apply`, and the [GitHub CLI](https://cli.github.com/) for `pr --open`.
@@ -158,7 +182,7 @@ For hosting, the dashboard only accepts its demo presets and public GitHub repos
 
 A hosted dashboard can't push to your repos, so it opens pull requests in a GitHub organization of its own instead: give it a fine-grained token for that organization (`OPENPORT_GITHUB_TOKEN`, with `OPENPORT_SANDBOX_ORG` naming it), and a finished port gets an **Open on GitHub** button. A repo from GitHub is forked into the organization and the PR opened inside the fork, so its maintainers aren't notified; a demo app gets a repo there whose `main` is the app before the port. The branch is the commit the run started from plus exactly the files the run changed, and the PR body is the run's description, with @mentions and links to other repos' issues defused. The demos' recorded runs link to the PRs opened from them in [`narralogy-labs`](https://github.com/narralogy-labs). To open the PR in your own repo, run `openport pr --open` with your own GitHub login.
 
-The hosted dashboard, at **https://nebius.narralogy.com**, opens on a page that explains OpenPort and plays the recorded demos for anyone; live runs there are for the hackathon's judges, behind a password in the submission's testing instructions. It runs on **Cloudflare**: the same Docker image in a Cloudflare Container behind a Worker, with the API keys as Worker secrets (never baked into the image). [`deploy/cloudflare/`](deploy/cloudflare/README.md) has the config and the steps. The hackathon's rules count Token Factory calls as using the Nebius platform and give no AI Cloud credit, so the dashboard doesn't run on AI Cloud. For anyone who has it, `scripts/deploy_endpoint.sh` puts the same image on a **Nebius Serverless Endpoint**, with the keys taken from a MysteryBox secret.
+The hosted dashboard, at **https://nebius.narralogy.com**, opens on a page that explains OpenPort and plays the recorded demos for anyone; live runs there are for the hackathon's judges, behind a password (see [For the judges](#for-the-judges)). It runs on **Cloudflare**: the same Docker image in a Cloudflare Container behind a Worker, with the API keys as Worker secrets (never baked into the image). [`deploy/cloudflare/`](deploy/cloudflare/README.md) has the config and the steps. The hackathon's rules count Token Factory calls as using the Nebius platform and give no AI Cloud credit, so the dashboard doesn't run on AI Cloud. For anyone who has it, `scripts/deploy_endpoint.sh` puts the same image on a **Nebius Serverless Endpoint**, with the keys taken from a MysteryBox secret.
 
 A **static replay** of the dashboard plays the demos' recorded runs with no server, key or credit behind it: `uv run python scripts/static_replay.py` builds it into `site/`, for any static host (`deploy/cloudflare/replay/` serves it free on Cloudflare). `.github/workflows/pages.yml` publishes it on GitHub Pages, so the demo keeps working whatever happens to the server or the credit.
 
@@ -185,9 +209,9 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the Oct 28 re-measure and recordings, as one checked sequence) |
 | `tests/` | Offline tests (no API keys needed) |
 
-## How OpenPort uses NVIDIA Nemotron and Nebius
+## How OpenPort uses NVIDIA Nemotron
 
-**Token Factory is the inference backend.** OpenPort talks to it with the OpenAI SDK pointed at `https://api.tokenfactory.nebius.com/v1/` and a `NEBIUS_API_KEY`. It resolves the three Nemotron tiers — **Nano**, **Super** and **Ultra** — from the live `/v1/models` catalog at runtime (or from `OPENPORT_MODEL_<TIER>` if you pin them), and reads per-token prices from that same catalog so the cost numbers in every report are the real ones, not estimates.
+Every model OpenPort uses is NVIDIA Nemotron on Nebius Token Factory, and every call it moves lands on one: Nemotron 3 **Nano**, **Super** or **Ultra**, or Nemotron 3.5 **Super VL** for a call that sends images (Nemotron 3.5 Lightning is an optional rung, with Nano's size and price).
 
 **The runtime shim makes the swap honest.** OpenAI SDK calls move to Token Factory with just a base URL and model change, and so do plain HTTP calls to OpenAI-style endpoints: the port rewrites their URL, key variable and model where the code spells them out. Anthropic SDK calls can't — there is no Anthropic-compatible API — so [`openport_llm.py`](src/openport/runtime/openport_llm.py) translates Anthropic Messages calls (system parameter, content blocks, tools, `tool_use`/`tool_result`) into Nemotron chat completions at the call boundary, leaving the app's own code untouched. [`openport_llm.mjs`](src/openport/runtime/openport_llm.mjs) does the same in TypeScript and JavaScript, and a test checks the two translate alike.
 
@@ -203,6 +227,10 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | Fixing the code a dependency upgrade broke (Ultra takes over when Super's fix fails) | Super, then Ultra | [`upgrade/fix.py`](src/openport/upgrade/fix.py) |
 | Inventing training inputs, and answering them as the teacher | Super, Ultra | [`distill.py`](src/openport/distill.py) |
 
+**Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
+
+## How OpenPort uses Tavily
+
 **Tavily is how OpenPort reads what changed since any model was trained:** pricing pages, NVIDIA's model guidance and package changelogs. Every quote it uses is checked word for word against the page Tavily returned.
 
 | Job inside OpenPort | Tavily | Where |
@@ -212,10 +240,23 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | Each upgraded package's changelog, cut to the releases in between and quoted in the PR | Extract, then Search, then Map | [`upgrade/changelog.py`](src/openport/upgrade/changelog.py) |
 | The advisory and migration notes, when an upgrade breaks the tests | Search | [`upgrade/research.py`](src/openport/upgrade/research.py) |
 
-**Each of your app's calls lands on the cheapest tier that passes its eval.** `openport tune` starts every call on Nano as written, and only moves it up to Super or Ultra when the eval won't pass otherwise — so the PR shows, per call, the tier chosen, the quality score, and the cost before and after.
+## Where Token Factory accelerated the work
 
-> Built, not run live: `tune --jobs` on **Nebius Serverless Jobs**, the dashboard on a **Nebius Serverless Endpoint**, and serving the fine-tuned student, which needs a Dedicated Endpoint. All three need AI Cloud, which the hackathon gives no credit for, so their code and tests are in the repo but no result is claimed. The plan is in [PLAN.md](PLAN.md).
+- **No GPUs and no model servers.** All of the models above, Ultra's 550B parameters included, sit behind one API key. OpenPort talks to them with the OpenAI SDK pointed at `https://api.tokenfactory.nebius.com/v1/`, so there was no inference stack to build or host.
+- **Changing tier is changing a string.** The tuner climbs from Nano to Super to Ultra by changing the model name. That's what makes searching every call for the cheapest tier that passes practical at all.
+- **Real prices, live.** OpenPort resolves the tiers from the `/v1/models` catalog at runtime (or from `OPENPORT_MODEL_<TIER>` if you pin them) and reads per-token prices from that same catalog, so every cost in every PR is computed from Token Factory's own numbers, not a table kept by hand.
+- **Cheap enough to test everything.** A full port of SupportDesk (5 calls, 118 labelled cases, every tuning round, Ultra's rewrites and judging) cost $0.70 of Token Factory. Porting preflight's 4 calls cost about $0.07, and a live port of the receipt reader about $0.02.
+- **Fast enough to watch.** On the hosted dashboard, the receipt reader ports in about 40 seconds, preflight in about 4 minutes and SupportDesk in about 10.
+- **Fine-tuning without hardware.** `openport distill` and `openport finetune` turn Ultra's checked answers into a LoRA fine-tune through Token Factory's fine-tuning API: a job of 209 examples trained in 14 minutes, with nothing to provision.
+
+## Other Nebius tools and services
+
+- **Token Factory fine-tuning (SFT / LoRA):** used. One distillation job ran and its adapter downloaded. Token Factory doesn't fine-tune Nemotron yet, so the student was Llama 3.1 8B, and serving it needs a Dedicated Endpoint; no result from it is claimed.
+- **Nebius Serverless Jobs:** built and unit-tested, not run. `openport tune --jobs` runs each call site in its own container job, with the API keys as **MysteryBox** secrets.
+- **Nebius Serverless Endpoint:** built, not run. `scripts/deploy_endpoint.sh` puts the dashboard's image on one, with the keys from a MysteryBox secret.
+
+Serverless Jobs and Endpoints need AI Cloud credit, which the hackathon doesn't provide, so the hosted dashboard runs the same image on Cloudflare and calls Token Factory. The plan is in [PLAN.md](PLAN.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE), an OSI-approved open-source license.
