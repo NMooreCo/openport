@@ -58,6 +58,12 @@ export class Dashboard extends DurableObject<Env> {
 		const url = new URL(request.url);
 		if (url.pathname === "/api/site") return this.site(request); // answered here: no need to wake the container
 
+		// Anything but GET and HEAD can do work: start a run, open a pull request.
+		const mutating = request.method !== "GET" && request.method !== "HEAD";
+		// The server routes the decoded path, so /api%2Fruns or /api//runs would reach a run start without matching the
+		// checks below. The dashboard never sends either.
+		if (mutating && /%|\/\//.test(url.pathname)) return Response.json({ detail: "Not Found" }, { status: 404 });
+
 		// Requests that arrive while it starts share one start and one readiness check.
 		this.starting ??= this.start().finally(() => {
 			this.starting = undefined;
@@ -69,25 +75,41 @@ export class Dashboard extends DurableObject<Env> {
 		const forwarded = new Request(url, request);
 		forwarded.headers.delete("host");
 		forwarded.headers.delete("x-openport-judge"); // the password stops here
+		forwarded.headers.delete("x-openport-reuse-only"); // only this object says what a request may do
 
 		// The server caps a day's spend, but it forgets when the container sleeps. This object's storage doesn't:
 		// it counts the runs started, and the pull requests opened, each UTC day, and past the cap the server may only
-		// show what it already has. With a judges' password set, either needs someone who gives it.
+		// show what it already has. With a judges' password set, any request that can do work needs someone who gives
+		// it: the check fails closed, whatever the path, rather than trusting it to match.
 		const starting = request.method === "POST" && RUN_STARTS.has(url.pathname);
 		const opening = request.method === "POST" && PR_OPENS.test(url.pathname);
 		const date = new Date().toISOString().slice(0, 10);
 		const counter = starting ? `new-runs:${date}` : opening ? `new-prs:${date}` : null;
 		const cap = Number((starting ? this.env.NEW_RUNS_PER_DAY : this.env.NEW_PRS_PER_DAY) || 20);
-		const used = counter ? ((await this.ctx.storage.get<number>(counter)) ?? 0) : 0;
-		if (counter && this.env.JUDGE_PASSWORD && !(await this.isJudge(request))) {
+		let reserved = false;
+		if (mutating && this.env.JUDGE_PASSWORD && !(await this.isJudge(request))) {
 			forwarded.headers.set("x-openport-reuse-only", "judges");
-		} else if (counter && used >= cap) {
-			forwarded.headers.set("x-openport-reuse-only", "1");
+		} else if (counter) {
+			const used = (await this.ctx.storage.get<number>(counter)) ?? 0;
+			if (used >= cap) {
+				forwarded.headers.set("x-openport-reuse-only", "1");
+			} else {
+				// The slot is taken before the run starts, so requests arriving together can't all pass the cap.
+				await this.ctx.storage.put(counter, used + 1);
+				reserved = true;
+			}
 		}
 		const response = await this.ctx.container!.getTcpPort(PORT).fetch(forwarded);
-		if (counter && response.ok) {
-			const answer = (await response.clone().json().catch(() => null)) as { reused?: boolean; opened?: boolean } | null;
-			if (starting ? answer?.reused === false : answer?.opened === true) await this.ctx.storage.put(counter, used + 1);
+		if (reserved && counter) {
+			const answer = response.ok
+				? ((await response.clone().json().catch(() => null)) as { reused?: boolean; opened?: boolean } | null)
+				: null;
+			const counted = starting ? answer?.reused === false : answer?.opened === true;
+			if (!counted) {
+				// A replay, a pull request that was already open, or an error: the slot goes back.
+				const now = (await this.ctx.storage.get<number>(counter)) ?? 1;
+				await this.ctx.storage.put(counter, Math.max(0, now - 1));
+			}
 		}
 		return response;
 	}
