@@ -381,3 +381,19 @@ def test_a_function_with_two_calls_gets_a_plan_entry_for_each(tmp_path, monkeypa
     assert len(ids) == 2 and set(plan) == set(ids)  # both calls moved together, as their eval tested them
     assert {entry["model"] for entry in plan.values()} == {"nvidia/nano-test"}
     __import__("sys").modules.pop("writer", None)
+
+
+def test_what_the_engineer_sees_follows_the_dataset_not_which_case_finished_first():
+    from openport.evals.context import CURRENT_CASE
+    from openport.tune.variant import VariantClient
+
+    fake = FakeTokenFactory(lambda request: completion(content="ok"))
+    wrapped = VariantClient(fake, Variant(), held_out=frozenset({"c1"}), order={"c0": 0, "c1": 1, "c2": 2})
+    for case, system in (("c2", "Second prompt."), ("c1", "Held-out prompt."), ("c0", "First prompt.")):  # finishing in reverse
+        token = CURRENT_CASE.set(case)
+        try:
+            wrapped.chat.completions.create(model="m", messages=[{"role": "system", "content": system}, {"role": "user", "content": case}])
+        finally:
+            CURRENT_CASE.reset(token)
+    assert wrapped.systems == ["First prompt.", "Second prompt."]
+    assert wrapped.sample["messages"][-1]["content"] == "c0"

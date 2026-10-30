@@ -19,7 +19,7 @@ from .clients import ClientAction, decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
 from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, TOKEN_FACTORY_V1, url_edits, why_kept
 from .plan import SiteDecision
-from .prompts import find_prompt_file, prompt_file_insertion, python_literal_insertion
+from .prompts import find_prompt_file, prompt_file_insertion, prompt_files_of, python_literal_insertion
 
 RUNTIME_MODULE = "openport_llm"
 HELPERS = {
@@ -101,6 +101,7 @@ class _Repo:
         self._bindings: dict[str, list[_Binding]] = {}
         self._sources: dict[str, bytes] = {}
         self._mentions: dict[str, list[_File]] = {}
+        self._unparsed: dict[str, list[str]] = {}
 
     def file(self, path: str | None) -> _File | None:
         if not path:
@@ -108,7 +109,7 @@ class _Repo:
         if path not in self._files:
             try:
                 self._files[path] = _File.parse(self.root, path)
-            except (SyntaxError, ValueError, OSError):
+            except (SyntaxError, ValueError, OSError, RecursionError, MemoryError):  # e.g. a 3,000-term generated expression
                 self._files[path] = None
         return self._files[path]
 
@@ -207,6 +208,17 @@ class _Repo:
         found = self.module_path(module, f.path)
         return (found, function) if found else None
 
+    @staticmethod
+    def _rebound(f: _File, site: CallSiteFinding, receiver: str) -> bool:
+        """Whether the function the call is in has its own `receiver` (a parameter, or assigned there)."""
+        call = _call_node(f, site)
+        if call is None or not re.fullmatch(r"\w+", receiver):
+            return False
+        name = call.func
+        while isinstance(name, (ast.Attribute, ast.Call)):
+            name = name.value if isinstance(name, ast.Attribute) else name.func
+        return isinstance(name, ast.Name) and name.id == receiver and _shadowed(f, name)
+
     def link(self, site: CallSiteFinding) -> list[_Binding]:
         """The constructor(s) that build the client this call site uses."""
         f = self.file(site.file)
@@ -223,6 +235,9 @@ class _Repo:
             base = options[1]
             kinds = ["attribute"] if base.startswith(("self.", "cls.")) else ["local", "module_global", "imported", "other"]
             return next((found for k in kinds if (found := self.link(replace(site, receiver=base, receiver_kind=k)))), [])
+        if kind in ("module_global", "imported") and self._rebound(f, site, receiver):
+            # `client = connect(key)` in the function: its own client under the module's name, not the module's
+            return self.link(replace(site, receiver_kind="other")) if kind == "module_global" else []
         if kind == "module_global":
             return [b for b in self.bindings(f) if b.kind == "module" and b.var == receiver]
         if kind == "local":
@@ -242,8 +257,9 @@ class _Repo:
             match = re.fullmatch(r"([\w.]+)\(.*\)", receiver, re.S)
             return self.made_by(f, match[1], site.function) if match else []
         if kind == "other" and re.fullmatch(r"\w+", receiver):  # `client = get_client(...)` earlier in the function
+            rebound = self._rebound(f, site, receiver)  # then the module's client of that name isn't this one
             wrapped = [b for b in self.bindings(f) if b.var == receiver  # client = instrument(OpenAI()), here or at the top
-                       and (b.kind == "local" and b.function == site.function or b.kind == "module")]
+                       and (b.kind == "local" and b.function == site.function or b.kind == "module" and not rebound)]
             if wrapped:
                 return wrapped
             call = _call_node(f, site)
@@ -329,8 +345,15 @@ class _Repo:
         if name not in self._mentions:
             needle = name.encode()
             paths = [path for path in self.modules.values() if not is_test_path(path) and needle in self._raw(path)]
-            self._mentions[name] = [f for f in map(self.file, paths) if f is not None]
+            files = [self.file(path) for path in paths]
+            self._mentions[name] = [f for f in files if f is not None]
+            self._unparsed[name] = [path for path, f in zip(paths, files) if f is None]
         return self._mentions[name]
+
+    def unparsed(self, name: str) -> list[str]:
+        """The app's files that have `name` in them but couldn't be parsed: what they do with it can't be told."""
+        self._mentioning(name)
+        return self._unparsed[name]
 
     def _raw(self, path: str) -> bytes:
         if path not in self._sources:
@@ -645,6 +668,8 @@ def _other_uses(repo: _Repo, binding: _Binding, linked: Callable[[str, int], boo
     None of that moves to Token Factory, so each counts as a call that stays: the client is split, or kept.
     `linked(file, line)` says whether the call on that line is one of the client's own."""
     found: list[str] = []
+    if binding.kind == "module" and binding.var:  # another module may import it, in a file too deep to read
+        found += [f"`{binding.var}` in {path}, which OpenPort couldn't parse" for path in repo.unparsed(binding.var) if path != binding.file]
     pending, aliased = _client_references(repo, binding), False
     while pending:
         aliases: list[tuple[_File, ast.AST]] = []
@@ -660,6 +685,10 @@ def _other_uses(repo: _Repo, binding: _Binding, linked: Callable[[str, int], boo
             called = isinstance(parent, ast.Call) and parent.func is outer
             if called and any(tuple(names) == suffix for suffix, _, _ in CALL_SUFFIXES) and linked(f.path, parent.lineno):
                 continue
+            if called and names == ["close"] and not parent.args and not parent.keywords:  # sends nothing; the stand-ins close too
+                continue
+            # Anything else stays, a read of its base URL or key included: lobehub hands `this.client.baseURL` to its own
+            # fetch of /v1/models, with the provider's key, which would go to Token Factory if the client moved.
             use = f"`{ast.unparse(outer)}` ({f.path}:{outer.lineno})"
             if use not in found:
                 found.append(use)
@@ -673,7 +702,7 @@ def _read_only_at(repo: _Repo, f: _File, name: str, uses: list[ast.AST]) -> bool
     used = {id(node) for node in uses}
     if any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load) and id(n) not in used for n in ast.walk(f.tree)):
         return False
-    return not _importers(repo, f, name)
+    return not _importers(repo, f, name) and not [path for path in repo.unparsed(name) if path != f.path]
 
 
 def _call_node(f: _File, site: CallSiteFinding) -> ast.Call | None:
@@ -728,6 +757,7 @@ def _vendor_dirs(repo: _Repo, files: set[str]) -> dict[str, str]:
 
 
 OPENAI_REQUIREMENT = "openai>=1.0"  # what the runtime imports; an app that only used Anthropic's SDK may not have it
+LOCKFILES = ("uv.lock", "poetry.lock", "pdm.lock")
 
 
 def _requirement_names(lines: list[str]) -> set[str]:
@@ -749,7 +779,7 @@ def _with_openai(name: str, raw: bytes) -> bytes | None | bool:
         names = _requirement_names(text.splitlines())
         if "openai" in names:
             return True
-        if "anthropic" not in names:
+        if "anthropic" not in names or "--hash" in text:  # pip wants a hash on every line once one has it
             return None
         return raw + (nl if raw and not raw.endswith(b"\n") else b"") + OPENAI_REQUIREMENT.encode() + nl
     try:  # pyproject.toml: PEP 621's [project] dependencies only
@@ -792,6 +822,8 @@ def _openai_dependency(repo: _Repo, vendor_dirs: set[str]) -> tuple[dict[str, by
             path = posixpath.join(folder, name)
             if path in changed:
                 listed = True
+            elif name == "pyproject.toml" and any((repo.root / folder / lock).is_file() for lock in LOCKFILES):
+                continue  # `uv sync --locked` and the like would fail on a dependency the lockfile doesn't have
             elif (repo.root / path).is_file():
                 result = _with_openai(name, (repo.root / path).read_bytes())
                 if isinstance(result, bytes):
@@ -831,8 +863,8 @@ def _factory_split(f: "_File", binding: "_Binding", ported: list[CallSiteFinding
     name = binding.function
     if not name or "." in name or binding.kind not in ("module", "local", "return"):
         return False
-    pattern = re.compile(rf"(?:[\w.]+\.)?{re.escape(name)}\(\)")
-    if not all(s.receiver_kind == "factory" and pattern.fullmatch(s.receiver) for s in ported):
+    pattern = re.compile(rf"(?:[\w.]+\.)?{re.escape(name)}\(\)(?:\.beta)*")  # `get_client().beta` is the same client
+    if not all(pattern.fullmatch(s.receiver) and (s.receiver_kind == "factory" or s.receiver.endswith(".beta")) for s in ported):
         return False
     factory = next((n for n in f.tree.body if isinstance(n, _FUNCTIONS) and n.name == name), None)
     if factory is None:
@@ -1098,7 +1130,10 @@ def _kept_prompts(repo: "_Repo", sites: list[CallSiteFinding], plan: dict[str, S
     found = set()
     for site in sites:
         f = repo.file(site.file)
-        if f is None or not plan[site.id].keep:
+        if not plan[site.id].keep:
+            continue
+        found |= prompt_files_of(repo.root, plan[site.id].system_prompts)  # the prompt files it was seen sending
+        if f is None:
             continue
         if site.sdk == "http":
             http = http_calls.get(site.id)
@@ -1138,6 +1173,8 @@ def _apply_addendum(repo: "_Repo", f: _File, call: ast.Call, site: CallSiteFindi
             placed = False
             continue
         path, offset, raw = hit
+        if ("file", path, offset) in kept_prompts:
+            return f"Tuned: a call that stays uses the prompt in {path} too, so give this call its own, with \"{addendum}\" appended"
         if (path, offset, addendum) not in applied:
             text_edits.setdefault(path, (raw, []))[1].append(prompt_file_insertion(raw, offset, addendum))
             applied.add((path, offset, addendum))
@@ -1602,7 +1639,8 @@ def port_python(
             if unlisted:
                 plan[site.id].notes.append(f"OpenPort's runtime ({', '.join(unlisted)}) imports the `openai` package: add it to the "
                                            "app's dependencies (OpenPort adds it to a requirements.txt or pyproject.toml that "
-                                           "lists `anthropic`)")
+                                           "lists `anthropic`, but not to one that pins hashes or that a lockfile pins: add it "
+                                           "with the tool that writes those, e.g. `uv add openai`)")
 
     changed_files |= set(edits)
     # Calls sharing a string each edit it, and settings added after the same last argument each add its comma: keep one.

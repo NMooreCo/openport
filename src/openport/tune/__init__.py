@@ -135,11 +135,12 @@ def tune_site(
     def finish(chosen: Attempt | None) -> SiteTuning:
         return SiteTuning(site.id, site.title, site.file, site.function, attempts, chosen, system_prompts, research)
 
+    order = {str(case["id"]): n for n, case in enumerate(cases)}
     for tier in tiers:
         model = models[tier]
         variant = best.variant if best else Variant()
         for round_number in range(rounds):
-            wrapped = VariantClient((clients or {}).get(tier, client), variant, held_out=frozenset(held_ids))
+            wrapped = VariantClient((clients or {}).get(tier, client), variant, held_out=frozenset(held_ids), order=order)
             result = run_site(spec, site, tier, model, concurrency=concurrency, judge=judge, client=wrapped, cases=cases)
             system_prompts.extend(s for s in wrapped.systems if s not in system_prompts)
             tuned = [r for r in result.cases if r.case_id not in held_ids]
@@ -242,7 +243,10 @@ def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
                 reason = f"tuning stopped: {result.error}" if result.attempts else f"couldn't be tested: {result.error}"
             else:
                 reason = _why_kept(result.best, target)
-            plan.update({site_id: {"model": "keep", "reason": reason} for site_id in site_ids})
+            entry = {"model": "keep", "reason": reason}
+            if result.system_prompts:  # so the port leaves those prompts as they are for it
+                entry["system_prompts"] = result.system_prompts
+            plan.update({site_id: dict(entry) for site_id in site_ids})
             continue
         chosen = result.chosen
         entry = {

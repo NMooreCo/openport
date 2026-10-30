@@ -89,8 +89,8 @@ def build_plan(
             decision.notes += [NOTES[f] for f in finding.features if f in NEEDS_REVIEW - BLOCKERS]
             variant = (assigned or {}).get("variant") or {}
             decision.system_addendum = variant.get("system_addendum") or ""
-            decision.system_prompts = (assigned or {}).get("system_prompts") or []
             decision.max_tokens = variant.get("max_tokens")
             decision.temperature = variant.get("temperature")
+        decision.system_prompts = (assigned or {}).get("system_prompts") or []  # a kept call's too: its prompts stay as they are
         plan[finding.id] = decision
     return plan

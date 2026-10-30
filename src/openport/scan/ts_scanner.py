@@ -41,9 +41,13 @@ def _unquote(text: str) -> str:
 
 
 def _walk(node: Node):
-    yield node
-    for child in node.named_children:
-        yield from _walk(child)
+    """Every named node under `node`, itself first, in source order. Without recursion: a generated file's 3,000-term
+    concatenation is 3,000 levels deep."""
+    stack = [node]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(reversed(node.named_children))
 
 
 class _FileScanner:

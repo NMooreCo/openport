@@ -20,13 +20,13 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 from openai import AsyncOpenAI, OpenAI
 
 TOKEN_FACTORY_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 
-ModelChoice = str | Callable[[str], str]
+ModelChoice = Union[str, Callable[[str], str]]  # not `str | ...`: apps on Python before 3.10 import this too
 
 # Constructor options that only make sense for the original provider (keys, endpoints, Azure,
 # Bedrock and Vertex settings). Everything else, like timeout and max_retries, is kept.
@@ -481,6 +481,10 @@ class AnthropicOnNemotron:
         base URL stay Token Factory's."""
         return type(self)(self._model, self._client.with_options(**_client_options(options)), self._meter, self._extra_body)
 
+    def close(self) -> None:
+        """`client.close()`, as on Anthropic's client: closes the connections it holds."""
+        self._client.close()
+
 
 class AsyncAnthropicOnNemotron(AnthropicOnNemotron):
     """Drop-in for `anthropic.AsyncAnthropic`."""
@@ -495,6 +499,9 @@ class AsyncAnthropicOnNemotron(AnthropicOnNemotron):
         super().__init__(model, client or token_factory_async_client(), meter, extra_body)
         self.messages = _AsyncMessages(self)
 
+    async def close(self) -> None:
+        await self._client.close()
+
 
 def _prepare(owner: AnthropicOnNemotron, model: str, kwargs: dict) -> tuple[dict, str, bool]:
     """Translate one Anthropic `messages.create` call. Returns (request, target model, include thinking)."""
@@ -508,6 +515,8 @@ def _prepare(owner: AnthropicOnNemotron, model: str, kwargs: dict) -> tuple[dict
     extra_body = {**(owner._extra_body or {}), **request.pop("extra_body", {}), **(kwargs.get("extra_body") or {})}
     if extra_body:
         request["extra_body"] = extra_body
+    if kwargs.get("timeout") is not None:  # the call's own latency budget goes with it; Anthropic's headers don't
+        request["timeout"] = kwargs["timeout"]
     thinking = known.get("thinking")
     return request, target, bool(thinking) and thinking.get("type") != "disabled"
 

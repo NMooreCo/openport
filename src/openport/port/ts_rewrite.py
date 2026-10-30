@@ -25,7 +25,7 @@ from .clients import decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, newline_style, quoted_like, was_comment
 from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, TOKEN_FACTORY_V1, url_edits, why_kept
 from .plan import SiteDecision
-from .prompts import find_prompt_file, prompt_file_insertion, ts_literal_insertion
+from .prompts import find_prompt_file, prompt_file_insertion, prompt_files_of, ts_literal_insertion
 
 PROVIDER_ONLY = {"apiKey", "baseURL", "organization", "project", "authToken"}
 EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
@@ -122,7 +122,10 @@ class _TsRepo:
                     continue
             except OSError:
                 continue
-            for node in _walk(self.file(other).root):
+            parsed = self.file(other)
+            if parsed is None:  # it names it, and can't be read: it may import it
+                return True
+            for node in _walk(parsed.root):
                 source = node.child_by_field_name("source") if node.type in ("import_statement", "export_statement") else None
                 if source is None or self.resolve(other, _unquote(_text(source))) != path:
                     continue
@@ -552,18 +555,51 @@ def _runtime(paths: list[str]) -> tuple[str, bytes]:
     folder = posixpath.dirname(paths[0])
     source = RUNTIME.read_bytes()
     if paths[0].endswith(TS_EXTENSIONS):
-        return posixpath.join(folder, "openport_llm.ts"), b"// @ts-nocheck: OpenPort's runtime, written as plain JavaScript\n" + source
+        # Typed loosely: it stands where the app's code expects the Anthropic SDK's client (a field declared
+        # `client!: Anthropic`, a parameter), and the SDK's client has far more members than the calls it runs.
+        declaration = b"export class AnthropicOnNemotron {"
+        assert source.count(declaration) == 1, "the runtime's stand-in moved"
+        nl = newline_style(source)
+        source = (source.replace(declaration, b"class AnthropicOnNemotronClient {")
+                  + nl + b"export const AnthropicOnNemotron: any = AnthropicOnNemotronClient;" + nl)
+        return posixpath.join(folder, "openport_llm.ts"), b"// @ts-nocheck: OpenPort's runtime, written as plain JavaScript" + nl + source
     return posixpath.join(folder, "openport_llm.mjs"), source
 
 
-def _import_edit(f: _TsFile, runtime_path: str) -> Edit:
+def _node_resolution(repo: _TsRepo, path: str) -> str | None:
+    """For a TypeScript file whose project resolves imports as Node does (`"module"` or `"moduleResolution"` node16
+    or nodenext, in the nearest tsconfig.json or one it extends), the extension a relative import needs: `.ts` with
+    allowImportingTsExtensions, else `.js`. None for a bundler's resolution, where none is needed."""
+    folder = posixpath.dirname(path)
+    while True:
+        config = repo.root / folder / "tsconfig.json"
+        for _ in range(5):  # a few `extends` deep
+            try:
+                text = config.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                break
+            if re.search(r'"module(?:Resolution)?"\s*:\s*"node(?:16|next)"', text, re.IGNORECASE):
+                return ".ts" if re.search(r'"allowImportingTsExtensions"\s*:\s*true', text) else ".js"
+            base = re.search(r'"extends"\s*:\s*"(\.{1,2}/[^"]+)"', text)
+            if base is None:
+                break
+            config = config.parent / (base[1] if base[1].endswith(".json") else base[1] + ".json")
+        if (repo.root / folder / "tsconfig.json").is_file() or not folder:
+            return None
+        folder = posixpath.dirname(folder)
+
+
+def _import_edit(repo: _TsRepo, f: _TsFile, runtime_path: str) -> Edit:
     """`import { AnthropicOnNemotron } from "./openport_llm";` after the file's last import. The path has an
-    extension where ES modules need one, and the one the file's own relative imports use: `.ts`, `.js` or none."""
+    extension where ES modules need one: the one the file's own relative imports use (`.ts`, `.js` or none), or, when
+    it has none, the one its project's module resolution needs."""
     relative = posixpath.relpath(runtime_path, posixpath.dirname(f.path) or ".")
     relative = relative if relative.startswith(".") else "./" + relative
     if relative.endswith(".ts"):
         own = [s for node in _imports(f) if (s := _unquote(_text(node.child_by_field_name("source")))).startswith(".")]
         extension = next((e for e in (".ts", ".js") if any(s.endswith(e) for s in own)), "")
+        if not own:
+            extension = _node_resolution(repo, f.path) or ""
         relative = relative[: -len(".ts")] + extension
     position = line_end(f.source, _imports(f)[-1].end_byte)
     return Edit(position, position, f'import {{ {ANTHROPIC_STANDIN} }} from "{relative}";'.encode() + newline_style(f.source))
@@ -759,7 +795,10 @@ def _ts_kept_prompts(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str
     found = set()
     for site in sites:
         f = repo.file(site.file)
-        if f is None or not plan[site.id].keep:
+        if not plan[site.id].keep:
+            continue
+        found |= prompt_files_of(repo.root, plan[site.id].system_prompts)  # the prompt files it was seen sending
+        if f is None:
             continue
         if site.sdk == "http":
             http = http_calls.get(site.id)
@@ -1019,7 +1058,7 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         path, text = _runtime(sorted(standins))
         runtime[path] = text
         for standin in standins:
-            edits[standin].append(_import_edit(repo.file(standin), path))
+            edits[standin].append(_import_edit(repo, repo.file(standin), path))
 
     # Settings added after the same last property each add its missing comma: keep one.
     output = {path: apply_edits(repo.file(path).source, list(dict.fromkeys(file_edits))) for path, file_edits in edits.items() if file_edits}
@@ -1050,6 +1089,8 @@ def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, sdk: str, decision
             placed = False
             continue
         path, offset, raw = hit
+        if ("file", path, offset) in kept_prompts:
+            return f"Tuned: a call that stays uses the prompt in {path} too, so give this call its own, with \"{addendum}\" appended"
         if (path, offset, addendum) not in applied:
             text_edits.setdefault(path, (raw, []))[1].append(prompt_file_insertion(raw, offset, addendum))
             applied.add((path, offset, addendum))

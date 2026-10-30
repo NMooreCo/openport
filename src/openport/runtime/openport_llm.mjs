@@ -131,7 +131,7 @@ export class AnthropicOnNemotron {
     this.timeout = options.timeout;
     // Through Object.assign, which TypeScript doesn't infer a type from: `messages` stays `any`, so code written
     // against Anthropic's own types type-checks against these as it did.
-    Object.assign(this, { messages: { create: (params) => this.#create(params) } });
+    Object.assign(this, { messages: { create: (params, options) => this.#create(params, options) } });
   }
 
   /** `client.beta.messages.create(...)`: the same calls (the `betas` they name have no Token Factory equivalent). */
@@ -144,13 +144,16 @@ export class AnthropicOnNemotron {
     return new AnthropicOnNemotron({ baseURL: this.baseURL, apiKey: this.apiKey, timeout: options.timeout ?? this.timeout });
   }
 
-  async #create(params) {
+  /** `options` is the SDK's per-call second argument: its `signal` (a chat the user stopped) and `timeout` apply. */
+  async #create(params, options = {}) {
     if (params.stream) throw new UnsupportedFeature("streaming Anthropic responses");
+    const timeout = options?.timeout ?? this.timeout;
+    const signals = [options?.signal, timeout ? AbortSignal.timeout(timeout) : undefined].filter(Boolean);
     const response = await fetch(`${this.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify(anthropicToOpenAI(params)),
-      signal: this.timeout ? AbortSignal.timeout(this.timeout) : undefined,
+      signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {

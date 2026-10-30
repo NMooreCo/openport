@@ -1,6 +1,7 @@
 """Settings, read from the environment and a local .env file."""
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
@@ -15,6 +16,21 @@ TIERS = ("nano", "super", "ultra")
 # `--tiers` to try, and the Nemotron that reads images, for the calls that send them.
 EXTRA_TIERS = ("lightning", "vision")
 RUNS_DIR = Path(os.getenv("OPENPORT_RUNS_DIR", "runs"))
+# What OpenPort writes in RUNS_DIR. Run in the repo it works on (`openport port .`), these stay out of the scan and the
+# copy; anything else in a runs/ folder there is the app's own.
+RUNS_FOLDERS = frozenset({"ports", "repos", "captures", "upgrades", "finetunes", "dashboard"})
+RUNS_FILES = re.compile(r"(?:scan|tune|plan|baseline|smoke|port|upgrade|pr|distill)-.+\.(?:json|jsonl|diff|md)")
+
+
+def openports(path: Path) -> bool:
+    """Whether `path` is OpenPort's own: one of its folders or reports in RUNS_DIR, or RUNS_DIR itself when that's all
+    it holds."""
+    path, runs = (Path(os.path.normcase(p.resolve())) for p in (path, RUNS_DIR))
+    if path == runs:
+        return path.is_dir() and all(openports(child) for child in path.iterdir())
+    return path.parent == runs and (path.name in RUNS_FOLDERS or RUNS_FILES.fullmatch(path.name) is not None)
+
+
 # Where CI installs OpenPort from (the generated GitHub Action uses it).
 OPENPORT_SOURCE = os.getenv("OPENPORT_SOURCE", "git+https://github.com/NMooreCo/openport")
 # The actions OpenPort's workflows use, pinned to the commits of releases, as this repo's own CI is: the jobs hold

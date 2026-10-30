@@ -103,19 +103,29 @@ class VariantClient:
     sample: dict | None = field(default=None)
     systems: list[str] = field(default_factory=list)
     cutoffs: dict[str, str] = field(default_factory=dict)  # case ID -> what was cut off
+    # Each case's place in the dataset. Cases run at once, so the sample and the order of the prompts follow the
+    # dataset, not whichever finished first: the engineer is shown the same thing run after run.
+    order: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
         self.chat = _Chat(self)
         self._lock = threading.Lock()
+        self._sample_rank: tuple | None = None
+        self._system_ranks: dict[str, tuple] = {}
+        self._calls: dict[object, int] = {}
 
     def _send(self, method_name: str, request: dict):
         system = system_text(request)
+        case = CURRENT_CASE.get()
         with self._lock:
-            if CURRENT_CASE.get() not in self.held_out:  # a templated prompt can carry a held-out case's input
-                if self.sample is None:
-                    self.sample = request
-                if system and system not in self.systems:
-                    self.systems.append(system)
+            if case not in self.held_out:  # a templated prompt can carry a held-out case's input
+                self._calls[case] = self._calls.get(case, 0) + 1
+                rank = (self.order.get(case, len(self.order)), str(case), self._calls[case])
+                if self._sample_rank is None or rank < self._sample_rank:
+                    self.sample, self._sample_rank = request, rank
+                if system and (system not in self._system_ranks or rank < self._system_ranks[system]):
+                    self._system_ranks[system] = rank
+                    self.systems[:] = sorted(self._system_ranks, key=self._system_ranks.__getitem__)
         sent = apply_variant(self.variant, request)
         try:
             response = getattr(self.client.chat.completions, method_name)(**sent)

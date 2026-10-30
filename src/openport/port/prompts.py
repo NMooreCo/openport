@@ -92,6 +92,11 @@ def find_prompt_file(root: Path, prompt: str) -> tuple[str, int, bytes] | None:
     return None
 
 
+def prompt_files_of(root: Path, prompts: list[str]) -> set[tuple[str, str, int]]:
+    """Where a call's prompts are stored in prompt files, as ("file", path, offset), the way the kept-prompt sets hold them."""
+    return {("file", hit[0], hit[1]) for prompt in prompts if (hit := find_prompt_file(root, prompt))}
+
+
 def prompt_file_insertion(raw: bytes, offset: int, addendum: str) -> Edit:
     nl = newline_style(raw)
     return Edit(offset, offset, nl + nl + addendum.replace("\n", nl.decode()).encode())

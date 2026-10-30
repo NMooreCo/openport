@@ -726,3 +726,327 @@ def test_a_folder_without_an_init_still_finds_the_runtime_however_its_imported(t
     as_script = run_python(result.output / "app", "import llm; print(type(llm.client).__name__)")
     assert as_script.returncode == 0, as_script.stderr
     assert as_script.stdout.strip() == "AnthropicOnNemotron"
+
+
+FIELD_CLAUDE = '''import Anthropic from "@anthropic-ai/sdk";
+
+export class Labeller {
+  client!: Anthropic;
+
+  constructor() {
+    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+
+  async label(text: string): Promise<string> {
+    const message = await this.client.messages.create({ model: "claude-sonnet-5-5", max_tokens: 64, messages: [{ role: "user", content: text }] });
+    return message.content[0].text;
+  }
+}
+'''
+
+
+@needs_tsc
+def test_the_stand_in_fits_a_field_typed_as_the_anthropic_client(tmp_path):
+    """lobehub declares `client!: Anthropic`. The real SDK's client has far more members than the stand-in, so the
+    stand-in is typed loosely: assigning it there still type-checks."""
+    sdk = TS_PROJECT["node_modules/@anthropic-ai/sdk/index.d.ts"].replace(
+        "  beta: { messages: Messages };\n", "  beta: { messages: Messages };\n  models: { list(): Promise<unknown> };\n")
+    files = {**{k: v for k, v in TS_PROJECT.items() if k != "src/claude.ts"}, "node_modules/@anthropic-ai/sdk/index.d.ts": sdk,
+             "src/labeller.ts": FIELD_CLAUDE}
+    root = write(tmp_path / "repo", files)
+    assert tsc(root).returncode == 0, tsc(root).stdout
+    result, sites = port(root, tmp_path / "out")
+    assert [s.status for s in sites.values()] == ["ported"]
+    assert "this.client = new AnthropicOnNemotron(" in (result.output / "src/labeller.ts").read_text()
+    shutil.copytree(root / "node_modules", result.output / "node_modules")
+    checked = tsc(result.output)
+    assert checked.returncode == 0, checked.stdout
+
+
+def test_the_runtime_import_has_the_extension_the_projects_resolution_needs(tmp_path):
+    """A file with no relative imports of its own: its tsconfig.json (or the one that extends) says whether Node's
+    resolution needs one. A bundler's doesn't, so none is added there."""
+    from openport.port.ts_rewrite import _node_resolution, _TsRepo
+
+    root = write(tmp_path / "repo", {
+        "tsconfig.base.json": '{"compilerOptions": {"module": "NodeNext"}}',
+        "api/tsconfig.json": '{\n  // comments are allowed here\n  "extends": "../tsconfig.base",\n  "include": ["src"]\n}',
+        "api/src/llm.ts": "",
+        "tools/tsconfig.json": '{"compilerOptions": {"moduleResolution": "nodenext", "allowImportingTsExtensions": true}}',
+        "tools/llm.ts": "",
+        "web/tsconfig.json": '{"compilerOptions": {"moduleResolution": "bundler"}}',
+        "web/src/llm.ts": "",
+        "loose.ts": "",
+    })
+    repo = _TsRepo(root)
+    assert [_node_resolution(repo, path) for path in ("api/src/llm.ts", "tools/llm.ts", "web/src/llm.ts", "loose.ts")] == [
+        ".js", ".ts", None, None]
+
+
+DEEP = " + ".join(['"a"'] * 3000)
+
+
+def test_a_file_too_deep_to_parse_doesnt_stop_the_port(tmp_path):
+    """A generated module with a 3,000-term expression mentions the model constant: Python can't parse it, so
+    OpenPort can't tell what it reads, and leaves the constant to it rather than crashing."""
+    repo = write(tmp_path / "repo", {
+        "app/__init__.py": "",
+        "app/llm.py": 'from openai import OpenAI\n\nMODEL = "gpt-4o"\nclient = OpenAI()\n\n\ndef ask(q):\n'
+                      '    return client.chat.completions.create(model=MODEL, messages=[{"role": "user", "content": q}])\n',
+        "app/big.py": f"# MODEL\nBLOB = {DEEP}\n",
+    })
+    result, sites = port(repo, tmp_path / "out")
+    assert [s.status for s in sites.values()] == ["ported"]
+    llm = (result.output / "app/llm.py").read_text()
+    assert 'MODEL = "gpt-4o"' in llm and 'model="nvidia/super-test"' in llm  # the call names its model; the constant stays
+    assert (result.output / "app/big.py").read_text() == (repo / "app/big.py").read_text()
+
+
+def test_a_javascript_file_too_deep_to_walk_doesnt_stop_the_port(tmp_path):
+    repo = write(tmp_path / "repo", {
+        "package.json": '{"name": "app", "type": "module"}',
+        "src/llm.ts": 'import OpenAI from "openai";\n\nconst MODEL = "gpt-4o";\nconst client = new OpenAI();\n\n'
+                      'export async function ask(q: string) {\n'
+                      '  return client.chat.completions.create({ model: MODEL, messages: [{ role: "user", content: q }] });\n}\n',
+        "src/big.js": f"// MODEL\nexport const BLOB = {DEEP};\n",
+    })
+    result, sites = port(repo, tmp_path / "out")
+    assert [s.status for s in sites.values()] == ["ported"]
+    assert "nvidia/super-test" in (result.output / "src/llm.ts").read_text()
+
+
+SHADOWED = '''from openai import OpenAI
+from vendor_sdk import connect
+
+client = OpenAI()
+
+
+def per_user(key, q):
+    client = connect(key)  # the user's own client, not the module's
+    return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": q}])
+
+
+def through_beta(key, q):
+    client = connect(key)
+    return client.beta.chat.completions.parse(model="gpt-4o-mini", messages=[{"role": "user", "content": q}])
+
+
+def shared(q):
+    return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": q}])
+'''
+
+
+def test_a_function_that_rebinds_the_clients_name_isnt_given_the_module_client(tmp_path):
+    result, sites = port(write(tmp_path / "repo", {"app.py": SHADOWED}), tmp_path / "out")
+    assert sites["app.shared"].status == "ported"
+    assert sites["app.per_user"].status == sites["app.through_beta"].status == "kept"
+    code = (result.output / "app.py").read_text()
+    assert code.count('model="gpt-4o-mini"') == 2  # the two calls on the user's client name their model as before
+
+
+CLOSES = '''from anthropic import Anthropic
+
+client = Anthropic()
+
+
+def ask(q):
+    return client.messages.create(model="claude-sonnet-5-5", max_tokens=10, messages=[{"role": "user", "content": q}])
+
+
+def shutdown():
+    client.close()
+'''
+
+READS_URL = '''from anthropic import Anthropic
+import httpx
+
+client = Anthropic()
+
+
+def ask(q):
+    return client.messages.create(model="claude-sonnet-5-5", max_tokens=10, messages=[{"role": "user", "content": q}])
+
+
+def models(key):
+    return httpx.get(f"{client.base_url}/v1/models", headers={"x-api-key": key}).json()
+'''
+
+
+def test_closing_a_client_is_no_reason_to_keep_it_but_reading_its_url_is(tmp_path):
+    """`client.close()` sends nothing: the client itself moves, and the stand-in closes. Its base URL is another
+    matter: lobehub hands `this.client.baseURL` to its own fetch of /v1/models, with the Anthropic key, which would
+    then go to Token Factory. So the client that's read stays, and the calls move to a second one beside it."""
+    result, sites = port(write(tmp_path / "repo", {"app.py": CLOSES}), tmp_path / "out")
+    assert sites["app.ask"].status == "ported", sites["app.ask"].reason
+    code = (result.output / "app.py").read_text()
+    assert "client = anthropic_client()" in code and "_nemotron" not in code and "Anthropic()" not in code
+    ran = run_python(result.output, "import app; app.shutdown(); print('closed')")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "closed"
+    result, sites = port(write(tmp_path / "repo2", {"app.py": READS_URL}), tmp_path / "out2")
+    code = (result.output / "app.py").read_text()
+    assert sites["app.ask"].status == "ported" and "client = Anthropic()\nclient_nemotron = anthropic_client()\n" in code
+    assert 'httpx.get(f"{client.base_url}/v1/models"' in code  # still Anthropic's URL, with Anthropic's key
+
+
+def test_the_async_stand_in_closes_too():
+    import asyncio
+
+    from openport.runtime.openport_llm import AsyncAnthropicOnNemotron
+
+    closed = []
+
+    class Inner:
+        async def close(self):
+            closed.append(True)
+
+    asyncio.run(AsyncAnthropicOnNemotron(client=Inner()).close())
+    assert closed == [True]
+
+
+def test_the_python_runtime_imports_on_the_oldest_python_an_app_may_run():
+    """The runtime is copied into the app (CowAgent declares Python 3.7+). Its grammar is 3.8's, and nothing it
+    evaluates at import needs 3.10: `str | Callable` outside an annotation raises TypeError on 3.9."""
+    import ast
+
+    source = (Path(__file__).parents[1] / "src" / "openport" / "runtime" / "openport_llm.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, feature_version=(3, 8))
+    assert "from __future__ import annotations" in source  # annotations aren't evaluated
+    annotations = {id(n) for node in ast.walk(tree) for a in (getattr(node, "annotation", None), getattr(node, "returns", None))
+                   if a is not None for n in ast.walk(a)}
+    unions = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
+              and id(n) not in annotations and isinstance(n.left, (ast.Name, ast.Subscript, ast.Attribute))
+              and isinstance(n.right, (ast.Name, ast.Subscript, ast.Attribute, ast.Constant))]
+    assert unions == []
+
+
+def test_a_beta_call_on_a_shared_factory_moves_to_the_second_one(tmp_path):
+    """The factory split, for a call through `get_client().beta` too: it's the same client."""
+    from .test_port import PREFLIGHT_LIKE
+
+    root = write(tmp_path / "repo", {**PREFLIGHT_LIKE, "agents/summary.py": '''from core.anthropic_client import get_client
+
+
+def summarize(text):
+    response = get_client().beta.messages.create(model="claude-opus-4-5", max_tokens=300, messages=[{"role": "user", "content": text}])
+    return response.content[0].text
+'''})
+    result, sites = port(root, tmp_path / "out", review="keep")
+    assert (sites["review"].status, sites["summary.summarize"].status) == ("kept", "ported"), sites["summary.summarize"].reason
+    summary = (result.output / "agents/summary.py").read_text()
+    assert "response = get_client_nemotron().beta.messages.create(model=\"nvidia/super-test\"" in summary
+
+
+def test_openai_isnt_added_where_it_would_break_the_install(tmp_path):
+    """pip refuses a requirements file where one line has no hash once any has one, and `uv sync --locked` fails when
+    pyproject.toml lists what uv.lock doesn't. Those are left for the app to add with its own tools, and the note says so."""
+    from .test_port_review import CLAUDE_ONLY
+
+    hashed = {"app.py": CLAUDE_ONLY, "requirements.txt": "anthropic==0.40.0 \\n    --hash=sha256:" + "a" * 64 + "\n"}
+    result, sites = port(write(tmp_path / "hashed", hashed), tmp_path / "out1")
+    assert "requirements.txt" not in result.changed
+    assert any("`openai` package" in note and "hashes" in note for note in sites["app.ask"].notes)
+
+    for lock in ("uv.lock", "poetry.lock", "pdm.lock"):
+        locked = {"app.py": CLAUDE_ONLY, "pyproject.toml": '[project]\nname = "x"\ndependencies = ["anthropic>=0.40"]\n', lock: "# locked\n"}
+        result, sites = port(write(tmp_path / lock, locked), tmp_path / f"out-{lock}")
+        assert "pyproject.toml" not in result.changed, lock
+        assert any("`openai` package" in note and "lockfile" in note for note in sites["app.ask"].notes), lock
+
+
+def test_an_apps_own_runs_folder_is_scanned_and_copied(tmp_path, monkeypatch):
+    """`openport port .` keeps its output in runs/ in the repo. An app with a runs/ of its own (a training script) keeps
+    it: only OpenPort's folders and reports there are left out."""
+    repo = write(tmp_path / "repo", {**APP, "runs/train.py": APP["app.py"].replace("def ask", "def train")})
+    monkeypatch.setattr(config, "RUNS_DIR", repo / "runs")
+    write(repo / "runs" / "repos" / "someone__else", {"other.py": APP["app.py"]})  # a clone OpenPort fetched
+    (repo / "runs" / "tune-repo-20261029-120000.json").write_text("{}")
+    report = scan_repo(repo)
+    assert sorted(f.file for f in report.findings) == ["app.py", "runs/train.py"]
+    for _ in range(2):  # and again, with the first port's copy now in runs/ports
+        result = port_repo(repo, scan_repo(repo), build_plan(scan_repo(repo).findings, MODELS), repo / "runs" / "ports" / "repo")
+        assert sorted(p.relative_to(result.output / "runs").as_posix() for p in (result.output / "runs").rglob("*")) == [
+            "openport_llm.py", "train.py"]  # the app's script and its runtime: no clones, ports or reports
+        assert {s.id: s.status for s in result.sites} == {"app.ask": "ported", "train": "ported"}
+
+
+SHARED_PROMPT = "You are a support triage assistant. Classify the ticket by category and priority, and reply in JSON."
+SHARED_PROMPT_APP = {
+    "prompts/triage.txt": SHARED_PROMPT + "\n",
+    "app.py": '''from pathlib import Path
+
+from openai import OpenAI
+
+client = OpenAI()
+PROMPT = Path(__file__).with_name("prompts").joinpath("triage.txt").read_text()
+
+
+def triage(ticket):
+    return client.chat.completions.create(model="gpt-5", messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": ticket}])
+
+
+def escalate(ticket):
+    return client.chat.completions.create(model="gpt-5", messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": ticket}])
+''',
+}
+
+
+def test_a_prompt_file_a_call_that_stays_reads_isnt_given_another_calls_addendum(tmp_path):
+    tuned = {"model": "nano", "variant": {"system_addendum": "Answer with the JSON object only."}, "system_prompts": [SHARED_PROMPT]}
+    kept = {"model": "keep", "reason": "no Nemotron tier reached 90%", "system_prompts": [SHARED_PROMPT]}
+    result, sites = port(write(tmp_path / "repo", SHARED_PROMPT_APP), tmp_path / "out", app__triage=tuned, app__escalate=kept)
+    assert (sites["app.triage"].status, sites["app.escalate"].status) == ("ported", "kept")
+    assert (result.output / "prompts/triage.txt").read_text() == SHARED_PROMPT + "\n"  # escalate still reads it as it was
+    assert any("a call that stays uses the prompt in prompts/triage.txt too" in note for note in sites["app.triage"].notes)
+
+    alone = {**SHARED_PROMPT_APP, "app.py": SHARED_PROMPT_APP["app.py"].split("\n\ndef escalate")[0] + "\n"}
+    result, sites = port(write(tmp_path / "alone", alone), tmp_path / "out2", app__triage=tuned)
+    assert (result.output / "prompts/triage.txt").read_text() == SHARED_PROMPT + "\n\nAnswer with the JSON object only.\n"
+
+
+def test_the_plan_keeps_the_prompts_a_kept_call_sent():
+    from types import SimpleNamespace
+
+    from openport.evals.spec import Spec
+    from openport.tune import export_plan
+
+    kept = SimpleNamespace(site_id="escalate", file="app.py", function="escalate", chosen=None, best=None, attempts=[], error=None,
+                           system_prompts=[SHARED_PROMPT])
+    plan = export_plan(Spec(target="app", source_root=Path("does-not-exist"), call_sites=[]), [kept], 0.9)["call_sites"]
+    assert plan["escalate"]["model"] == "keep" and plan["escalate"]["system_prompts"] == [SHARED_PROMPT]
+
+
+def test_a_calls_own_timeout_reaches_token_factory():
+    """`messages.create(..., timeout=5)` is the app's latency budget for that call: it goes with the request. The
+    provider's own per-call headers and query parameters mean nothing to Token Factory and stay behind."""
+    fake = FakeTokenFactory(lambda request: completion(content="ok"))
+    client = AnthropicOnNemotron(client=fake)
+    client.messages.create(model="claude-sonnet-5-5", max_tokens=10, messages=[{"role": "user", "content": "hi"}], timeout=5,
+                           extra_headers={"anthropic-beta": "x"})
+    assert fake.requests[-1]["timeout"] == 5 and "extra_headers" not in fake.requests[-1]
+
+
+@needs_node
+def test_the_javascript_stand_in_honours_a_calls_abort_signal_and_timeout(tmp_path):
+    """lobehub passes `{ signal }` as create's second argument to cancel a chat the user stopped."""
+    result = run_node(tmp_path, """
+const seen = [];
+globalThis.fetch = async (url, init) => {
+  seen.push(init.signal ? "signal" : "none");
+  await new Promise((resolve, reject) => {
+    if (init.signal?.aborted) return reject(init.signal.reason);
+    init.signal?.addEventListener("abort", () => reject(init.signal.reason));
+    setTimeout(resolve, 200);
+  });
+  return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }], usage: {} }));
+};
+const client = new runtime.AnthropicOnNemotron({ apiKey: "k" });
+const params = { model: "m", max_tokens: 5, messages: [{ role: "user", content: "hi" }] };
+const stop = new AbortController();
+const stopped = client.messages.create(params, { signal: stop.signal }).then(() => "finished", (e) => "aborted");
+stop.abort();
+const timedOut = await client.messages.create(params, { timeout: 20 }).then(() => "finished", () => "aborted");
+const plain = await client.messages.create(params).then((m) => m.content[0].text);
+console.log(JSON.stringify({ stopped: await stopped, timedOut, plain, seen }));
+""")
+    assert result == {"stopped": "aborted", "timedOut": "aborted", "plain": "ok", "seen": ["signal", "signal", "none"]}

@@ -83,12 +83,14 @@ def _prepare_output(source: Path, output: Path) -> None:
 
 
 def _ignoring(output: Path):
-    """COPY_IGNORE, and OpenPort's own folders when they're in the repo: `openport port .` writes the copy to
-    runs/ports/<name> inside it, and copying that (or runs/ at all, which holds clones) would copy the copy."""
-    skipped = {Path(os.path.normcase(path.resolve())) for path in (output, config.RUNS_DIR)}
+    """COPY_IGNORE, and OpenPort's own folders and reports when they're in the repo: `openport port .` writes the copy
+    to runs/ports/<name> inside it, and copying that (or runs/repos, which holds clones) would copy the copy. The rest
+    of a runs/ folder there is the app's own, and is copied."""
+    skipped = Path(os.path.normcase(output.resolve()))
 
     def ignore(folder: str, names: list[str]) -> set[str]:
-        ours = {name for name in names if Path(os.path.normcase((Path(folder) / name).resolve())) in skipped}
+        ours = {name for name in names if config.openports(Path(folder) / name)
+                or Path(os.path.normcase((Path(folder) / name).resolve())) == skipped}
         return set(COPY_IGNORE(folder, names)) | ours
 
     return ignore

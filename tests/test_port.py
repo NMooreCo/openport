@@ -480,7 +480,7 @@ def test_typescript_anthropic_port(tmp_path):
     assert 'system: "Label the message.\\n\\nOne word."' in code  # the tuned addendum, in Anthropic's own system property
     assert "src/openport_llm.ts" in result.added
     runtime = (result.output / "src/openport_llm.ts").read_text()
-    assert runtime.startswith("// @ts-nocheck") and "export class AnthropicOnNemotron" in runtime
+    assert runtime.startswith("// @ts-nocheck") and "export const AnthropicOnNemotron: any = AnthropicOnNemotronClient;" in runtime
 
 
 HTTP_PY = {

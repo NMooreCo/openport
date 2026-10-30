@@ -56,10 +56,9 @@ class ScanReport:
 def _source_files(root: Path):
     from .. import config
 
-    ours = os.path.normcase(str(config.RUNS_DIR.resolve()))  # OpenPort's own output (ports, clones) when run in the repo
     for directory, subdirs, files in os.walk(root):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith(".")
-                      and os.path.normcase(str((Path(directory) / d).resolve())) != ours]
+                      and not config.openports(Path(directory) / d)]  # OpenPort's own output (ports, clones), run in the repo
         for name in files:
             if name.endswith(".py") or (name.endswith(TS_SUFFIXES) and not name.endswith(".d.ts") and ".min." not in name):
                 yield Path(directory) / name
