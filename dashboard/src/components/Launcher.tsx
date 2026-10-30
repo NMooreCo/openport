@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
+import { useSite } from "../site";
 import { JudgeUnlock } from "./JudgeUnlock";
 import { Backdrop, Logo } from "./Logo";
 
@@ -34,6 +35,8 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [vettedOnly, setVettedOnly] = useState(false);
+  const site = useSite();
+  const locked = Boolean(site?.gated && !site.judge); // live runs need the judges' password
   const copy = MODES[mode];
 
   useEffect(() => {
@@ -145,10 +148,13 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
           <p className="text-[11px] font-medium tracking-wider text-muted uppercase">{api.STATIC ? "Pick one" : "Or watch a demo"}</p>
           {api.STATIC && presets.length === 0 && <p className="mt-3 text-sm text-muted">No recorded runs of this kind yet.</p>}
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {presets.map((preset) => (
+            {presets.map((preset) => {
+              // A demo with no recorded run starts a live one: say so, and while live runs are locked it can't start.
+              const liveOnly = !api.STATIC && preset.recorded === false;
+              return (
               <button
                 key={preset.id}
-                disabled={busy}
+                disabled={busy || (liveOnly && locked)}
                 onClick={() => start(preset.id)}
                 className="panel group flex flex-col rounded-2xl p-5 text-left transition hover:-translate-y-0.5 disabled:opacity-40"
               >
@@ -157,9 +163,15 @@ export function Launcher({ onStart }: { onStart: (target: string, mode: Mode) =>
                 {preset.tested === false && (
                   <span className="mt-2 inline-block self-start rounded-md bg-white/5 px-2 py-0.5 text-xs text-slate-300">No eval set here: scan and port only</span>
                 )}
-                <span className="mt-auto pt-4 text-sm text-emerald-300 transition group-hover:translate-x-1">Open →</span>
+                {liveOnly && (
+                  <span className="mt-2 inline-block self-start rounded-md bg-white/5 px-2 py-0.5 text-xs text-slate-300">
+                    {locked ? "No recording: a live run, with the judges' password" : "No recording: starts a live run"}
+                  </span>
+                )}
+                <span className="mt-auto pt-4 text-sm text-emerald-300 transition group-hover:translate-x-1">{liveOnly && locked ? "Locked" : "Open →"}</span>
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       </main>

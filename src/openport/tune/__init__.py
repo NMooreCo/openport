@@ -238,7 +238,10 @@ def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
     for result in results:
         site_ids = ids.get((result.file, result.function), [result.site_id])
         if result.chosen is None:
-            reason = f"couldn't be tested: {result.error}" if result.error else _why_kept(result.best, target)
+            if result.error:
+                reason = f"tuning stopped: {result.error}" if result.attempts else f"couldn't be tested: {result.error}"
+            else:
+                reason = _why_kept(result.best, target)
             plan.update({site_id: {"model": "keep", "reason": reason} for site_id in site_ids})
             continue
         chosen = result.chosen
@@ -267,6 +270,19 @@ def carry_forward(report: dict, plan: dict, previous_report: dict | None, previo
     plan["call_sites"] = {**(previous_plan or {}).get("call_sites", {}), **plan["call_sites"]}
 
 
+def helper_spend(meter: UsageMeter) -> float:
+    """What OpenPort's own calls cost at list prices. A model whose price can't be read adds nothing, rather than the
+    run failing after the money is spent."""
+    total = 0.0
+    for model, usage in list(meter.by_model.items()):
+        try:
+            info = tokenfactory.model_info(model)
+        except Exception:  # noqa: BLE001
+            continue
+        total += (info.cost(usage.prompt_tokens, usage.completion_tokens) or 0) if info else 0
+    return total
+
+
 def tune_spec(
     target_dir: Path,
     *,
@@ -281,6 +297,7 @@ def tune_spec(
     on_attempt: Callable[[CallSite, Attempt], None] | None = None,
     on_research: Callable[[CallSite, Guidance], None] | None = None,
     extra_models: dict[str, tuple[str, str | None]] | None = None,  # tier -> (model ID, base URL or None)
+    helper_meter: UsageMeter | None = None,  # the caller's, so it can count what was spent if this fails
 ) -> tuple[list[SiteTuning], dict, Path, Path]:
     spec = load_spec(target_dir)
     sites = [s for s in spec.call_sites if not site_ids or s.id in site_ids]
@@ -292,7 +309,8 @@ def tune_spec(
         if base_url:  # e.g. a regional Dedicated Endpoint or a vLLM server; the key may be its own
             key = os.getenv(f"OPENPORT_{tier.upper()}_API_KEY") or config.require("NEBIUS_API_KEY")
             clients[tier] = OpenAI(base_url=base_url, api_key=key)
-    helper_meter = UsageMeter()  # the engineer's and the judge's own calls: what OpenPort itself costs
+    if helper_meter is None:  # the engineer's and the judge's own calls: what OpenPort itself costs
+        helper_meter = UsageMeter()
     engineer = make_engineer(client, meter=helper_meter)
     judge = make_judge(helper_meter, client=client) if use_judge else None
     researcher = make_researcher() if use_research and os.getenv("TAVILY_API_KEY") else None
@@ -301,19 +319,23 @@ def tune_spec(
 
     results = []
     for site in sites:
+        tried: list[Attempt] = []
+
+        def record(site: CallSite, attempt: Attempt, tried: list[Attempt] = tried) -> None:
+            tried.append(attempt)
+            if on_attempt:
+                on_attempt(site, attempt)
+
         try:
             results.append(tune_site(
                 spec, site, models, client=client, engineer=engineer, judge=judge, target=target, rounds=rounds,
-                tiers=ladders[site.id], concurrency=concurrency, limit=limit, on_attempt=on_attempt,
+                tiers=ladders[site.id], concurrency=concurrency, limit=limit, on_attempt=record,
                 researcher=researcher, on_research=on_research, clients=clients,
             ))
-        except Exception as error:  # e.g. its module won't import: it stays, and the other calls' results are kept
-            results.append(SiteTuning(site.id, site.title, site.file, site.function, [], None,
+        except Exception as error:  # e.g. its module won't import: it stays, with what it tried (and spent) before
+            results.append(SiteTuning(site.id, site.title, site.file, site.function, tried, None,
                                       error=f"{type(error).__name__}: {error}"[:300]))
-    helper_cost = sum(
-        (tokenfactory.model_info(model).cost(u.prompt_tokens, u.completion_tokens) or 0) if tokenfactory.model_info(model) else 0
-        for model, u in helper_meter.by_model.items()
-    )
+    helper_cost = helper_spend(helper_meter)
     plan = export_plan(spec, results, target)
 
     report = {

@@ -236,7 +236,22 @@ def test_responses_carry_security_headers(server):
         headers = server.get(path).headers
         assert "default-src 'self'" in headers["content-security-policy"] and "frame-ancestors 'none'" in headers["content-security-policy"]
         assert headers["x-content-type-options"] == "nosniff" and headers["x-frame-options"] == "DENY"
-    assert "content-security-policy" not in server.get("/api/docs").headers  # its viewer loads from a CDN
+    docs = server.get("/api/docs")
+    assert docs.status_code == 200 and "swagger-ui" in docs.text
+    assert "content-security-policy" not in docs.headers  # its viewer loads from a CDN
+    assert "default-src 'self'" in server.get("/api/openapi.json").headers["content-security-policy"]
+
+
+def test_the_hosted_dashboard_doesnt_serve_the_api_docs(server, monkeypatch):
+    """Their viewer's CDN script would run on the origin where a judge's browser keeps the judges' password."""
+    import openport.server as hosted
+
+    monkeypatch.setattr(hosted, "API_DOCS", False)
+    docs = server.get("/api/docs")
+    assert docs.status_code == 404 and "swagger" not in docs.text.lower()
+    assert "default-src 'self'" in docs.headers["content-security-policy"]
+    assert "redoc" not in server.get("/redoc").text.lower()  # FastAPI's other viewer isn't served either
+    assert "/api/runs" in server.get("/api/openapi.json").json()["paths"]  # the schema itself is still there
 
 
 def test_only_presets_and_github_repos(server):
@@ -377,7 +392,8 @@ def test_a_preset_proves_its_upgrade_the_way_its_own_ci_does(upgrade_server, tmp
     scripted, seen = testrun.run_tests, []
     monkeypatch.setattr(testrun, "run_tests", lambda folder, *, image, command: (seen.append((image, command)), scripted(folder, image=image, command=command))[1])
 
-    assert upgrade_server.get("/api/upgrade-presets").json() == [{"id": "mono", "label": "acme/mono", "detail": "a real repo", "repo": "acme/mono/apps/auth"}]
+    assert upgrade_server.get("/api/upgrade-presets").json() == [{"id": "mono", "label": "acme/mono", "detail": "a real repo",
+                                                                  "repo": "acme/mono/apps/auth", "recorded": False}]
     run = wait_for(upgrade_server, upgrade_server.post("/api/upgrades", json={"target": "mono"}).json()["id"])
     assert run["status"] == "done" and run["target"] == "acme/mono/apps/auth", run["events"][-1]
     assert seen and set(seen) == {("node:20-test", "cd apps/auth && npm ci && npm run build")}  # its CI's steps, in its folder

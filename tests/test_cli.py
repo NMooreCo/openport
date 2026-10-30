@@ -19,6 +19,6 @@ def test_windows_relaunches_in_utf8_mode(monkeypatch):
 def test_no_relaunch_when_already_utf8(monkeypatch):
     ran = []
     monkeypatch.setattr(cli, "_needs_utf8_relaunch", lambda: False)
-    monkeypatch.setattr(cli, "app", lambda: ran.append(True))
+    monkeypatch.setattr(cli, "app", lambda **kwargs: ran.append(kwargs))
     cli.main()
-    assert ran == [True]
+    assert ran == [{"prog_name": "openport"}]  # help says `openport`, not `python -m openport.cli`

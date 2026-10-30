@@ -109,3 +109,19 @@ def test_a_judge_that_errors_is_a_labelled_failure():
 
     grade = graders.text_rules("Hello", {}, {"judge": {"rubric": "r"}}, {}, broken)
     assert grade.failures == ["judge failed: TimeoutError"]
+
+
+def test_a_case_with_no_rules_fails_rather_than_passing_anything():
+    """A case whose expected value is empty (or a recorded reply where rules were wanted) checks nothing: that's not a pass."""
+    for expected in ({}, None, "a recorded reply", ["critical >= 1"]):
+        grade = graders.grade({"type": "rules"}, {"critical": 3}, expected, {})
+        assert not grade.passed and grade.score == 0.0 and grade.failures == ["no rules to check this reply"], expected
+    grade = graders.rules("not an object", {"critical >=": 1})
+    assert not grade.passed and grade.failures == ["expected an object with critical; got str"]
+    rule = graders.rules({"critical": 3}, {"critical": 1})  # no operator: not a rule this grader can read
+    assert not rule.passed and rule.failures == ["critical: no operator (write it as `critical >=`, `<=`, `==`, `>` or `<`)"]
+    assert graders.rules({"critical": 3}, {"critical >=": 1}).passed
+
+
+def test_no_grader_passes_a_reply_it_never_checked():
+    assert not graders._grade([]).passed

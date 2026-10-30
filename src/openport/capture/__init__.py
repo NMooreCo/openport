@@ -79,9 +79,11 @@ def capture_repo(
     label: str = "ultra",
     include_tests: bool = False,
     on_site=None,
+    meter: UsageMeter | None = None,  # the caller's, so it can count what was spent if this fails
 ) -> CaptureResult:
     logs = logs or {}
-    meter = UsageMeter() if generate else None
+    if meter is None and generate:
+        meter = UsageMeter()
     sites: list[DraftedSite] = []
     skipped: list[tuple[str, str]] = []
 

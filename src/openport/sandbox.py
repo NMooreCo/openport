@@ -28,11 +28,14 @@ FORK_WAIT = 90  # seconds a new fork may take to be ready
 FALLBACK_AUTHOR = ("OpenPort", "openport@example.com")
 # What else the PR body would set off on GitHub: an @mention notifies that person, and a link to an issue or a PR
 # elsewhere puts a "mentioned this" on it, as does owner/repo#123. Links go through redirect.github.com instead, as
-# Dependabot's do, whichever way they're written (http, www.); a short reference gets a zero-width space after its #.
+# Dependabot's do, whichever way they're written (http, www.); a reference to an issue gets a zero-width space. In the
+# PR's own repo, #123 and GH-123 link to its issue 123: a changelog quoted from upstream would mention that one.
 MENTION = re.compile(r"(?<![\w/.`@-])@(?=[A-Za-z0-9])")
 CROSS_REFERENCE = re.compile(r"(?<![\w.-])(?:https?://)?(?:www\.)?github\.com/(?=[\w.-]+/[\w.-]+/(?:issues|pull|discussions|commit)/)",
                              re.IGNORECASE)
 SHORT_REFERENCE = re.compile(r"(?<![\w/.-])([\w.-]+/[\w.-]+)#(?=\d)")
+BARE_REFERENCE = re.compile(r"(?<![\w/&#])#(?=\d)")
+GH_REFERENCE = re.compile(r"(?<![\w-])(gh)-(?=\d)", re.IGNORECASE)
 
 
 class GitHubError(RuntimeError):
@@ -52,7 +55,8 @@ Git = Callable[[list[str], Path], None]
 def quiet(body: str) -> str:
     """The PR body, minus what would ping people or other repos: @mentions, and links and references to issues and PRs."""
     body = CROSS_REFERENCE.sub("https://redirect.github.com/", MENTION.sub("@\u200b", body))
-    return SHORT_REFERENCE.sub("\\1#\u200b", body)
+    body = SHORT_REFERENCE.sub("\\1#\u200b", body)
+    return GH_REFERENCE.sub("\\1\u200b-", BARE_REFERENCE.sub("#\u200b", body))
 
 
 class _Api:

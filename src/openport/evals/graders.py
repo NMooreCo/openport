@@ -20,9 +20,10 @@ class Grade:
 
 
 def _grade(checks: list[tuple[bool, str]]) -> Grade:
+    if not checks:  # a reply nothing checked hasn't passed anything
+        return Grade(passed=False, score=0.0, failures=["nothing to check this reply against"])
     failures = [label for ok, label in checks if not ok]
-    score = (len(checks) - len(failures)) / len(checks) if checks else 1.0
-    return Grade(passed=not failures, score=score, failures=failures)
+    return Grade(passed=not failures, score=(len(checks) - len(failures)) / len(checks), failures=failures)
 
 
 def _norm(value: Any) -> Any:
@@ -121,12 +122,21 @@ _OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, "==": lambda a, b:
 
 def rules(output: dict, expected: dict) -> Grade:
     """Behavioural checks, written as `{"<field> <op>": value}`, e.g. `{"critical >=": 1, "title_length <=": 72}`."""
+    if not isinstance(expected, dict) or not expected:  # passing would mean passing anything
+        return Grade(False, 0.0, ["no rules to check this reply"])
+    if not isinstance(output, dict):
+        return Grade(False, 0.0, [f"expected an object with {', '.join(str(key).rpartition(' ')[0] or str(key) for key in expected)}; "
+                                  f"got {type(output).__name__}"])
     checks = []
     for key, wanted in expected.items():
-        name, _, op = key.rpartition(" ")
+        name, _, op = str(key).rpartition(" ")
+        if op not in _OPS:
+            field = name or str(key)
+            checks.append((False, f"{field}: no operator (write it as `{field} >=`, `<=`, `==`, `>` or `<`)"))
+            continue
         actual = output.get(name)
         try:
-            ok = op in _OPS and actual is not None and _OPS[op](actual, wanted)
+            ok = actual is not None and _OPS[op](actual, wanted)
         except TypeError:  # e.g. a string where a number was wanted
             ok = False
         checks.append((ok, f"{name}: got {actual!r}, wanted {op} {wanted!r}"))

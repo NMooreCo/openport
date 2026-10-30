@@ -7,12 +7,12 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -23,7 +23,7 @@ from ..runtime.openport_llm import AnthropicOnNemotron, SwappedOpenAI, UsageMete
 from .context import CURRENT_CASE
 from .entry import entry_callable
 from .graders import Judge, grade
-from .intercept import http_routed, routed
+from .intercept import ProviderBlocked, http_routed, routed
 from .node import EvalProxy, run_node_case
 from .spec import CallSite, Spec
 
@@ -88,23 +88,30 @@ def prepare_imports(spec: Spec) -> None:
     os.environ["OPENAI_API_KEY"] = "openport-placeholder"
     os.environ["ANTHROPIC_API_KEY"] = "openport-placeholder"
     # One process can evaluate several repos (the dashboard does). Each has its own `app` or `core`: modules imported
-    # from another repo's folder are dropped, and this repo's folders go first on the path, so its own are imported.
+    # from another repo's folder are dropped, namespace packages included, and so are its folders on the path. This
+    # repo's folders go first, so its own modules are imported.
     roots = [Path(path).resolve() for path in [*spec.extra_paths, spec.source_root]]
     _IMPORTED_FROM.difference_update({root for root in _IMPORTED_FROM if not root.exists()})  # e.g. a deleted clone
-    others = tuple(os.path.normcase(str(root)) + os.sep for root in _IMPORTED_FROM if root not in roots)
+    old_roots = {str(root) for root in _IMPORTED_FROM if root not in roots}
+    others = tuple(os.path.normcase(root) + os.sep for root in old_roots)
     if others:
         for name, module in list(sys.modules.items()):
-            file = getattr(module, "__file__", None)
-            if not file or name.startswith("openport"):
+            if name.startswith("openport"):
                 continue
-            file = os.path.normcase(os.path.abspath(file))
-            if file.startswith(others) and not file.startswith(_ENVIRONMENT):  # never the installed packages
+            try:  # a namespace package has no file, only its folders
+                files = [module.__file__] if getattr(module, "__file__", None) else list(getattr(module, "__path__", None) or [])
+            except Exception:  # noqa: BLE001 (a module with an odd __path__ is left as it is)
+                continue
+            files = [os.path.normcase(os.path.abspath(file)) for file in files]
+            if files and all(file.startswith(others) and not file.startswith(_ENVIRONMENT) for file in files):  # never installed packages
                 del sys.modules[name]
+        sys.path[:] = [path for path in sys.path if path not in old_roots]
     for path in roots[::-1]:
         while str(path) in sys.path:
             sys.path.remove(str(path))
     sys.path[:0] = [str(path) for path in reversed(roots)]  # the source root first, as before
     _IMPORTED_FROM.update(roots)
+    importlib.invalidate_caches()
 
 
 def swapped_client(site: CallSite, model: str | None, meter: UsageMeter, client: OpenAI, extra_body: dict | None = None):
@@ -124,6 +131,17 @@ def _cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | Non
     return info.cost(prompt_tokens, completion_tokens) if info else None
 
 
+def _blocked_in(error: BaseException | None) -> ProviderBlocked | None:
+    """The refusal of a closed provider behind an error the SDK raised, if that's what it was."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, ProviderBlocked):
+            return error
+        seen.add(id(error))
+        error = error.__cause__ or error.__context__
+    return None
+
+
 def _run_case(site: CallSite, call: Callable[[dict], Any], case: dict, judge: Judge | None) -> CaseResult:
     start = time.perf_counter()
     token = CURRENT_CASE.set(case["id"])
@@ -131,6 +149,7 @@ def _run_case(site: CallSite, call: Callable[[dict], Any], case: dict, judge: Ju
         output = _plain(call(case))
     except Exception as error:  # a crash is a failed case, not a failed run
         seconds = round(time.perf_counter() - start, 2)
+        error = _blocked_in(error) or error  # the Anthropic SDK reports a refused provider as "Connection error."
         return CaseResult(case["id"], False, 0.0, [], None, f"{type(error).__name__}: {error}"[:300], seconds)
     finally:
         CURRENT_CASE.reset(token)

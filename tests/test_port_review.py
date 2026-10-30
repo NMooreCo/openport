@@ -463,7 +463,8 @@ def test_the_runtime_import_comes_before_the_client_and_beside_a_script(tmp_path
     assert sites["main.ask"].status == "ported"
     assert "backend/openport_llm.py" in result.added and "openport_llm.py" not in result.added  # beside the script, not at the root
     main = (result.output / "backend/main.py").read_text()
-    assert main.startswith('"""Answers questions."""\nfrom openport_llm import anthropic_client\n\nclient = anthropic_client(timeout=10)\n')
+    assert main.startswith('"""Answers questions."""\nif __package__:\n    from .openport_llm import anthropic_client\nelse:\n'
+                           '    from openport_llm import anthropic_client\n\nclient = anthropic_client(timeout=10)\n')
     ran = run_python(result.output / "backend", "import main; print(type(main.client).__name__)")  # as `python main.py` runs it
     assert ran.returncode == 0, ran.stderr
     assert ran.stdout.strip() == "AnthropicOnNemotron"
@@ -665,3 +666,63 @@ def test_javascript_test_files_by_every_name_are_tests():
     for name in ("button.spec.tsx", "button.test.jsx", "api.test.mjs", "api.spec.mjs", "api.test.cjs", "api.spec.jsx", "x.test.ts"):
         assert is_test_path(f"src/{name}"), name
     assert not is_test_path("src/contest.ts") and not is_test_path("src/spec.ts")
+
+
+# --- Round 2: where the runtime goes, for packages nested in folders that aren't, and folders with no __init__.py ---
+
+
+CODEX_BLOCK = '''from openai import OpenAI
+
+client = OpenAI()
+
+
+def ask(q):
+    return client.chat.completions.create(model="gpt-5", messages=[{"role": "user", "content": q}])
+'''
+
+
+def test_the_runtime_goes_in_the_package_python_imports_not_a_folder_above_it(tmp_path):
+    """AutoGPT's backend: autogpt_platform/ has an __init__.py, autogpt_platform/backend/ doesn't, and the package
+    the app imports is the `backend` inside it. A relative import may not climb past that."""
+    repo = write(tmp_path / "repo", {
+        "autogpt_platform/__init__.py": "",
+        "autogpt_platform/backend/pyproject.toml": "[project]\nname = 'backend'\n",
+        "autogpt_platform/backend/backend/__init__.py": "",
+        "autogpt_platform/backend/backend/blocks/__init__.py": "",
+        "autogpt_platform/backend/backend/blocks/codex.py": CODEX_BLOCK,
+    })
+    result, sites = port(repo, tmp_path / "out")
+    assert [s.status for s in sites.values()] == ["ported"]
+    assert [path for path in result.added if path.endswith("openport_llm.py")] == ["autogpt_platform/backend/backend/openport_llm.py"]
+    codex = (result.output / "autogpt_platform/backend/backend/blocks/codex.py").read_text()
+    assert "from ..openport_llm import token_factory_client" in codex
+    ran = run_python(result.output / "autogpt_platform/backend", "import backend.blocks.codex as c; print(c.client.base_url)")
+    assert ran.returncode == 0, ran.stderr
+    assert "tokenfactory" in ran.stdout
+
+
+NAMESPACE_APP = {
+    "app/main.py": "from app.llm import ask\n\nprint(ask.__name__)\n",
+    "app/llm.py": '''from anthropic import Anthropic
+
+client = Anthropic()
+
+
+def ask(q):
+    return client.messages.create(model="claude-sonnet-5-5", max_tokens=10, messages=[{"role": "user", "content": q}])
+''',
+}
+
+
+def test_a_folder_without_an_init_still_finds_the_runtime_however_its_imported(tmp_path):
+    """app/ has no __init__.py: Python imports it as a namespace package (`import app.main` from the repo), or a file
+    in it runs as a script (`python llm.py` from app/). The runtime beside it is found both ways."""
+    result, sites = port(write(tmp_path / "repo", NAMESPACE_APP), tmp_path / "out")
+    assert [s.status for s in sites.values()] == ["ported"]
+    assert [path for path in result.added if path.endswith("openport_llm.py")] == ["app/openport_llm.py"]
+    as_package = run_python(result.output, "import app.main, app.llm; print(type(app.llm.client).__name__)")
+    assert as_package.returncode == 0, as_package.stderr
+    assert as_package.stdout.split() == ["ask", "AnthropicOnNemotron"]
+    as_script = run_python(result.output / "app", "import llm; print(type(llm.client).__name__)")
+    assert as_script.returncode == 0, as_script.stderr
+    assert as_script.stdout.strip() == "AnthropicOnNemotron"

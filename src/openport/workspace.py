@@ -49,9 +49,12 @@ def split_project(target: str) -> tuple[str, str]:
 
 def repo_size_mb(owner: str, name: str) -> float | None:
     """The repo's size as GitHub reports it (its whole history, so more than a shallow clone), or None if unknown."""
-    headers = {"Accept": "application/vnd.github+json", **({"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {})}
+    plain = {"Accept": "application/vnd.github+json"}
     try:  # a renamed repo answers with a redirect to its new name
-        response = httpx.get(f"https://api.github.com/repos/{owner}/{name}", timeout=10, headers=headers, follow_redirects=True)
+        for headers in ([{**plain, "Authorization": f"Bearer {API_TOKEN}"}] if API_TOKEN else []) + [plain]:
+            response = httpx.get(f"https://api.github.com/repos/{owner}/{name}", timeout=10, headers=headers, follow_redirects=True)
+            if response.status_code != 401:  # a token past its date or revoked: ask again without it, as anyone may
+                break
         return response.json()["size"] / 1024 if response.status_code == 200 else None
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return None
@@ -96,12 +99,15 @@ def fetch_repo(target: str, max_mb: float | None = None) -> tuple[Path, bool]:
         )]
     try:
         for step in steps:
-            subprocess.run(step, check=True, timeout=CLONE_TIMEOUT, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})  # never ask for a login
+            subprocess.run(step, check=True, timeout=CLONE_TIMEOUT, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},  # never ask for a login
+                           stderr=subprocess.PIPE, text=True, errors="replace")
     except subprocess.TimeoutExpired:
         shutil.rmtree(partial, ignore_errors=True)
         raise RuntimeError(f"Fetching {owner}/{name} took over {CLONE_TIMEOUT} seconds, so it was stopped.") from None
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as error:
         shutil.rmtree(partial, ignore_errors=True)
-        raise RuntimeError(f"Couldn't fetch {owner}/{name} from GitHub: check that it exists and is public.") from None
+        said = " ".join((error.stderr or "").strip().splitlines()[-2:])  # git's own reason, e.g. a path too long for Windows
+        raise RuntimeError(f"Couldn't fetch {owner}/{name} from GitHub: check that it exists and is public."
+                           + (f" Git said: {said}" if said else "")) from None
     partial.rename(destination)
     return destination, True

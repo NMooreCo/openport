@@ -23,6 +23,11 @@ const SHOWN_ADVISORIES = 5;
 const SHOWN_SOURCES = 4;
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+// A package locked at two versions is one package: "6 packages (7 versions)", not "7 packages".
+const inPackages = (packages: Package[]) => {
+  const names = new Set(packages.map((p) => p.name)).size;
+  return names < packages.length ? `${plural(names, "package")} (${packages.length} versions)` : plural(names, "package");
+};
 
 function UpgradeMetrics({ state }: { state: UpgradeState }) {
   const packages = state.packages ?? [];
@@ -46,7 +51,7 @@ function UpgradeMetrics({ state }: { state: UpgradeState }) {
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Tile label="Dependencies checked" value={state.deps ? String(state.deps.count) : "–"} sub={state.deps?.files.length ? `in ${state.deps.files.join(", ")}` : "from the repo's lockfiles"} />
-      <Tile label="Known advisories" value={state.packages ? String(known.size) : "–"} sub={state.packages ? `in ${plural(packages.length, "package")}` : "from OSV.dev"} tone={known.size ? "text-fail" : "text-white"} />
+      <Tile label="Known advisories" value={state.packages ? String(known.size) : "–"} sub={state.packages ? `in ${inPackages(packages)}` : "from OSV.dev"} tone={known.size ? "text-fail" : "text-white"} />
       <Tile label="Fixed by upgrading" value={state.packages ? String(fixed.size) : "–"} sub={state.packages ? (open ? `${open} still open` : "none left open") : "to releases at least a week old"} tone={fixed.size ? "text-pass" : "text-white"} />
       <Tile label="Tests" value={tests.value} sub={tests.sub} tone={tests.tone} />
     </div>

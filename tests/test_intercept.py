@@ -196,6 +196,157 @@ def test_a_case_cant_reach_the_closed_providers_themselves():
     assert sent == ["https://api.tokenfactory.nebius.com/v1/models", "https://api.openai.com/v1/responses"]
 
 
+def _recording(sent: list):
+    """An httpx2 transport (what the OpenAI and Anthropic SDKs send with) that keeps each URL it's asked for."""
+    import httpx2
+
+    return httpx2.MockTransport(lambda request: sent.append(str(request.url)) or httpx2.Response(404, json={}))
+
+
+def test_the_sdks_own_calls_that_arent_routed_never_leave():
+    """The SDKs send through httpx2, not httpx: a Responses call or a token count on the real SDKs stops here."""
+    import anthropic
+    import openai
+    import pytest
+
+    sent = []
+    gpt = openai.OpenAI(api_key="sk-real", max_retries=0, http_client=openai.DefaultHttpxClient(transport=_recording(sent)))
+    claude = anthropic.Anthropic(api_key="sk-ant-real", max_retries=0, http_client=anthropic.DefaultHttpxClient(transport=_recording(sent)))
+    with intercept.routed(object()):
+        with pytest.raises(intercept.ProviderBlocked, match="api.openai.com"):  # not wrapped: the case's error says why
+            gpt.responses.create(model="gpt-5-mini", input="hello")
+        with pytest.raises(anthropic.APIConnectionError) as raised:  # Anthropic's SDK wraps it; the runner looks behind
+            claude.messages.count_tokens(model="claude-sonnet-5-5", messages=[{"role": "user", "content": "hello"}])
+        assert isinstance(raised.value.__cause__, intercept.ProviderBlocked)
+    assert sent == []
+    with pytest.raises(openai.NotFoundError):  # outside a case the same client goes out as it would
+        gpt.responses.create(model="gpt-5-mini", input="hello")
+    assert sent == ["https://api.openai.com/v1/responses"]
+
+
+def test_the_async_sdks_calls_never_leave_either():
+    import asyncio
+
+    import openai
+    import pytest
+
+    sent = []
+    gpt = openai.AsyncOpenAI(api_key="sk-real", max_retries=0, http_client=openai.DefaultAsyncHttpxClient(transport=_recording(sent)))
+
+    async def ask():
+        with intercept.routed(object()):
+            await gpt.embeddings.create(model="text-embedding-3-small", input="hello")
+
+    with pytest.raises(intercept.ProviderBlocked):
+        asyncio.run(ask())
+    assert sent == []
+
+
+def test_a_thread_the_app_starts_during_a_case_cant_reach_them():
+    """The route lives in the case's context, which a new thread doesn't get; the refusal is for the whole process."""
+    import threading
+
+    import openai
+
+    sent, errors = [], []
+    gpt = openai.OpenAI(api_key="sk-real", max_retries=0, http_client=openai.DefaultHttpxClient(transport=_recording(sent)))
+
+    def work():
+        try:
+            gpt.chat.completions.create(model="gpt-5-mini", messages=[{"role": "user", "content": "hello"}])
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    with intercept.routed(object()):
+        thread = threading.Thread(target=work)
+        thread.start()
+        thread.join()
+    assert sent == [] and [type(error) for error in errors] == [intercept.ProviderBlocked]
+
+
+def test_every_provider_host_is_refused_and_a_redirect_to_one_too():
+    import httpx2
+    import pytest
+
+    intercept.install_http()
+
+    def answer(request):
+        sent.append(str(request.url))
+        if request.url.host == "short.example":
+            return httpx2.Response(302, headers={"location": "https://api.openai.com/v1/responses"})
+        return httpx2.Response(200, json={})
+
+    sent = []
+    client = httpx2.Client(transport=httpx2.MockTransport(answer), follow_redirects=True)
+    with intercept.routed(object()):
+        for url in ("https://api.openai.com./v1/responses", "https://eu.api.openai.com/v1/responses", "https://API.Anthropic.com/v1/messages",
+                    "https://my-resource.openai.azure.com/openai/deployments/gpt/chat/completions"):
+            with pytest.raises(intercept.ProviderBlocked):
+                client.post(url, json={})
+        with pytest.raises(intercept.ProviderBlocked):
+            client.get("https://short.example/go")  # followed to api.openai.com: refused there
+        client.get("https://notopenai.com/")  # only the providers' own domains
+    assert sent == ["https://short.example/go", "https://notopenai.com/"]
+
+
+def test_openports_own_forwarding_isnt_refused():
+    """The swapped client sends each call on with OpenPort's own client, whatever host that client is set to."""
+    import openai
+
+    sent = []
+    own = openai.OpenAI(api_key="sk-x", max_retries=0, http_client=openai.DefaultHttpxClient(transport=_recording(sent)))
+
+    class Completions:
+        @staticmethod
+        def create(**kwargs):
+            try:
+                own.chat.completions.create(**kwargs)
+            except openai.NotFoundError:
+                return "forwarded"
+
+    class Swapped:
+        chat = type("Chat", (), {"completions": Completions})
+
+    app = openai.OpenAI(api_key="sk-real", max_retries=0, http_client=openai.DefaultHttpxClient(transport=_recording([])))
+    with intercept.routed(Swapped()):
+        assert app.chat.completions.create(model="gpt-5-mini", messages=[]) == "forwarded"
+    assert sent == ["https://api.openai.com/v1/chat/completions"]
+
+
+RESPONSES_APP = '''
+from anthropic import Anthropic
+from openai import OpenAI
+
+
+def classify(text):
+    reply = OpenAI(max_retries=0).responses.create(model="gpt-5-mini", input=text)
+    return {"label": reply.output_text}
+
+
+def count(text):
+    reply = Anthropic(max_retries=0).messages.count_tokens(model="claude-sonnet-5-5", messages=[{"role": "user", "content": text}])
+    return {"label": str(reply.input_tokens)}
+'''
+
+
+def test_a_blocked_call_fails_its_case_and_says_why(tmp_path, monkeypatch):
+    (tmp_path / "respapp").mkdir()
+    (tmp_path / "respapp" / "__init__.py").write_text("")
+    (tmp_path / "respapp" / "llm.py").write_text(RESPONSES_APP)
+    (tmp_path / "cases.jsonl").write_text(json.dumps({"id": "c1", "input": {"text": "hello"}, "expected": {"label": "greeting"}}) + "\n")
+    sites = SITE.replace("interapp", "respapp")
+    (tmp_path / "openport.evals.yaml").write_text(
+        "target: respapp\nsource_root: .\ncall_sites:\n" + sites.format(id="classify", sdk="openai") + sites.format(id="count", sdk="anthropic"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = load_spec(tmp_path)
+    for site, host in zip(spec.call_sites, ("api.openai.com", "api.anthropic.com")):
+        result = run_site(spec, site, "nano", "nvidia/nano-test", client=FakeTokenFactory(lambda request: completion(content="x")))
+        [case] = result.cases  # Anthropic's SDK says "Connection error."; the case says what happened
+        assert not case.passed and case.error.startswith(f"ProviderBlocked: A test case tried to reach {host}"), case.error
+    for name in ("respapp", "respapp.llm"):
+        sys.modules.pop(name, None)
+
+
 def test_evals_replace_real_provider_keys_with_placeholders(monkeypatch, tmp_path):
     from openport.evals.runner import prepare_imports
     from openport.evals.spec import Spec

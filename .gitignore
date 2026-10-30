@@ -34,3 +34,8 @@ video/out/
 
 # Wrangler's local secrets (deploy/cloudflare)
 .dev.vars
+
+# Test coverage data
+.coverage
+.coverage.*
+htmlcov/

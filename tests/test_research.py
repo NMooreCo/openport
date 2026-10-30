@@ -128,7 +128,8 @@ def test_pr_quotes_the_guidance_a_change_followed():
         sources=[{"title": CARD["title"], "url": CARD["url"], "quote": QUOTE}],
     )
     body = report.render("app", [row], {"target_pass_rate": 0.9})
-    assert f"  - Follows NVIDIA's guidance, [{CARD['title']}]({CARD['url']}): “{QUOTE}”" in body
+    escaped = QUOTE.replace("_", "\\_")  # shows as written on GitHub: enable_thinking, not emphasis
+    assert f"  - Follows NVIDIA's guidance, [{CARD['title']}]({CARD['url']}): “{escaped}”" in body
     assert "checked word for word against the page" in body
 
 

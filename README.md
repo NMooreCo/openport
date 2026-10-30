@@ -39,7 +39,7 @@ Where each thing the submission asks for is:
 The password for live runs is in the file uploaded with the Devpost submission, which only judges can see.
 
 1. **Watch a recorded run (no password).** Open https://nebius.narralogy.com, click **Open the dashboard** and pick a demo: SupportDesk, jsliapark/preflight or Receipt reader. For an upgrade, click **Upgrade dependencies** and pick shareAI-lab/learn-claude-code or AuthKit. The dashboard replays a real run from Oct 28 or 29, labelled as recorded, and nothing calls Token Factory while it plays. When it ends, **Pull request** shows the PR description, **Code changes** the diff, and **Opened on GitHub** links to the real pull request that run opened.
-2. **Run one live.** Enter the password in the **Judges' password** box (on the front page under *Try it*, or in a recorded run's banner) and click **Unlock live runs**. Then open a demo and click **Run it live**: OpenPort tests each call on Nemotron through Token Factory, with Tavily's research, and you watch it climb the tiers. Receipt reader takes about 40 seconds, jsliapark/preflight about 4 minutes, SupportDesk about 10. You can also paste any public GitHub repo: the hosted server only runs code it has vetted (the demos, and preflight at a pinned commit), so another repo is scanned and ported without being tested, and the dashboard says so.
+2. **Run one live.** Enter the password in the **Judges' password** box (on the front page under *Try it*, or in a recorded run's banner) and click **Unlock live runs**. Then open a demo and click **Run it live**: OpenPort tests each call on Nemotron through Token Factory, with Tavily's research, and you watch it climb the tiers. Receipt reader takes under a minute, jsliapark/preflight about 4 minutes, SupportDesk about 10. You can also paste any public GitHub repo: the hosted server only runs code it has vetted (the demos, and preflight at a pinned commit), so another repo is scanned and ported without being tested, and the dashboard says so.
 3. **Open a real pull request.** When a live port finishes, click **Open on GitHub**. The PR opens in [narralogy-labs](https://github.com/narralogy-labs): in the demo app's own repo, or in a fork for a repo from GitHub, so its maintainers aren't notified. Clicking again returns the same PR.
 
 Live upgrades on the hosted server stop after choosing the safe versions, because the server can't run Docker for the repo's tests; the recorded upgrades show the whole flow, and `uv run openport upgrade examples/authkit --apply` runs it end to end locally. The hosted demo caps live use at $5 of Token Factory spend and 30 new runs a day; past that, the recorded runs still play.
@@ -51,7 +51,10 @@ Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and git. Some steps need
 ```bash
 uv sync
 cp .env.example .env   # then add NEBIUS_API_KEY (and TAVILY_API_KEY)
+uv run pytest -q       # the offline tests: no keys needed
 ```
+
+The TypeScript demo's tests run once its packages are installed (`cd examples/supportdesk-ts && npm install`); until then they're skipped.
 
 Find every OpenAI and Anthropic call in a repo, local or on GitHub, and what each one needs to run on Token Factory. No API keys needed; the code is parsed, never run.
 
@@ -60,11 +63,13 @@ uv run openport scan examples/supportdesk
 uv run openport scan jsliapark/preflight
 ```
 
-Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Plain HTTP calls to OpenAI-style endpoints move too, where the code spells out where they go: their URL (or base URL), the environment variable their key comes from, and their model are rewritten. A call that sends images moves to Nemotron 3.5 Super VL, the Nemotron that reads them. Calls that can't move safely stay where they are, with the reason: audio, the provider's own web search, or a URL that comes from settings. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`.
+Port a copy of the repo onto Token Factory. Each SDK client is swapped for the OpenPort runtime, and each call gets a Nemotron model. Plain HTTP calls to OpenAI-style endpoints move too, where the code spells out where they go: their URL (or base URL), the environment variable their key comes from, and their model are rewritten. A call that sends images moves to Nemotron 3.5 Super VL, the Nemotron that reads them. Calls that can't move safely stay where they are, with the reason: audio, the provider's own web search, or a URL that comes from settings. The original is never modified. The ported copy lands in `runs/ports/<name>`, the diff in `runs/port-<name>.diff`. The port reads the Nemotron models' IDs from Token Factory, so it needs `NEBIUS_API_KEY`; without one, name them with `--models`.
 
 ```bash
 uv run openport port jsliapark/preflight
 uv run openport port examples/supportdesk --assign triage.triage_ticket=nano --assign policy.review_case=ultra
+# without a key:
+uv run openport port examples/supportdesk --models nano=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B,super=nvidia/nemotron-3-super-120b-a12b,ultra=nvidia/Nemotron-3-Ultra-550b-a55b
 ```
 
 Check what Token Factory offers and how each Nemotron model handles JSON, tools and reasoning:
@@ -134,10 +139,10 @@ uv run openport pr runs/ports/jsliapark__preflight          # dry run: writes ru
 uv run openport pr runs/ports/jsliapark__preflight --open   # opens the PR in your fork
 ```
 
-Keep it honest after merging. `openport port` adds a GitHub Action (when the repo has an eval spec) that runs this on every pull request and fails if any call drops below the bar recorded in `openport.yaml`. It needs a `NEBIUS_API_KEY` repository secret. To run the same check by hand, from the ported repo:
+Keep it honest after merging. `openport port` adds a GitHub Action (when the repo has an eval spec) that runs this on every pull request and fails if any call drops below the bar recorded in `openport.yaml`. It needs a `NEBIUS_API_KEY` repository secret. To run the same check by hand, from this checkout (the ported copy is its own project, without OpenPort installed):
 
 ```bash
-uv run openport check .
+uv run openport check runs/ports/supportdesk
 ```
 
 ## Upgrade vulnerable dependencies
@@ -206,7 +211,7 @@ Testing a call imports the repo's code and runs it inside the server, next to th
 | `examples/authkit/` | Upgrade demo: a small app pinned to vulnerable PyJWT and requests releases, with tests |
 | `examples/authkit-node/` | The same in Node: jsonwebtoken 8.5.1 locked in `package-lock.json`, with `node --test` tests |
 | `deploy/cloudflare/` | The hosted dashboard: a Worker and Container config for the live dashboard, and one for the static replay |
-| `scripts/` | `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the Oct 28 re-measure and recordings, as one checked sequence) |
+| `scripts/` | `static_replay.py` (the [static replay](#dashboard) of the recorded runs), `deploy_endpoint.sh` (the dashboard on a Nebius Serverless Endpoint), `field_study.py` (the [field study](docs/FIELD-STUDY.md)) and `monday.py` (the Oct 28 re-measure and recordings, as one checked sequence) |
 | `tests/` | Offline tests (no API keys needed) |
 
 ## How OpenPort uses NVIDIA Nemotron
@@ -245,8 +250,8 @@ Every model OpenPort uses is NVIDIA Nemotron on Nebius Token Factory, and every 
 - **No GPUs and no model servers.** All of the models above, Ultra's 550B parameters included, sit behind one API key. OpenPort talks to them with the OpenAI SDK pointed at `https://api.tokenfactory.nebius.com/v1/`, so there was no inference stack to build or host.
 - **Changing tier is changing a string.** The tuner climbs from Nano to Super to Ultra by changing the model name. That's what makes searching every call for the cheapest tier that passes practical at all.
 - **Real prices, live.** OpenPort resolves the tiers from the `/v1/models` catalog at runtime (or from `OPENPORT_MODEL_<TIER>` if you pin them) and reads per-token prices from that same catalog, so every cost in every PR is computed from Token Factory's own numbers, not a table kept by hand.
-- **Cheap enough to test everything.** A full port of SupportDesk (5 calls, 118 labelled cases, every tuning round, Ultra's rewrites and judging) cost $0.70 of Token Factory. Porting preflight's 4 calls cost about $0.07, and a live port of the receipt reader about $0.02.
-- **Fast enough to watch.** On the hosted dashboard, the receipt reader ports in about 40 seconds, preflight in about 4 minutes and SupportDesk in about 10.
+- **Cheap enough to test everything.** A full port of SupportDesk (5 calls, 118 labelled cases, every tuning round, Ultra's rewrites and judging) cost $0.70 of Token Factory. Porting preflight's 4 calls cost about $0.07, and a live port of the receipt reader 2 to 4 cents.
+- **Fast enough to watch.** On the hosted dashboard, the receipt reader ports in under a minute, preflight in about 4 minutes and SupportDesk in about 10.
 - **Fine-tuning without hardware.** `openport distill` and `openport finetune` turn Ultra's checked answers into a LoRA fine-tune through Token Factory's fine-tuning API: a job of 209 examples trained in 14 minutes, with nothing to provision.
 
 ## Other Nebius tools and services

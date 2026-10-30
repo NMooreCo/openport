@@ -709,16 +709,22 @@ def _constructor_text(f: _File, binding: _Binding, helper: str, notes: list[str]
     return helper.encode() + b"(" + b", ".join(kept) + b")"
 
 
+def _package_root(repo: _Repo, path: str) -> str | None:
+    """The top-level package a file is imported as part of: the outermost of the folders above it that each have an
+    __init__.py, without a gap (src/pkg/, or AutoGPT's autogpt_platform/backend/backend/ under a folder that has
+    none). None for a file in a folder that isn't a package. The repo's own root never counts."""
+    top = None
+    folder = posixpath.dirname(path)
+    while folder and (repo.root / folder / "__init__.py").exists():
+        top, folder = folder, posixpath.dirname(folder)
+    return top
+
+
 def _vendor_dirs(repo: _Repo, files: set[str]) -> dict[str, str]:
     """Where each edited file gets the runtime: in its top-level package, imported relatively; or, for a file in a
-    folder that isn't a package (a script's, like backend/main.py), beside it, imported by name, since the folder
-    of the script Python runs is on sys.path. At the repo root for a file there."""
-    found = {}
-    for path in files:
-        parts = path.split("/")
-        top = "/".join(parts[:2]) if parts[0] == "src" and len(parts) > 2 else parts[0] if len(parts) > 1 else ""
-        found[path] = top if top and (repo.root / top / "__init__.py").exists() else posixpath.dirname(path)
-    return found
+    folder that isn't a package (a script's, like backend/main.py, or a namespace package's), beside it. At the repo
+    root for a file there."""
+    return {path: _package_root(repo, path) or posixpath.dirname(path) for path in files}
 
 
 OPENAI_REQUIREMENT = "openai>=1.0"  # what the runtime imports; an app that only used Anthropic's SDK may not have it
@@ -798,8 +804,13 @@ def _openai_dependency(repo: _Repo, vendor_dirs: set[str]) -> tuple[dict[str, by
 
 def _import_line(repo: _Repo, path: str, vendor_dir: str, helpers: set[str]) -> bytes:
     names = ", ".join(sorted(helpers))
-    if not vendor_dir or not (repo.root / vendor_dir / "__init__.py").exists():
+    if not vendor_dir:  # a file at the root: the runtime beside it, on sys.path
         return f"from {RUNTIME_MODULE} import {names}".encode()
+    if _package_root(repo, path) is None:
+        # A folder with no __init__.py: imported as a namespace package (`import app.llm`), the runtime beside the
+        # file is `.openport_llm`; run as a script (`python llm.py`), it's on sys.path, so `openport_llm`.
+        return (f"if __package__:\n    from .{RUNTIME_MODULE} import {names}\n"
+                f"else:\n    from {RUNTIME_MODULE} import {names}").encode()
     depth = len(PurePosixPath(path).parent.relative_to(vendor_dir).parts)
     return f"from {'.' * (depth + 1)}{RUNTIME_MODULE} import {names}".encode()
 
@@ -880,7 +891,7 @@ def _insert_import(f: _File, statement: bytes, used_at: int | None = None) -> Ed
     else:
         position = f.starts[0]  # after any byte order mark
     prefix = nl if position == len(f.source) and not f.source.endswith(b"\n") else b""
-    return Edit(position, position, prefix + statement + nl)
+    return Edit(position, position, prefix + statement.replace(b"\n", nl) + nl)  # a statement may be a block of lines
 
 
 def _cleanup_sdk_imports(f: _File, replaced: list[tuple[int, int]]) -> list[Edit]:

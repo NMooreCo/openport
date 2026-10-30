@@ -229,3 +229,14 @@ def test_a_repo_of_the_forks_name_that_isnt_a_fork_of_it_is_refused(tmp_path):
     with pytest.raises(sandbox.GitHubError, match="isn't a fork of acme/app"):
         sandbox.open_pr("t0ken", "sandbox", ported(tmp_path), ["app/llm.py"], "Title", "Body", "openport/nemotron",
                         upstream="acme/app", base_commit="abc123", transport=httpx.MockTransport(api), git=RecordingGit())
+
+
+def test_a_bare_issue_number_from_a_changelog_links_nothing():
+    """In the PR's own repo (the weekly workflow, or --upstream) "(#1234)" and "GH-1234" link to that repo's issue
+    1234, which has nothing to do with the upstream package's changelog it was quoted from."""
+    body = "- Fix a leak (#1234), see GH-56 and gh-7. Heading ### 3, colour #fff, entity &#169; and a link to /a#2."
+    quiet = sandbox.quiet(body)
+    assert quiet == ("- Fix a leak (#​1234), see GH​-56 and gh​-7. Heading ### 3, colour #fff, entity &#169; "
+                     "and a link to /a#2.")
+    assert sandbox.quiet(quiet) == quiet
+    assert sandbox.quiet("acme/app#12") == "acme/app#​12"  # an owner/repo reference, as before

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -29,16 +30,22 @@ IN_FLIGHT_USD = 1.0  # what a live run may still spend, counted against the dail
 REPLAY_SPEED, REPLAY_MAX_GAP = 20, 1.5  # a recorded run replays 20x faster, no pause over 1.5 s
 # With a token for a GitHub organization set aside for it, a finished port's pull request can be opened there
 # (src/openport/sandbox.py): in a fork, for a repo from GitHub, so the original's maintainers aren't notified.
-GITHUB_TOKEN = os.environ.pop("OPENPORT_GITHUB_TOKEN", None) or None  # out of the environment the repos' code runs in
+# The token is taken out of the environment, so the processes a run starts (git, Node, an app's tests) don't inherit
+# it. Code imported into this process could still find it, as it could NEBIUS_API_KEY: that's why a public dashboard
+# runs only vetted code (OPENPORT_RUN_REPO_CODE=vetted in the Dockerfile).
+GITHUB_TOKEN = os.environ.pop("OPENPORT_GITHUB_TOKEN", None) or None
 workspace.API_TOKEN = GITHUB_TOKEN  # the repo-size check's higher rate limit
 SANDBOX_ORG = os.getenv("OPENPORT_SANDBOX_ORG") or None
 OPENING = threading.Lock()  # one pull request at a time
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
-app = FastAPI(title="OpenPort", docs_url="/api/docs", openapi_url="/api/openapi.json")
+# The API docs' viewer loads its script from a CDN, on the dashboard's own origin, where a judge's browser keeps the
+# judges' password: the hosted dashboard doesn't serve it (OPENPORT_API_DOCS=0 in the Dockerfile).
+API_DOCS = os.getenv("OPENPORT_API_DOCS", "1") != "0"
+app = FastAPI(title="OpenPort", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
 
 # The page shows text from scanned repos and from models, so it allows only its own scripts, and nobody can frame
-# it. The API docs load their viewer from a CDN, so they go without the policy.
+# it. The API docs load their viewer from a CDN, so they go without the policy, where they're served.
 SECURITY_HEADERS = {
     "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.ytimg.com; "
                                "frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'none'; form-action 'self'; "
@@ -58,7 +65,7 @@ class SecurityHeaders:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.inner(scope, receive, send)
-        docs = scope["path"].startswith(("/api/docs", "/api/openapi.json"))
+        docs = API_DOCS and scope["path"] == "/api/docs"
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
@@ -72,6 +79,14 @@ class SecurityHeaders:
 
 
 app.add_middleware(SecurityHeaders)
+
+
+@app.get("/api/docs", include_in_schema=False)
+def api_docs():
+    if not API_DOCS:
+        raise HTTPException(404, "Not Found")
+    return get_swagger_ui_html(openapi_url=app.openapi_url, title="OpenPort API")
+
 # Finished runs survive a restart; recorded runs of the demos come with the server.
 runs: dict[str, Run] = {r.id: r for r in [*load_runs(config.RUNS_DIR / "dashboard"), *load_runs(pipeline.RECORDED, recorded=True)]}
 forgotten_spend: dict[float, float] = {}  # UTC day -> what runs since dropped from memory spent
@@ -112,9 +127,15 @@ def spent_today() -> float:
     return forgotten_spend.get(midnight, 0.0) + sum(r.cost_usd if r.status in ("done", "error") else IN_FLIGHT_USD for r in today)
 
 
+def _recorded(kind: str, target: str) -> bool:
+    """Whether a recorded run of this demo ships with the server: picking it replays that, rather than running live."""
+    return any(r.recorded and r.kind == kind and r.target == target for r in list(runs.values()))
+
+
 def _preset(preset: dict) -> dict:
     target, _, local = resolve_target(preset["id"])
-    return {**{k: v for k, v in preset.items() if k != "path"}, "tested": pipeline.tests_target(target, local)}
+    return {**{k: v for k, v in preset.items() if k != "path"}, "tested": pipeline.tests_target(target, local),
+            "recorded": _recorded("port", target)}
 
 
 @app.get("/api/presets")
@@ -124,7 +145,8 @@ def presets() -> list[dict]:
 
 @app.get("/api/upgrade-presets")
 def upgrade_presets() -> list[dict]:
-    return [{k: v for k, v in p.items() if k not in ("path", "tests")} for p in upgrades.PRESETS]
+    return [{**{k: v for k, v in p.items() if k not in ("path", "tests")}, "recorded": _recorded("upgrade", upgrades.resolve_target(p["id"])[0])}
+            for p in upgrades.PRESETS]
 
 
 def _forget_old_runs() -> None:

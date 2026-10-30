@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from openport import pricing, report
@@ -129,3 +130,33 @@ def test_repo_text_in_the_pr_table_cant_break_out_of_its_cell():
 
     assert _code_cell("x` <style>body{display:none}</style> `") == "`x' <style>body{display:none}</style> '`"
     assert _cell("a|b\nc") == r"a\|b c"
+
+
+def test_text_from_the_repo_a_model_or_a_page_cant_change_the_pr_body():
+    """Each of these comes from outside OpenPort: a file name, a kept call's code, Ultra's addendum, a page's title and
+    URL. None of it may open a link, an image or HTML, or break the table or the list it's in."""
+    from openport.report import Row
+
+    evil_file = "app/x) [click](https://evil.example) ![pixel](https://evil.example/p.png).py"
+    rows = [
+        Row(id="app.ask", file=evil_file, line=3, status="ported", was="gpt-5", now="nvidia/nano", tier="nano",
+            change="+4 words of instructions", addendum="Reply <img src=https://evil.example/a.png> in `JSON` [here](https://evil.example)",
+            sources=[{"title": "Nemotron] (https://evil.example) [x", "url": "https://docs.nvidia.com/a (b)<c>", "quote": "Use **JSON**"},
+                     {"title": "Not a web page", "url": "javascript:alert(1)", "quote": "q"}],
+            check=["the client `self.client` is built <b>here</b>"]),
+        Row(id="app.keep`<b>", file="app/k.py", line=1, status="kept", was="gpt-5", now=None,
+            reason="shares its client with `self.client.base_url` <img src=https://evil.example/k.png> and `unclosed"),
+    ]
+    body = report.render("my`app", rows, None)
+    prose = re.sub(r"`[^`\n]*`", "", body)  # what's left outside code spans, where Markdown and HTML are read
+    links = [target for _, target in re.findall(r"(?<!\\)\[((?:\\.|[^\]\\])*)\]\(([^)]*)\)", prose)]
+    assert links == ["app/x%29%20%5Bclick%5D%28https%3A//evil.example%29%20%21%5Bpixel%5D%28https%3A//evil.example/p.png%29.py#L3",
+                     "https://docs.nvidia.com/a%20%28b%29%3Cc%3E", "https://tokenfactory.nebius.com"]
+    assert not re.search(r"(?<!\\)<", prose) and not re.search(r"(?<!\\)!(?<!\\)\[", prose)  # no HTML, no image
+    assert "- `app.keep'<b>` (app/k.py:1): shares its client with `self.client.base_url` \\<img" in body
+    assert " and \\`unclosed" in body  # an unpaired backtick is shown, not left open
+    assert "`my'app`" in body and "Follows NVIDIA's guidance, Not a web page: “q”" in body  # no link to a javascript: URL
+    assert "“Reply \\<img src=https://evil.example/a.png\\> in \\`JSON\\` \\[here\\](https://evil.example)”" in body
+    assert "- `app.ask`: the client `self.client` is built \\<b\\>here\\</b\\>" in body
+    table = [line for line in body.splitlines() if line.startswith("| `app.ask`")]
+    assert len(table) == 1 and len(re.findall(r"(?<!\\)\|", table[0])) == 8  # still seven cells

@@ -56,9 +56,12 @@ npx wrangler secret put JUDGE_PASSWORD --config live/wrangler.jsonc
 ```
 
 Give it to the judges in the submission's judges-only testing instructions. They enter it once on the site (it's
-kept in their browser and sent only with requests that start runs), and "Run it live" works on every demo. The
-Worker checks it in constant time, stops checking an address's guesses after 20 wrong ones in an hour, and strips it
-before anything reaches the container. Without the secret, there's no gate. Live runs are still capped by
+kept in their browser and sent only to this site, with the requests that check it, start runs or open pull
+requests), and "Run it live" works on every demo. The Worker checks it in constant time and strips it before
+anything reaches the container. Wrong guesses are counted per hour: past 20 from one address (an IPv6 /64) or 100
+from one network (an IPv6 /48 or an IPv4 /24), guesses from there aren't checked until the next hour. Any request
+that can do work (anything but GET and HEAD) needs the password, whatever its path. Without the secret, there's no
+gate. `npm test` runs the gate's tests under Node. Live runs are still capped by
 `OPENPORT_DAILY_BUDGET_USD` (5) and `NEW_RUNS_PER_DAY` (30). To embed the demo video on the front page, set
 `VIDEO_URL` in `live/wrangler.jsonc` to its YouTube link and deploy again.
 

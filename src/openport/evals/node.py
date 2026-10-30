@@ -25,6 +25,7 @@ from openai import APIStatusError
 from openai.resources.chat.completions import Completions
 
 from .context import CURRENT_CASE
+from .intercept import OWN
 
 RUNNER = Path(__file__).with_name("node_runner.mjs")
 NODE_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -59,7 +60,7 @@ class EvalProxy:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 if body.get("stream"):
                     return self._reply(400, self._error("Streaming isn't supported in OpenPort evals", anthropic))
-                token = CURRENT_CASE.set(unquote(match[1]))
+                token, own = CURRENT_CASE.set(unquote(match[1])), OWN.set(True)  # forwarding is OpenPort's own request
                 try:
                     response = proxy.forward_messages(body) if anthropic else proxy.forward(body)
                 except APIStatusError as error:  # Token Factory's own error body, as it came: the Python SDK unwraps "error"

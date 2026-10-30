@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 
 import yaml
 
@@ -55,16 +56,60 @@ def latest_tune_report(target: str) -> Path | None:
     return reports[-1] if reports else None
 
 
+# Most of the PR body comes from outside OpenPort: the repo's file names and code, Ultra's instructions, the titles and
+# URLs of NVIDIA's pages. Each is written so it shows as it is: none of it can open a link or an image, add HTML, or
+# end the table cell or list item it's in.
+_MARKDOWN = re.compile(r"([\\`*_\[\]<>!|~&$])")  # with no [ or <, a ( or # can't start a link, an image or HTML
+
+
+def _one_line(text) -> str:
+    return re.sub(r"[\r\n]+", " ", str(text))
+
+
+def _text(text) -> str:
+    """Text shown as written: each character Markdown or HTML would read is escaped (`\\<` shows a `<`)."""
+    return _MARKDOWN.sub(r"\\\1", _one_line(text))
+
+
+def _code(text) -> str:
+    """A code span: a backtick in the text can't close it and let what follows render as Markdown or HTML."""
+    return "`" + _one_line(text).replace("`", "'") + "`"
+
+
 def _cell(text) -> str:
     """Text from the scanned repo, safe in a Markdown table cell: a pipe would end the cell."""
-    return str(text).replace("|", "\\|").replace("\n", " ")
+    return _one_line(text).replace("|", "\\|")
 
 
 def _code_cell(text) -> str:
-    """A code span in a table cell. The repo writes these strings (a model name can be any expression), so a
-    backtick in one can't close the span and let what follows render as Markdown or HTML."""
-    text = _cell(text).replace("`", "'")
-    return f"`{text}`"
+    """A code span in a table cell. The repo writes these strings (a model name can be any expression)."""
+    return _code(_cell(text))
+
+
+def _inline(text) -> str:
+    """One of OpenPort's sentences that quotes the repo's code in backticks: the code as code, the rest as text. A
+    backtick with no partner is shown as one."""
+    parts = str(text).split("`")
+    return "".join(_code(part) if n % 2 and n < len(parts) - 1 else ("\\`" if n % 2 else "") + _text(part)
+                   for n, part in enumerate(parts))
+
+
+def _href(path: str, line: int) -> str:
+    """A link to a line of a file in the repo, its path percent-encoded so it can't end the link."""
+    return f"{quote(str(path), safe='/')}#L{int(line)}"
+
+
+def _url(url) -> str | None:
+    """A web page's address, percent-encoded so it can't end the link; None if it isn't http(s)."""
+    url = _one_line(url).strip()
+    if not re.match(r"https?://", url, re.IGNORECASE):
+        return None
+    return quote(url, safe=":/?#@!$&'*+,;=%-._~")
+
+
+def _source(source: dict) -> str:
+    title, url = _text(source.get("title") or "NVIDIA's page"), _url(source.get("url", ""))
+    return f"[{title}]({url})" if url else title
 
 
 def _tuning_for(site: dict, results: list[dict]) -> dict | None:
@@ -138,7 +183,7 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
     lines = [
         f"## {TITLE}",
         "",
-        f"This PR moves **{len(ported)} of {len(rows)}** LLM calls in `{target}` from closed APIs to open NVIDIA "
+        f"This PR moves **{len(ported)} of {len(rows)}** LLM calls in {_code(target)} from closed APIs to open NVIDIA "
         "Nemotron models served by Nebius Token Factory.",
     ]
     if tuned:
@@ -153,7 +198,7 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
         cost = f"{_usd(r.cost_was)} → {_usd(r.cost_now)}" if r.cost_was is not None or r.cost_now is not None else "-"
         cases = f" ({r.cases} cases)" if r.cases else ""
         lines.append(
-            f"| {code(r.id)} ([{_cell(r.file)}:{r.line}]({r.file}#L{r.line})) | {code(r.was)} | {code(r.now)} | {_pct(r.plain)} | "
+            f"| {code(r.id)} ([{_text(r.file)}:{r.line}]({_href(r.file, r.line)})) | {code(r.was)} | {code(r.now)} | {_pct(r.plain)} | "
             f"{_pct(r.after)}{cases} | {_pct(r.held_out)} | {cost} |"
         )
     costs = [r for r in ported if r.cost_was is not None and r.cost_now is not None]
@@ -167,7 +212,7 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
 
     if kept:
         lines += ["", "**Kept on the original provider:**"]
-        lines += [f"- `{r.id}` ({r.file}:{r.line}): {r.reason}" for r in kept]
+        lines += [f"- {_code(r.id)} ({_text(r.file)}:{r.line}): {_inline(r.reason)}" for r in kept]
 
     changes = [r for r in ported if r.change and r.change != "as written"]
     lines += ["", "### What changed", "",
@@ -175,14 +220,14 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
               "through `openport_llm.py`, which translates Messages calls to chat completions.",
               "- Each call names its Nemotron model, with a `# was ...` comment showing the old one."]
     for r in changes:
-        detail = f": “{r.addendum}”" if r.addendum else ""
-        cited = "".join(f"\n  - Follows NVIDIA's guidance, [{s['title']}]({s['url']}): “{s['quote']}”" for s in r.sources)
-        lines.append(f"- `{r.id}` tuned for {r.tier} ({r.change}){detail}{cited}")
+        detail = f": “{_text(r.addendum)}”" if r.addendum else ""
+        cited = "".join(f"\n  - Follows NVIDIA's guidance, {_source(s)}: “{_text(s.get('quote', ''))}”" for s in r.sources)
+        lines.append(f"- {_code(r.id)} tuned for {_text(r.tier)} ({_text(r.change)}){detail}{cited}")
 
     checks = [(r.id, note) for r in ported for note in r.check]
     if checks:
         lines += ["", "### Check before merging", ""]
-        lines += [f"- `{site}`: {note}" for site, note in checks]
+        lines += [f"- {_code(site)}: {_inline(note)}" for site, note in checks]
 
     lines += ["", "### How this was tested", ""]
     if tuned:

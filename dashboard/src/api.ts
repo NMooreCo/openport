@@ -7,6 +7,7 @@ export interface Preset {
   label: string;
   detail: string;
   tested?: boolean; // false on a public server that won't run this repo's code
+  recorded?: boolean; // false when picking it starts a live run: no recorded run of it ships with the server
 }
 
 export interface RunSummary {
@@ -59,7 +60,8 @@ export interface Site {
   github_org?: string | null;
 }
 
-// The judges' password: kept in this browser only, and sent only with the requests that start runs.
+// The judges' password: kept in this browser only, and sent only to this site, with the requests that check it,
+// start runs or open pull requests.
 const JUDGE_KEY = "openport-judge";
 
 export function judgePassword(): string {

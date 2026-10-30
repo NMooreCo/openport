@@ -5,8 +5,8 @@ reachable at import. Code that builds its client in a function, keeps it on `sel
 can't be swapped that way. Intercepting the SDK's own resource methods can: while a case runs, every
 `chat.completions.create(...)` or `messages.create(...)`, sync or async, on any client goes to the swapped
 client. Outside a case the patch does nothing, and calls from OpenPort's own Token Factory client pass straight
-through. A client the app's code hands to a thread it starts itself isn't routed: the route lives in the case's
-context.
+through. A client the app's code hands to a thread it starts itself isn't routed (the route lives in the case's
+context), but its call can't reach the closed provider either: that is refused for the whole process while a case runs.
 """
 
 import functools
@@ -25,11 +25,14 @@ PASSTHROUGH: "weakref.WeakSet" = weakref.WeakSet()  # OpenPort's own clients: ne
 # thread, where this isn't set, so its requests to Token Factory go out as they are.
 HTTP_BASE: ContextVar[str | None] = ContextVar("openport_http_base", default=None)
 _http_installed = False
-# While a case runs, nothing may reach the closed providers themselves: a call OpenPort can't route (the Responses
-# API, a beta or streaming method, a client handed to the app's own thread) would otherwise be answered by GPT or
-# Claude and graded as Nemotron, on the user's real key. Such a call fails instead, and stays where it is.
-IN_CASE: ContextVar[bool] = ContextVar("openport_in_case", default=False)
-PROVIDER_HOSTS = ("api.openai.com", "api.anthropic.com")
+# While any case runs, nothing in this process may reach the closed providers themselves: a call OpenPort can't route
+# (the Responses API, a beta or streaming method, a client used from the app's own thread) would otherwise be answered
+# by GPT or Claude and graded as Nemotron, on the user's real key. Such a call fails instead, and stays where it is. It's
+# checked on every request the HTTP clients send, redirects included, in the httpx2 the SDKs use and in httpx.
+PROVIDER_DOMAINS = ("openai.com", "anthropic.com", "openai.azure.com")
+OWN: ContextVar[bool] = ContextVar("openport_own_request", default=False)  # OpenPort's swapped client forwarding a call
+_cases_running = 0
+_cases_lock = threading.Lock()
 
 
 class ProviderBlocked(RuntimeError):
@@ -37,10 +40,40 @@ class ProviderBlocked(RuntimeError):
 
 
 def _refuse_providers(url: str) -> None:
-    host = (urlsplit(url).hostname or "").lower()
-    if IN_CASE.get() and host in PROVIDER_HOSTS:
+    if not _cases_running or OWN.get():
+        return
+    host = (urlsplit(str(url)).hostname or "").lower().rstrip(".")
+    if any(host == domain or host.endswith("." + domain) for domain in PROVIDER_DOMAINS):
         raise ProviderBlocked(f"A test case tried to reach {host}: OpenPort routes only the calls it can send to Token Factory, "
                               f"so this one isn't tested on Nemotron")
+
+
+@contextmanager
+def _case_running():
+    global _cases_running
+    with _cases_lock:
+        _cases_running += 1
+    try:
+        yield
+    finally:
+        with _cases_lock:
+            _cases_running -= 1
+
+
+def _guarded(original, is_async: bool):
+    """A client's send of one request (each redirect is one more), refused when it's for a closed provider."""
+    if is_async:
+        @functools.wraps(original)
+        async def method(self, request, *args, **kwargs):
+            _refuse_providers(request.url)
+            return await original(self, request, *args, **kwargs)
+    else:
+        @functools.wraps(original)
+        def method(self, request, *args, **kwargs):
+            _refuse_providers(request.url)
+            return original(self, request, *args, **kwargs)
+    method.__openport_original__ = original
+    return method
 # (module, class, method, where the same call lives on the swapped client)
 TARGETS = [
     ("openai.resources.chat.completions", "Completions", "create", ("chat", "completions", "create")),
@@ -74,11 +107,12 @@ def _routed(original, path: tuple[str, ...], is_async: bool):
             target = target_for(self)
             if target is None:
                 return await original(self, *args, **kwargs)
-            token = ROUTE.set(None)  # the swapped client calls the real SDK in turn
+            token, own = ROUTE.set(None), OWN.set(True)  # the swapped client calls the real SDK in turn
             try:
                 result = _resolve(target, path)(*args, **kwargs)
                 return await result if inspect.isawaitable(result) else result
             finally:
+                OWN.reset(own)
                 ROUTE.reset(token)
     else:
         @functools.wraps(original)
@@ -86,10 +120,11 @@ def _routed(original, path: tuple[str, ...], is_async: bool):
             target = target_for(self)
             if target is None:
                 return original(self, *args, **kwargs)
-            token = ROUTE.set(None)
+            token, own = ROUTE.set(None), OWN.set(True)
             try:
                 return _resolve(target, path)(*args, **kwargs)
             finally:
+                OWN.reset(own)
                 ROUTE.reset(token)
     method.__openport_original__ = original
     return method
@@ -128,28 +163,31 @@ def redirected(url: str) -> str | None:
 
 
 def install_http() -> None:
-    """Patch httpx's and requests' send once, so a case's requests to LLM endpoints reach the eval proxy."""
+    """Patch the HTTP clients' send once, so a case's requests to LLM endpoints reach the eval proxy, and none reaches
+    a closed provider."""
     global _http_installed
     with _lock:
         if _http_installed:
             return
-        try:
-            import httpx
-
-            for cls in (httpx.Client, httpx.AsyncClient):
+        for module_name in ("httpx", "httpx2"):  # httpx2 is what the OpenAI and Anthropic SDKs send with
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError:
+                continue
+            for cls in (module.Client, module.AsyncClient):
                 original = cls.send
 
-                def send(self, request, *args, _original=original, **kwargs):
+                def send(self, request, *args, _original=original, _url=module.URL, **kwargs):
                     target = redirected(str(request.url))
                     if target is not None:
-                        request.url = httpx.URL(target)
-                    else:
-                        _refuse_providers(str(request.url))
+                        request.url = _url(target)
                     return _original(self, request, *args, **kwargs)
 
                 cls.send = send
-        except ImportError:
-            pass
+                # Each request the client sends, redirects included, is checked against the closed providers.
+                single = cls.__dict__.get("_send_single_request")
+                if single is not None:
+                    cls._send_single_request = _guarded(single, is_async=cls is module.AsyncClient)
         try:
             import requests
 
@@ -187,11 +225,11 @@ def install_http() -> None:
 def http_routed(base: str):
     """While inside, requests to LLM endpoints go to the eval proxy at `base` (…/case/<id>/v1)."""
     install_http()
-    token, guard = HTTP_BASE.set(base), IN_CASE.set(True)
+    token = HTTP_BASE.set(base)
     try:
-        yield
+        with _case_running():
+            yield
     finally:
-        IN_CASE.reset(guard)
         HTTP_BASE.reset(token)
 
 
@@ -218,9 +256,9 @@ def routed(swapped: object, passthrough: object | None = None):
             PASSTHROUGH.add(client)
         except TypeError:  # not weakly referenceable: it can't be one of the SDK's clients either
             pass
-    token, guard = ROUTE.set(swapped), IN_CASE.set(True)
+    token = ROUTE.set(swapped)
     try:
-        yield
+        with _case_running():
+            yield
     finally:
-        IN_CASE.reset(guard)
         ROUTE.reset(token)

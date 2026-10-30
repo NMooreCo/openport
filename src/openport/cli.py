@@ -170,7 +170,7 @@ def scan(
 
     table = Table(title=f"LLM calls in {root.resolve().name}")
     for column in ("Call site", "Where", "SDK / API", "Model", "Output", "Port"):
-        table.add_column(column)
+        table.add_column(column, overflow="fold", no_wrap=column == "Call site")  # IDs whole: --assign needs them
     for f in sites:
         color = colors[f.portability]
         table.add_row(
@@ -854,7 +854,7 @@ def main() -> None:
     files the way they do in production: a bare open() there uses the legacy code page, which garbles prompts."""
     if _needs_utf8_relaunch():
         raise SystemExit(subprocess.call([sys.executable, "-X", "utf8", "-m", "openport.cli", *sys.argv[1:]]))
-    app()
+    app(prog_name="openport")  # the relaunch runs it as `python -m openport.cli`, but the command people type is this
 
 
 if __name__ == "__main__":

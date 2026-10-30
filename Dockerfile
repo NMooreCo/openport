@@ -36,7 +36,8 @@ ENV PATH="/app/.venv/bin:$PATH" OPENPORT_RUNS_DIR=/app/runs OPENPORT_EXAMPLES=/a
 # repo into this process, next to the API keys. Set it to "any" for a private deployment you trust with any repo.
 # It also caps what live runs spend per day; the demos replay their recorded runs (examples/recorded) for free.
 # Repos GitHub says are over OPENPORT_MAX_REPO_MB aren't fetched, and a fetch stops after OPENPORT_CLONE_TIMEOUT seconds.
-ENV OPENPORT_RUN_REPO_CODE=vetted OPENPORT_DAILY_BUDGET_USD=2 OPENPORT_MAX_REPO_MB=500 OPENPORT_CLONE_TIMEOUT=180
+# The API docs' viewer isn't served: it loads a CDN's script on the origin where the judges' password is kept.
+ENV OPENPORT_RUN_REPO_CODE=vetted OPENPORT_DAILY_BUDGET_USD=2 OPENPORT_MAX_REPO_MB=500 OPENPORT_CLONE_TIMEOUT=180 OPENPORT_API_DOCS=0
 # Not root: the server can write only its runs folder (clones, reports) and /tmp, and can't change its own code.
 RUN useradd --create-home --uid 10001 openport && mkdir -p /app/runs && chown openport /app/runs
 USER openport

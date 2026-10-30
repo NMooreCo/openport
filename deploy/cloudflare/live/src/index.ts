@@ -1,35 +1,20 @@
 import { DurableObject } from "cloudflare:workers";
 
-interface Env {
+import { admit, isJudge, refused, type GateEnv } from "./gate";
+
+interface Env extends GateEnv {
 	DASHBOARD: DurableObjectNamespace<Dashboard>;
 	NEBIUS_API_KEY?: string;
 	TAVILY_API_KEY?: string;
 	OPENPORT_DAILY_BUDGET_USD: string;
-	NEW_RUNS_PER_DAY: string;
-	// Set as a secret, live runs are for whoever has it (the hackathon's judges); everyone else sees the replays.
-	JUDGE_PASSWORD?: string;
 	VIDEO_URL?: string;
 	// A token for a GitHub organization set aside for OpenPort's pull requests (SANDBOX_ORG), as a secret: with it, a
 	// finished live port's pull request can be opened there.
 	GITHUB_TOKEN?: string;
 	SANDBOX_ORG?: string;
-	NEW_PRS_PER_DAY: string;
 }
-
-// Requests that can start a run (and spend Token Factory and Tavily credit) rather than replay one.
-const RUN_STARTS = new Set(["/api/runs", "/api/upgrades"]);
-// Requests that open a run's pull request on GitHub.
-const PR_OPENS = /^\/api\/runs\/[a-f0-9]+\/github$/;
-// Wrong passwords one address may try in an hour; past that its guesses aren't checked until the next hour.
-const MISSES_PER_HOUR = 20;
 
 const sha256 = (text: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-
-/** Whether two secrets match, taking the same time whatever they hold. */
-async function same(given: string, secret: string): Promise<boolean> {
-	const [a, b] = await Promise.all([sha256(given), sha256(secret)]);
-	return crypto.subtle.timingSafeEqual(a, b);
-}
 
 async function digest(text: string): Promise<string> {
 	return [...new Uint8Array(await sha256(text))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -58,11 +43,7 @@ export class Dashboard extends DurableObject<Env> {
 		const url = new URL(request.url);
 		if (url.pathname === "/api/site") return this.site(request); // answered here: no need to wake the container
 
-		// Anything but GET and HEAD can do work: start a run, open a pull request.
-		const mutating = request.method !== "GET" && request.method !== "HEAD";
-		// The server routes the decoded path, so /api%2Fruns or /api//runs would reach a run start without matching the
-		// checks below. The dashboard never sends either.
-		if (mutating && /%|\/\//.test(url.pathname)) return Response.json({ detail: "Not Found" }, { status: 404 });
+		if (refused(request)) return Response.json({ detail: "Not Found" }, { status: 404 });
 
 		// Requests that arrive while it starts share one start and one readiness check.
 		this.starting ??= this.start().finally(() => {
@@ -77,39 +58,13 @@ export class Dashboard extends DurableObject<Env> {
 		forwarded.headers.delete("x-openport-judge"); // the password stops here
 		forwarded.headers.delete("x-openport-reuse-only"); // only this object says what a request may do
 
-		// The server caps a day's spend, but it forgets when the container sleeps. This object's storage doesn't:
-		// it counts the runs started, and the pull requests opened, each UTC day, and past the cap the server may only
-		// show what it already has. With a judges' password set, any request that can do work needs someone who gives
-		// it: the check fails closed, whatever the path, rather than trusting it to match.
-		const starting = request.method === "POST" && RUN_STARTS.has(url.pathname);
-		const opening = request.method === "POST" && PR_OPENS.test(url.pathname);
-		const date = new Date().toISOString().slice(0, 10);
-		const counter = starting ? `new-runs:${date}` : opening ? `new-prs:${date}` : null;
-		const cap = Number((starting ? this.env.NEW_RUNS_PER_DAY : this.env.NEW_PRS_PER_DAY) || 20);
-		let reserved = false;
-		if (mutating && this.env.JUDGE_PASSWORD && !(await this.isJudge(request))) {
-			forwarded.headers.set("x-openport-reuse-only", "judges");
-		} else if (counter) {
-			const used = (await this.ctx.storage.get<number>(counter)) ?? 0;
-			if (used >= cap) {
-				forwarded.headers.set("x-openport-reuse-only", "1");
-			} else {
-				// The slot is taken before the run starts, so requests arriving together can't all pass the cap.
-				await this.ctx.storage.put(counter, used + 1);
-				reserved = true;
-			}
-		}
-		const response = await this.ctx.container!.getTcpPort(PORT).fetch(forwarded);
-		if (reserved && counter) {
-			const answer = response.ok
-				? ((await response.clone().json().catch(() => null)) as { reused?: boolean; opened?: boolean } | null)
-				: null;
-			const counted = starting ? answer?.reused === false : answer?.opened === true;
-			if (!counted) {
-				// A replay, a pull request that was already open, or an error: the slot goes back.
-				const now = (await this.ctx.storage.get<number>(counter)) ?? 1;
-				await this.ctx.storage.put(counter, Math.max(0, now - 1));
-			}
+		const admission = await admit(request, this.env, this.ctx.storage);
+		if (admission.reuseOnly) forwarded.headers.set("x-openport-reuse-only", admission.reuseOnly);
+		let response: Response | null = null;
+		try {
+			response = await this.ctx.container!.getTcpPort(PORT).fetch(forwarded);
+		} finally {
+			await admission.settle(response); // a day's slot goes back unless the run or pull request happened
 		}
 		return response;
 	}
@@ -120,26 +75,11 @@ export class Dashboard extends DurableObject<Env> {
 		const gated = Boolean(this.env.JUDGE_PASSWORD);
 		const body = {
 			gated,
-			judge: gated ? await this.isJudge(request) : true,
+			judge: gated ? await isJudge(request, this.env, this.ctx.storage) : true,
 			video_url: this.env.VIDEO_URL || null,
 			github_org: this.env.GITHUB_TOKEN && this.env.SANDBOX_ORG ? this.env.SANDBOX_ORG : null,
 		};
 		return Response.json(body, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
-	}
-
-	/** Whether the request carries the judges' password, with wrong guesses limited per address and hour. */
-	private async isJudge(request: Request): Promise<boolean> {
-		const given = request.headers.get("x-openport-judge");
-		if (!given || !this.env.JUDGE_PASSWORD) return false;
-		const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-		// One IPv6 host commonly holds a whole /64, so guesses are counted per /64, not per address.
-		const address = ip.includes(":") ? ip.split(":").slice(0, 4).join(":") : ip;
-		const key = `judge-misses:${new Date().toISOString().slice(0, 13)}:${address}`;
-		const misses = (await this.ctx.storage.get<number>(key)) ?? 0;
-		if (misses >= MISSES_PER_HOUR) return false;
-		if (await same(given, this.env.JUDGE_PASSWORD)) return true;
-		await this.ctx.storage.put(key, misses + 1);
-		return false;
 	}
 
 	private async start(): Promise<void> {

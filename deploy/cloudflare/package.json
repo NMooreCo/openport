@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test --experimental-strip-types live/test/gate.test.ts",
     "check": "tsc --noEmit -p live && wrangler deploy --dry-run --config live/wrangler.jsonc && wrangler deploy --dry-run --config replay/wrangler.jsonc",
     "deploy:live": "wrangler deploy --config live/wrangler.jsonc",
     "deploy:replay": "wrangler deploy --config replay/wrangler.jsonc"
