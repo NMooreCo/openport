@@ -12,6 +12,8 @@
 
 Built for the [Nebius x NVIDIA Global AI Hackathon](https://nebiusglobalaihackathon.devpost.com/) (Coding and Agentic Engineering track).
 
+**Watch:** [the 3-minute demo video](https://youtu.be/IzGuPsC-Bq0).
+
 **Try it:** the hosted dashboard at **https://nebius.narralogy.com** replays the recorded demo runs for anyone, and runs live ones for the judges. The pull requests those runs opened are real, in [narralogy-labs](https://github.com/narralogy-labs) on GitHub.
 
 **Results:** SupportDesk, the demo app, moves all 5 of its calls: a plain swap passes 70% of their cases, OpenPort's tuning 96% (98% held out), at $11.70 → $2.27 per 1,000 runs of each call. [jsliapark/preflight](https://github.com/jsliapark/preflight), an open-source PR reviewer I didn't write, moves all 4 of its Claude Opus calls, 94% cheaper ($22.08 → $1.32). [learn-claude-code](#upgrade-vulnerable-dependencies) (79k stars) gets a security upgrade closing 48 advisories, proven by its own CI.

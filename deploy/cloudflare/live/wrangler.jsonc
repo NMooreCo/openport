@@ -43,6 +43,6 @@
 		"SANDBOX_ORG": "narralogy-labs",
 		"NEW_PRS_PER_DAY": "20",
 		// The demo video, embedded on the front page once it's on YouTube.
-		"VIDEO_URL": ""
+		"VIDEO_URL": "https://youtu.be/IzGuPsC-Bq0"
 	}
 }

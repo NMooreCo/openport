@@ -1,6 +1,6 @@
 # Demo video
 
-2:58, for a public YouTube upload. The hackathon asks for 3 minutes or less "showing your project working — how
+2:58, public on YouTube at [https://youtu.be/IzGuPsC-Bq0](https://youtu.be/IzGuPsC-Bq0). The hackathon asks for 3 minutes or less "showing your project working — how
 you used Nebius Token Factory and NVIDIA Nemotron". The video is built end to end by [`video/`](../video/README.md):
 narration in Nick's voice (Cartesia), screen captures of the real dashboard replaying the Oct 28 and 29 recordings, motion
 slides, captions and a synthesized music bed. To change a line, edit `video/script.py` and rebuild.
@@ -55,8 +55,7 @@ runbook's own tuning run just before it kept it (92% overall, 85% held out) and 
 $0.81 (`runs/pr-jsliapark__preflight.md`, a local run output not in the repo). Both runs are real: each case is graded on one live reply, so a call near
 the bar can land either side. That's what the factory split is for: when one call stays, its neighbours still move.
 
-## Still to do
+## On YouTube
 
-- Upload `video/out/openport-demo-youtube.mp4` to YouTube as public, with `video/out/openport-demo.srt` as its English
-  captions (the picture has none burned in, so viewers can turn them on or off) and `video/out/thumbnail.png`, and put the link
-  in the Devpost submission.
+[https://youtu.be/IzGuPsC-Bq0](https://youtu.be/IzGuPsC-Bq0), public since Oct 29: `video/out/openport-demo-youtube.mp4`, with `video/out/openport-demo.srt` as
+its English captions (the picture has none burned in) and `video/out/thumbnail.png`.
