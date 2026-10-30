@@ -609,7 +609,10 @@ def upgrade(
     project = Path(project or folder).as_posix().strip("/") if project or folder else ""
     if project and not (root / project).is_dir():
         _fail(f"No folder {project} in {root}")
-    deps = read_lockfiles(root / project)
+    unread: list[str] = []
+    deps = read_lockfiles(root / project, unread=unread)
+    for problem in unread:
+        console.print(f"[yellow]Couldn't read {_plain(problem)}, so its dependencies aren't checked.[/yellow]")
     if not deps:
         _fail("No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock).")
     console.print(f"Read {len(deps)} dependencies. Checking OSV.dev...")
@@ -626,7 +629,8 @@ def upgrade(
     for column in ("Package", "Installed", "Fix", "Advisories", "Status", "Locked in"):
         table.add_column(column)
     for up in plans:
-        fix = f"[green]{up.target.version}[/green] ({up.target.age_days}d old)" if up.target else "—"
+        fix = (f"[green]{up.target.version}[/green] ({up.target.age_days}d old{', deprecated' if up.target.deprecated else ''})"
+               if up.target else "—")
         color = colors.get(up.status, "white")
         ids = up.advisory_ids
         table.add_row(_plain(up.dep.name), _plain(up.dep.version), fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""),
@@ -648,7 +652,7 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
                     project: str = "") -> None:
     from .github import UPGRADE_BRANCH
     from .upgrade import report as upgrade_report
-    from .upgrade.apply import changed_files, make_pr_folder
+    from .upgrade.apply import changed_files, committed_copy, make_pr_folder, uncommitted
     from .upgrade.changelog import changelog_digest
     from .upgrade.fix import make_fixer
     from .upgrade.research import research_upgrade
@@ -697,10 +701,14 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
             setups = [("tests", test_image or setups[0][1], test_command or setups[0][2])]
         return run_suites(folder, [(suite, image, in_project(project, command)) for suite, image, command in setups])
 
-    try:
-        run = upgrade_repo(root, out_dir, plans=plans, project=project, min_age_days=min_age, rounds=rounds, researcher=researcher,
+    try:  # from the last commit, so what's tested is what the PR holds
+        source = committed_copy(root, out_dir.with_name(out_dir.name + ".base")) or root
+        if source != root and (edited := uncommitted(root)):
+            console.print(f"[yellow]Upgrading your last commit: {len(edited)} file(s) with uncommitted changes "
+                          f"({_plain(', '.join(edited[:3]))}{', ...' if len(edited) > 3 else ''}) are tested and opened as committed.[/yellow]")
+        run = upgrade_repo(source, out_dir, plans=plans, project=project, min_age_days=min_age, rounds=rounds, researcher=researcher,
                            changelog=changelog, fixer=fixer, on_event=event, run_tests=tests)
-    except (FileExistsError, ValueError) as error:  # e.g. an --out folder OpenPort didn't make, which it won't empty
+    except (FileExistsError, ValueError, RuntimeError) as error:  # e.g. an --out folder OpenPort didn't make, which it won't empty
         _fail(str(error))
     if not run.upgraded:  # not an error: a weekly run with nothing safe to do yet just says why
         console.print("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
@@ -712,10 +720,10 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     body_path.write_text(upgrade_report.render(run, min_age), encoding="utf-8")
     verdict = "[green]Proven: the tests pass before and after the upgrade.[/green]" if run.proven else "[red]Not proven: see the test results.[/red]"
     console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
-    if run.proven:  # the PR comes from the original's .git plus the changed files, never from the tested copy
+    if run.proven:  # the PR comes from the original's last commit plus the changed files, never from the tested copy
         try:
-            pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir, run.created), out_dir.with_name(out_dir.name + ".pr"))
-        except (FileExistsError, ValueError) as error:
+            pr_folder = make_pr_folder(source, out_dir, changed_files(source, out_dir, run.created), out_dir.with_name(out_dir.name + ".pr"))
+        except (FileExistsError, ValueError, RuntimeError, OSError) as error:
             _fail(str(error))
         title, branch = upgrade_report.TITLE, UPGRADE_BRANCH
         if project:  # each project of a monorepo gets its own PR

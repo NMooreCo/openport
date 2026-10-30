@@ -56,7 +56,8 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
         t = up.target
         fixed = ", ".join(_advisory_link(k) for k in t.fixed[:6]) + (f" and {len(t.fixed) - 6} more" if len(t.fixed) > 6 else "")
         open_ = ", ".join(_advisory_link(k) for k in t.still_open) or "-"
-        lines.append(f"| `{up.dep.name}` | {up.dep.version} | **{t.version}** | {t.age_days} days ago | {fixed} | {open_} |")
+        to = f"**{t.version}**" + (" (deprecated, like every release that fixes it)" if t.deprecated else "")
+        lines.append(f"| `{up.dep.name}` | {up.dep.version} | {to} | {t.age_days} days ago | {fixed} | {open_} |")
 
     files = [(path, why) for path in re.findall(r"^\+\+\+ b/(.+)$", run.diff, re.M) if (why := _changed_by(path))]
     if files or run.notes:

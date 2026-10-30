@@ -29,7 +29,7 @@ class Dependency:
     also: tuple[str, ...] = ()  # other lockfiles that lock this same version (a repo with package-lock.json and bun.lock)
 
 
-def parse_requirements(text: str) -> list[Dependency]:
+def parse_requirements(text: str, source: str = "requirements.txt") -> list[Dependency]:
     deps: list[Dependency] = []
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
@@ -42,7 +42,7 @@ def parse_requirements(text: str) -> list[Dependency]:
         name = name.split("[", 1)[0].strip()  # drop extras: name[extra]
         version = version.split()[0].strip() if version.split() else ""
         if name and version:
-            deps.append(Dependency(name, version, "PyPI", "requirements.txt"))
+            deps.append(Dependency(name, version, "PyPI", source))  # its own file: requirements-dev.txt pins its own
     return deps
 
 
@@ -103,8 +103,23 @@ def parse_package_lock(text: str) -> list[Dependency]:
 _PNPM_V5_KEY = re.compile(r"((?:@[^/]+/)?[^/@()]+)/(\d[^/_()]*)(?:_.*)?")
 
 
+def _pnpm_itself(document: dict) -> bool:
+    """pnpm 11 and later write a first document for pnpm's own executable: its importers hold nothing else."""
+    importers = document.get("importers") or {}
+    return bool(importers) and all(
+        isinstance(importer, dict) and importer.get("packageManagerDependencies")
+        and set(importer) <= {"configDependencies", "packageManagerDependencies"} for importer in importers.values())
+
+
 def parse_pnpm_lock(text: str) -> list[Dependency]:
-    data = yaml.safe_load(text) or {}
+    deps: list[Dependency] = []
+    for data in yaml.safe_load_all(text):  # one document, or (pnpm 11+) pnpm's own and then the project's
+        if isinstance(data, dict) and not _pnpm_itself(data):
+            deps += _pnpm_packages(data)
+    return deps
+
+
+def _pnpm_packages(data: dict) -> list[Dependency]:
     deps: list[Dependency] = []
     for key in data.get("packages") or {}:
         spec = key[1:] if key.startswith("/") else key
@@ -119,7 +134,9 @@ def parse_pnpm_lock(text: str) -> list[Dependency]:
             name, _, version = spec.rpartition("/")
         else:
             continue
-        if name and version:
+        # A tarball URL, a folder (file:, link:) or a git repo isn't a registry release: no version of it to check
+        # (lobehub's xlsx@https://cdn.sheetjs.com/... would match every xlsx advisory).
+        if name and version and ":" not in name + version:
             deps.append(Dependency(name, version, "npm", "pnpm-lock.yaml"))
     return deps
 
@@ -201,7 +218,7 @@ def node_lockfile_order(root: Path) -> list[str]:
     return list(dict.fromkeys([*([first] if first else []), *NODE_LOCKFILES.values()]))
 
 
-def read_lockfiles(root: Path) -> list[Dependency]:
+def read_lockfiles(root: Path, unread: list[str] | None = None) -> list[Dependency]:
     """Every dependency found across the repo's lockfiles, once per ecosystem, name and version. A root
     lockfile's dependencies have its name as their source; a subproject's, its path ("api/uv.lock"). When two
     lockfiles lock the same version (package-lock.json and bun.lock, say), the source is the one the project's
@@ -213,11 +230,13 @@ def read_lockfiles(root: Path) -> list[Dependency]:
         text = path.read_text(encoding="utf-8", errors="replace").removeprefix("﻿")
         try:
             if path.name.startswith("requirements"):
-                deps = parse_requirements(text)
+                deps = parse_requirements(text, path.name)
             else:
                 deps = PARSERS[path.name](text)
-        except (ValueError, TypeError, AttributeError, yaml.YAMLError, tomllib.TOMLDecodeError):
-            continue  # a lockfile its own tool can't have written; the others still count
+        except (ValueError, TypeError, AttributeError, yaml.YAMLError, tomllib.TOMLDecodeError) as error:
+            if unread is not None:  # the others still count, and the caller says this one wasn't checked
+                unread.append(f"{relative}: {type(error).__name__}: {str(error).splitlines()[0] if str(error) else ''}".rstrip(": "))
+            continue
         if "/" in relative:  # a subproject's: say where
             deps = [Dependency(d.name, d.version, d.ecosystem, relative) for d in deps]
         found += deps

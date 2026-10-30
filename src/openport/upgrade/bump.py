@@ -438,9 +438,38 @@ def added_versions(lockfile: str, before: str, after: str) -> list[Dependency]:
     return list(dict.fromkeys(dep for dep in (parse(after) if after.strip() else []) if (dep.name.lower(), dep.version) not in old))
 
 
-def too_new(added: list[Dependency], cutoff: datetime, releases: Callable[[Dependency], dict[str, datetime]]) -> list[str]:
+def upload_times(lockfile: str, text: str) -> dict[tuple[str, str], datetime]:
+    """For uv.lock: when the newest of the files it pins for each package version was uploaded. uv records it, and its
+    --exclude-newer only ever pins files from before the cutoff, so these, not a wheel added to the release since,
+    say how old what it installs is."""
+    if lockfile != "uv.lock":
+        return {}
+    times = {}
+    for pkg in tomllib.loads(text).get("package", []):
+        files = [pkg.get("sdist") or {}, *(pkg.get("wheels") or [])]
+        stamps = [_parse_time(f.get("upload-time")) for f in files if isinstance(f, dict)]
+        if pkg.get("name") and pkg.get("version") and stamps and all(stamps):
+            times[(str(pkg["name"]).lower(), str(pkg["version"]))] = max(stamps)
+    return times
+
+
+def _parse_time(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
+def too_new(added: list[Dependency], cutoff: datetime, releases: Callable[[Dependency], dict[str, datetime]],
+            known: dict[tuple[str, str], datetime] | None = None) -> list[str]:
     """Each added version released after the cutoff, or whose release date the registry doesn't give: what the
-    age guard turns away, whichever package manager resolved it."""
+    age guard turns away, whichever package manager resolved it. `known` (from upload_times) settles a version
+    without asking the registry."""
+    known = known or {}
+    added_known = [dep for dep in added if (dep.name.lower(), dep.version) in known]
+    problems = [f"{dep.name} {dep.version} (its files are from {known[(dep.name.lower(), dep.version)]:%Y-%m-%d})"
+                for dep in added_known if known[(dep.name.lower(), dep.version)] > cutoff]
+    added = [dep for dep in added if dep not in added_known]
     first = {(dep.ecosystem, dep.name.lower()): dep for dep in reversed(added)}  # one registry call per package
 
     def dates(dep: Dependency) -> dict[str, datetime]:
@@ -451,11 +480,11 @@ def too_new(added: list[Dependency], cutoff: datetime, releases: Callable[[Depen
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         found = dict(zip(first, pool.map(dates, first.values())))
-    problems = []
     for dep in added:
         released = found[(dep.ecosystem, dep.name.lower())].get(dep.version)
         if released is None:
             problems.append(f"{dep.name} {dep.version} (no release date)")
-        elif released > cutoff:
-            problems.append(f"{dep.name} {dep.version} (released {released:%Y-%m-%d})")
+        elif released > cutoff:  # PyPI's date for a release is its newest file's: pip may install that one
+            when = "its newest file is from" if dep.ecosystem == "PyPI" else "released"
+            problems.append(f"{dep.name} {dep.version} ({when} {released:%Y-%m-%d})")
     return problems

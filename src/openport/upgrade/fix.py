@@ -11,7 +11,7 @@ from .. import tokenfactory
 from ..citations import parse_citations, verified
 from ..runtime.openport_llm import UsageMeter
 from ..scan.findings import is_test_path
-from .apply import MARKER, SKIP_DIRS, Edit
+from .apply import Edit, own_files
 
 SYSTEM = """You fix application code that broke when dependencies were upgraded to fix security advisories.
 
@@ -45,17 +45,15 @@ class FixerSilent(RuntimeError):
 
 def project_paths(folder: Path, limit: int = 800) -> list[str]:
     """Every file in the project, as paths, so a fix names real ones (a stylesheet's, say) instead of guessing."""
-    paths = [p.relative_to(folder).as_posix() for p in sorted(folder.rglob("*"))
-             if p.is_file() and p.name != MARKER and not (SKIP_DIRS | {".git"}) & set(p.relative_to(folder).parts)]
+    paths = sorted(p.relative_to(folder).as_posix() for p in own_files(folder))
     return paths[:limit]
 
 
 def source_files(folder: Path, test_output: str) -> dict[str, str]:
     """The repo's source files (not tests) within a size budget: the ones the failure names first, then the ones
     beside them (a framework's error in src/app/page.tsx is usually about the files in src/app), then the rest."""
-    # Never a link: one named like source could be any file on the machine, and this text goes to Token Factory.
-    files = [p for p in sorted(folder.rglob("*"))
-             if p.is_file() and not p.is_symlink() and p.suffix in SOURCE_SUFFIXES and not SKIP_DIRS & set(p.relative_to(folder).parts)]
+    # Never through a link: one named like source could be any file on the machine, and this text goes to Token Factory.
+    files = sorted(p for p in own_files(folder) if p.suffix in SOURCE_SUFFIXES)
     relative = {p: p.relative_to(folder).as_posix() for p in files}
     candidates = [p for p in files if not is_test_path(relative[p])]
     named = [p for p in candidates if relative[p] in test_output]

@@ -89,6 +89,7 @@ function PackageCard({ pkg }: { pkg: Package }) {
         <span className="text-muted" aria-hidden>→</span>
         {pkg.target ? <span className="text-emerald-300">{pkg.target}</span> : <span className="text-muted">no safe release yet</span>}
         {pkg.age_days != null && <span className="font-sans text-muted">released {pkg.age_days} days ago</span>}
+        {pkg.deprecated && <span className="font-sans text-amber-300">deprecated, like every release that fixes it</span>}
       </p>
 
       <ul className="mt-3 space-y-1.5 text-xs" aria-label={`Advisories for ${pkg.name}`}>

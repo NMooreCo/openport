@@ -7,6 +7,7 @@ Files keep their line endings.
 """
 
 import difflib
+import json
 import os
 import re
 import shutil
@@ -28,9 +29,16 @@ _PIN = re.compile(r"^(\s*)([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(\s*==\s*)([^
 
 # What decides whether the tests pass rather than what they test: a fix may not change it to get them passing.
 TEST_CONFIG_DIRS = {".github", ".circleci", "__snapshots__"}
-TEST_CONFIG_FILES = {"pytest.ini", "tox.ini", "setup.cfg", "conftest.py", "tests.py", "noxfile.py", ".coveragerc", ".gitlab-ci.yml"}
+TEST_CONFIG_FILES = {"pytest.ini", "tox.ini", "setup.cfg", "conftest.py", "tests.py", "noxfile.py", ".coveragerc", ".gitlab-ci.yml",
+                     "makefile"}
 TEST_CONFIG = re.compile(r"(?:jest|vitest|playwright|cypress)\.config\.[^/]+|(?:jest|vitest)\.setup\.[^/]+|vitest\.workspace\.[^/]+"
-                         r"|karma\.conf\.[^/]+|\.mocharc(?:\.[^/]+)?|setuptests\.[^/]+")
+                         r"|karma\.conf\.[^/]+|\.mocharc(?:\.[^/]+)?|setuptests\.[^/]+|\.env\.test(?:ing)?(?:\.[^/]+)?")
+# A Vite config with a `test` block is Vitest's too. One without is the app's build config, which an upgrade of Vite
+# may need changed.
+VITE_CONFIG = re.compile(r"vite\.config\.[^/]+")
+# Switches that turn a check off rather than fix what it finds: no fix may add one, in any file.
+SILENCERS = re.compile(r"ignoreBuildErrors|ignoreDuringBuilds|passWithNoTests|@ts-nocheck|@ts-ignore|@ts-expect-error"
+                       r"|eslint-disable|#\s*type:\s*ignore|\bnoCheck\b|pytest\.skip|\.skip\(|\bxit\(|\bxdescribe\(")
 # What gets installed: the bump changes these, and a fix that did could pin the vulnerable release back (or run code
 # at install, as .pnpmfile.cjs and Yarn's plugins do).
 DEPENDENCY_DIRS = {".yarn"}
@@ -72,7 +80,10 @@ def _link(path: Path) -> bool:
 
 
 def _parts(name: str) -> tuple[str, ...] | None:
-    """A repo path's parts, or None if it isn't a plain relative path (absolute, with "..", a drive or a stream)."""
+    """A repo path's parts, or None if it isn't a plain relative path (absolute, with "..", a drive or a stream, or a
+    character no file name has: a model may write a NUL)."""
+    if any(ord(char) < 32 for char in name):
+        return None
     pure = PurePosixPath(name.replace("\\", "/"))
     parts = tuple(part for part in pure.parts if part != ".")
     if pure.is_absolute() or not parts or any(part == ".." or ":" in part for part in parts):
@@ -88,12 +99,26 @@ def through_link(base: Path, name: str) -> bool:
 
 def _ignore(top: Path, git: bool = False):
     """copytree's filter: installs and caches wherever they are, OpenPort's output at the top, and .git unless `git`.
-    Copies a container works in never carry .git: the repo's code runs there, and could plant hooks in it."""
+    Copies a container works in never carry .git: the repo's code runs there, and could plant hooks in it. Nor a
+    junction: copytree would copy what it points at, anywhere on the machine (a symlink stays a link)."""
     def ignore(directory: str, names: list[str]) -> set[str]:
-        skipped = {name for name in names if name in SKIP_DIRS or name == MARKER or (not git and name.lower() == ".git")}
+        skipped = {name for name in names if name in SKIP_DIRS or name == MARKER or (not git and name.lower() == ".git")
+                   or Path(directory, name).is_junction()}
         return skipped | ({OUTPUT_DIR} & set(names) if Path(directory) == Path(top) else set())
 
     return ignore
+
+
+def own_files(folder: Path):
+    """The files in `folder`, sorted, but none reached through a link or a junction (Python's own walk goes into a
+    junction), and none in installs, caches or .git: what's really the repo's."""
+    folder = Path(folder)
+    for directory, subdirs, files in os.walk(folder):
+        subdirs[:] = sorted(d for d in subdirs if d not in SKIP_DIRS and d.lower() != ".git" and not _link(Path(directory, d)))
+        for name in sorted(files):
+            path = Path(directory, name)
+            if name != MARKER and not _link(path) and path.is_file():
+                yield path
 
 
 def _ours(folder: Path) -> bool:
@@ -173,33 +198,95 @@ def copy_into(source: Path, destination: Path, name: str) -> None:
     shutil.copyfile(Path(source).joinpath(*parts), target)
 
 
-def _checkout(root: Path, dest: Path) -> bool:
-    """`dest` as the original's last commit, with a copy of its .git; False if there's none to check out (no .git, no
-    commit yet, or a .git file: a worktree's or a submodule's, whose metadata is shared with the original)."""
-    git = Path(root) / ".git"
-    if not git.is_dir() or _link(git):
-        return False
-    from ..github import _safe  # git without the repo's own hooks or fsmonitor
+# What a checkout of the original's last commit carries over from its config, as set for that repo (its own
+# .git/config, and what it includes, like actions/checkout's credentials): who commits, how they sign, and how
+# GitHub is reached.
+CARRIED_CONFIG = ("user.name", "user.email", "user.signingkey", "commit.gpgsign", "gpg.format", "gpg.program",
+                  "credential.helper", "http.https://github.com/.extraheader")
+ACTIONS_BOT = ("github-actions[bot]", "41898282+github-actions[bot]@users.noreply.github.com")
 
-    shutil.copytree(git, dest / ".git", symlinks=True)
+
+def last_commit(root: Path, dest: Path) -> bool:
+    """`dest` as a new repository holding the original's last commit, checked out. It's fetched from the original, not
+    a copy of its .git, so nothing in the original's config (core.worktree), its locks or the environment (GIT_DIR,
+    which a git hook sets) can point git back at the original, and a linked worktree or a submodule works too. Its
+    origin, its committer and its GitHub credentials come along. False when there's no commit to start from (no .git,
+    one that's a link, or no commit yet)."""
+    from ..github import _safe, git_env  # git without the repo's own hooks or fsmonitor
+
+    root, dest = Path(root).resolve(), Path(dest)
+    if not (root / ".git").exists() or _link(root / ".git"):
+        return False
+    env = git_env(GIT_LFS_SKIP_SMUDGE="1")  # LFS files stay pointers, as committed: the PR doesn't change them
+
+    def git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(_safe(["git", *args]), cwd=cwd, env=env, capture_output=True, text=True, timeout=600,
+                              encoding="utf-8", errors="replace")
+
+    head = git("rev-parse", "--verify", "--quiet", "HEAD^{commit}", cwd=root)
+    if head.returncode != 0:
+        return False
+    dest.mkdir(parents=True, exist_ok=True)
+    steps = [("init", "--quiet"),
+             ("fetch", "--quiet", "--no-tags", "--update-shallow", str(root), "HEAD"),  # a CI checkout is shallow
+             ("checkout", "--quiet", "--detach", head.stdout.strip())]
+    origin = git("remote", "get-url", "origin", cwd=root)
+    if origin.returncode == 0 and origin.stdout.strip():
+        steps.append(("remote", "add", "origin", origin.stdout.strip()))
+    for key in CARRIED_CONFIG:
+        values = git("config", "--local", "--includes", "--get-all", key, cwd=root)
+        steps += [("config", "--add", key, value) for value in values.stdout.splitlines() if values.returncode == 0]
     try:
-        done = subprocess.run(_safe(["git", "reset", "--hard", "--quiet", "HEAD"]), cwd=dest, capture_output=True,
-                              timeout=600).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        done = False
-    if not done:
+        for step in steps:
+            done = git(*step, cwd=dest)
+            if done.returncode != 0:
+                said = " ".join(done.stderr.strip().splitlines()[-2:])
+                raise RuntimeError(f"Couldn't check out {root.name}'s last commit to open the PR from: git {step[0]} said {said}")
+        if os.getenv("GITHUB_ACTIONS") == "true" and not git("config", "user.email", cwd=dest).stdout.strip():
+            for key, value in zip(("user.name", "user.email"), ACTIONS_BOT):  # a runner has no identity of its own
+                git("config", key, value, cwd=dest)
+    except BaseException:
         remove_tree(dest)
-    return done
+        raise
+    return True
+
+
+def committed_copy(root: Path, dest: Path) -> Path | None:
+    """The original's last commit, checked out in `dest`, for an upgrade to start from: what its tests run on, what its
+    diff shows and what its PR holds are then the same code, whatever is uncommitted in the original. None when
+    there's no commit: the upgrade starts from the files as they are."""
+    dest = Path(dest)
+    _clear(dest)
+    if not last_commit(root, dest):
+        return None
+    _mark(dest)
+    return dest
+
+
+def uncommitted(root: Path) -> list[str]:
+    """The tracked files with changes the last commit doesn't have (untracked files aren't the repo's)."""
+    from ..github import _safe, git_env
+
+    status = subprocess.run(_safe(["git", "status", "--porcelain", "--untracked-files=no", "-z"]), cwd=root, env=git_env(),
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    entries = iter(status.stdout.split("\0") if status.returncode == 0 else [])
+    changed = []
+    for entry in entries:
+        if len(entry) > 3:
+            changed.append(entry[3:])
+            if entry[0] in "RC":  # a rename or copy: its old path comes next
+                next(entries, None)
+    return changed
 
 
 def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Path:
-    """A checkout to open the PR from: the original repo's last commit, its .git included, with only `files` taken
-    from the upgraded copy. No container ever saw it, so nothing a repo's tests did can reach the commit or its hooks,
-    and nothing uncommitted in the original (work in progress, untracked files) rides along into the PR."""
+    """A checkout to open the PR from: the original repo's last commit, in a repository of its own, with only `files`
+    taken from the upgraded copy. No container ever saw it, so nothing a repo's tests did can reach the commit or its
+    hooks, and nothing uncommitted in the original (work in progress, untracked files) rides along into the PR."""
     root, dest = Path(root), Path(dest)
     _clear(dest)
-    if not _checkout(root, dest):  # no commit to start from: the files as they are (a .git file stays behind)
-        shutil.copytree(root, dest, symlinks=True, ignore=_ignore(root, git=(root / ".git").is_dir()))
+    if not last_commit(root, dest):  # no commit to start from: the files as they are, and no .git to open a PR from
+        shutil.copytree(root, dest, symlinks=True, ignore=_ignore(root))
     for name in files:
         copy_into(folder, dest, name)
     _mark(dest)
@@ -267,28 +354,31 @@ def _normalized(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def bump_requirements(text: str, name: str, version: str) -> tuple[str, bool]:
-    """Change the exact pin for `name` (any spelling), keeping extras, markers, comments and line endings."""
+def bump_requirements(text: str, name: str, version: str, installed: str | None = None) -> tuple[str, bool]:
+    """Change the exact pin for `name` (any spelling), keeping extras, markers, comments and line endings. With
+    `installed`, only a pin of that version: another file may pin another release of the same package."""
     lines, changed = [], False
     for line in text.splitlines(keepends=True):
         body = line.rstrip("\r\n")
         match = _PIN.match(body)
-        if match and _normalized(match.group(2)) == _normalized(name):
+        if match and _normalized(match.group(2)) == _normalized(name) and installed in (None, match.group(5)):
             line = f"{match.group(1)}{match.group(2)}{match.group(3) or ''}{match.group(4)}{version}{match.group(6)}{line[len(body):]}"
             changed = True
         lines.append(line)
     return "".join(lines), changed
 
 
-def apply_bumps(folder: Path, bumps: dict[str, str]) -> list[str]:
-    """Bump each package to its version in the folder's requirements files. Returns the files changed."""
+def apply_bumps(folder: Path, bumps: dict[str, str] | list[tuple[str, str | None, str]]) -> list[str]:
+    """Bump packages in the folder's requirements files: {name: version}, every pin of each; or (name, installed
+    version, version), only the pins of that installed version. Returns the files changed."""
+    pins = [(name, None, version) for name, version in bumps.items()] if isinstance(bumps, dict) else bumps
     changed = []
     for path in sorted(folder.glob("requirements*.txt")):
         if path.is_symlink():  # a link's target may be anywhere: it isn't the repo's to bump
             continue
         text = new = _read(path)
-        for name, version in bumps.items():
-            new, _ = bump_requirements(new, name, version)
+        for name, installed, version in pins:
+            new, _ = bump_requirements(new, name, version, installed)
         if new != text:
             _write(path, new)
             changed.append(path.name)
@@ -326,13 +416,44 @@ def edit_target(folder: Path, name: str) -> tuple[str, str]:
         return relative, "tests can't be changed to make them pass"
     if ".git" in lowered:
         return relative, "git's own files aren't the repo's code"
-    if TEST_CONFIG_DIRS & set(lowered) or lowered[-1] in TEST_CONFIG_FILES or TEST_CONFIG.fullmatch(lowered[-1]):
+    if (TEST_CONFIG_DIRS & set(lowered) or lowered[-1] in TEST_CONFIG_FILES or TEST_CONFIG.fullmatch(lowered[-1])
+            or VITE_CONFIG.fullmatch(lowered[-1]) and _configures_tests(Path(folder).joinpath(*parts))
+            or "/".join(lowered) in _script_files(folder)):
         return relative, "test and CI configuration can't be changed to make the tests pass"
     if DEPENDENCY_DIRS & set(lowered) or lowered[-1] in DEPENDENCY_FILES or DEPENDENCY_FILE.fullmatch(lowered[-1]):
         return relative, "dependency files are the version bump's to change"
     if SKIP_DIRS & set(parts):
         return relative, "not the repo's own code (dependencies and build output)"
     return relative, ""
+
+
+def _configures_tests(path: Path) -> bool:
+    try:
+        return re.search(r"\btest\s*:", path.read_text(encoding="utf-8", errors="replace")) is not None
+    except OSError:
+        return False
+
+
+def _script_files(folder: Path) -> set[str]:
+    """The repo's own files package.json's scripts run (`bash ./scripts/test.sh`, `node tools/check.mjs`), lowercased:
+    changing one changes what `npm test` or the build checks."""
+    try:
+        scripts = json.loads((Path(folder) / "package.json").read_text(encoding="utf-8-sig")).get("scripts") or {}
+    except (OSError, ValueError, AttributeError):
+        return set()
+    found = set()
+    for command in scripts.values() if isinstance(scripts, dict) else []:
+        for token in re.split(r"[\s;&|()]+", str(command)):
+            parts = _parts(token.strip("'\""))
+            if parts and Path(folder).joinpath(*parts).is_file():
+                found.add("/".join(part.lower() for part in parts))
+    return found
+
+
+def _silences(edit: Edit) -> str | None:
+    """The check-silencing switch an edit adds (one more of it than the text it replaces had), if it adds one."""
+    before, after = (SILENCERS.findall(text or "") for text in (edit.search, edit.replace))
+    return next((switch for switch in after if after.count(switch) > before.count(switch)), None)
 
 
 def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple[Edit, str]]]:
@@ -343,6 +464,8 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
         name, problem = edit_target(folder, edit.file)
         parts = name.split("/")
         path = Path(folder).joinpath(*parts)
+        if not problem and (switch := _silences(edit)):
+            problem = f"it turns a check off ({switch}) instead of fixing what it finds"
         if problem:
             rejected.append((edit, problem))
         elif not edit.search:  # a new file the upgraded version needs

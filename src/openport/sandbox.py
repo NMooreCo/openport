@@ -21,6 +21,8 @@ from pathlib import Path
 
 import httpx
 
+from .github import git_env
+
 API = "https://api.github.com"
 MAX_BODY = 60_000  # GitHub takes 65,536 characters
 GIT_TIMEOUT = 300
@@ -81,7 +83,7 @@ class _Api:
 def _run_git(token: str) -> Git:
     """git, authenticated by a header from the environment (never the URL or the command line), with no prompts."""
     header = "AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
+    env = {**git_env(), "GIT_CONFIG_COUNT": "1",  # the folder git runs in is the repository, whatever GIT_DIR says
            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader", "GIT_CONFIG_VALUE_0": header}
 
     def git(args: list[str], cwd: Path) -> None:

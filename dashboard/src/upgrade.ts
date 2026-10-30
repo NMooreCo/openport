@@ -11,13 +11,14 @@ export interface Package {
   version: string;
   ecosystem: string;
   source: string;
-  status: string; // "upgrade" | "partial" | "held: fix too new" | "held: no release dates" | "no fix available"
+  status: string; // "upgrade" | "partial" | "held: fix too new" | "held: no release dates" | "no fix available" | ...
   target: string | null;
   age_days: number | null;
+  deprecated?: boolean; // every release that fixes it is deprecated (recorded runs predate this)
   fixed: string[];
   still_open: string[];
   advisories: { id: string; summary: string }[];
-  bumpable: boolean; // pinned where OpenPort can bump it (requirements.txt); lockfiles need their package manager
+  bumpable: boolean; // pinned where OpenPort can bump it (a requirements file, or a lockfile it knows)
 }
 
 export interface TestResult {

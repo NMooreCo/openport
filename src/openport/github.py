@@ -38,8 +38,19 @@ class PrPlan:
     commands: list[list[str]]
 
 
+# What tells git which repository to use instead of the folder it runs in. A git hook or `rebase --exec` sets them for
+# the original repo: git run with them in OpenPort's copy would commit to, or reset, the original.
+GIT_LOCATION = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX")
+
+
+def git_env(**extra: str) -> dict[str, str]:
+    """The environment for OpenPort's git: the folder it runs in is the repository, and it never waits for a login."""
+    return {**{k: v for k, v in os.environ.items() if k not in GIT_LOCATION}, "GIT_TERMINAL_PROMPT": "0", **extra}
+
+
 def _run(command: list[str], cwd: Path | None = None) -> str:
-    return subprocess.run(_safe(command), cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(_safe(command), cwd=cwd, env=git_env(), check=True, capture_output=True, text=True).stdout.strip()
 
 
 def origin_repo(ported: Path) -> str:

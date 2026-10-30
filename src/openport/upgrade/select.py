@@ -56,6 +56,7 @@ class Target:
     age_days: int
     fixed: list[str] = field(default_factory=list)  # advisory IDs this version fixes
     still_open: list[str] = field(default_factory=list)  # no fix yet, or only in a release too new to trust
+    deprecated: bool = False  # every release that fixes it is deprecated (node-sass's all are): still the fix
 
 
 def parse_version(value: str | None, ecosystem: str = "PyPI") -> Version | SemVer | None:

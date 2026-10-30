@@ -122,13 +122,16 @@ def test_a_proven_upgrade_opens_from_the_original_git_plus_the_changed_files(tmp
     repo = tmp_path / "repo"
     shutil.copytree(AUTHKIT, repo)
     subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "start"], cwd=repo, check=True)
     subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/authkit.git"], cwd=repo, check=True)
     copy = copy_repo(repo, tmp_path / "copy")
     assert not (copy / ".git").exists()
     apply_bumps(copy, {"PyJWT": "2.14.0"})
     pr = make_pr_folder(repo, copy, changed_files(repo, copy), tmp_path / "pr")
     assert changed_files(repo, copy) == ["requirements.txt"] and (pr / ".git").is_dir()
-    assert "PyJWT==2.14.0" in (pr / "requirements.txt").read_text() and changed_files(repo, pr) == ["requirements.txt"]
+    staged = subprocess.run(["git", "status", "--porcelain"], cwd=pr, capture_output=True, text=True, check=True).stdout
+    assert "PyJWT==2.14.0" in (pr / "requirements.txt").read_text() and staged.split() == ["M", "requirements.txt"]
     plan = github.plan_pr(pr, "Upgrade vulnerable dependencies", tmp_path / "body.md", "me", branch=github.UPGRADE_BRANCH)
     assert plan.fork == "me/authkit" and plan.commands[0] == ["git", "checkout", "-B", "openport/security-upgrades"]
     assert plan.commands[-1][:7] == ["gh", "pr", "create", "--repo", "me/authkit", "--head", "openport/security-upgrades"]
@@ -494,16 +497,20 @@ def test_a_version_two_lockfiles_lock_moves_in_both(tmp_path):
     def container(folder, image, command):
         commands.append(command.split(" && ")[0])
         ok = "bun" not in command or "FAILBUN" not in (folder / "package.json").read_text()
+        if ok:  # each package manager rewrites its own lockfile
+            (folder / "bun.lock" if "bun" in command else folder / "package-lock.json").write_text(
+                (root / ("bun.lock" if "bun" in command else "package-lock.json")).read_text().replace("8.5.1", "9.0.0"))
         return TestRun(ok, 0 if ok else 1, "" if ok else "error: bun refused", "", 1.0)
 
     jwt = upgrade("jsonwebtoken", "8.5.1", "9.0.0", source="package-lock.json")
     jwt = Upgrade(dep, jwt.advisories, jwt.target, jwt.status)
-    run = upgrade_repo(root, tmp_path / "out", plans=[jwt], run_tests=lambda folder: passing(), run_container=container)
+    dates = {"release_dates": lambda dep: {"9.0.0": datetime(2022, 12, 21, tzinfo=timezone.utc)}}
+    run = upgrade_repo(root, tmp_path / "out", plans=[jwt], run_tests=lambda folder: passing(), run_container=container, **dates)
     assert run.proven and {"package-lock.json", "bun.lock"} <= set(run.changed) and run.notes == []
     assert commands[0].startswith("npm install") and "bun@" in commands[1]  # each lockfile by its own tool, npm's first
 
     (root / "package.json").write_text('{"name": "FAILBUN", "packageManager": "npm@11.13.0", "dependencies": {"jsonwebtoken": "^8.5.1"}, "scripts": {"test": "node --test"}}')
-    run = upgrade_repo(root, tmp_path / "out2", plans=[jwt], run_tests=lambda folder: passing(), run_container=container)
+    run = upgrade_repo(root, tmp_path / "out2", plans=[jwt], run_tests=lambda folder: passing(), run_container=container, **dates)
     assert run.proven and run.upgraded and run.notes == ["`bun.lock` also locks jsonwebtoken and couldn't be updated: bun refused"]
     assert "- Not updated: `bun.lock` also locks jsonwebtoken" in render(run)
     (root / "package.json").write_text('{"packageManager": "bun@1.3.1", "dependencies": {"jsonwebtoken": "^8.5.1"}}')

@@ -6,12 +6,12 @@ in a container and have Nemotron Super fix what broke (run.py) -> the PR descrip
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from .lockfiles import Dependency, read_lockfiles
 from .osv import Advisory, find_advisories
-from .registry import fetch_releases
+from .registry import fetch_release_dates, fetch_releases
 from .select import Target, choose_target, fix_floor, has_fix, parse_version
 
 
@@ -21,7 +21,7 @@ class Upgrade:
     advisories: list[Advisory]
     target: Target | None
     # "upgrade" | "partial" (some advisories stay open) | "held: fix too new" | "held: no release dates"
-    # | "held: installed version unreadable" | "no fix available"
+    # | "held: installed version unreadable" | "held: only deprecated releases, none fixing it" | "no fix available"
     status: str
 
     @property
@@ -34,12 +34,14 @@ def plan_upgrades(
     *,
     find=None,
     releases_for=None,
+    deprecated_for=None,  # an npm package's releases, deprecated ones too: where a fix goes when they're all there is
     min_age_days: int = 7,
     now: datetime | None = None,
 ) -> list[Upgrade]:
     """For each vulnerable dependency, the safe target version (or why none was chosen). Injectable for tests."""
     find = find or find_advisories
-    releases_for = releases_for or fetch_releases
+    if releases_for is None:  # the registries themselves
+        releases_for, deprecated_for = fetch_releases, deprecated_for or fetch_release_dates
     found = find(deps)
     fixable = [dep for dep, advisories in found if any(has_fix(a) for a in advisories)]
 
@@ -60,8 +62,23 @@ def plan_upgrades(
         elif parse_version(dep.version, dep.ecosystem) is None:  # no release can be shown to be newer than it
             plans.append(Upgrade(dep, advisories, None, "held: installed version unreadable"))
         else:
-            target = choose_target(dep.version, advisories, releases[dep], min_age_days=min_age_days, now=now, ecosystem=dep.ecosystem)
-            status = "held: fix too new" if target is None else "partial" if target.still_open else "upgrade"
+            def choose(releases_of: dict[str, datetime], age: int = min_age_days) -> Target | None:
+                return choose_target(dep.version, advisories, releases_of, min_age_days=age, now=now, ecosystem=dep.ecosystem)
+
+            target, status = choose(releases[dep]), None
+            if target is None and deprecated_for is not None and dep.ecosystem == "npm":
+                # A fix isn't moved to a deprecated release when another will do. When none will (node-sass's 148
+                # releases are all deprecated), the deprecated release that fixes it is still the fix.
+                try:
+                    every = deprecated_for(dep) or {}
+                except Exception:  # noqa: BLE001 (the registry, again: no dates, no fix shown to be old enough)
+                    every = {}
+                target = choose(every) if every else None
+                if target is not None:
+                    target = replace(target, deprecated=True)
+                elif every and not releases[dep] and choose(every, 0) is None:
+                    status = "held: only deprecated releases, none fixing it"
+            status = status or ("held: fix too new" if target is None else "partial" if target.still_open else "upgrade")
             plans.append(Upgrade(dep, advisories, target, status))
     return plans
 

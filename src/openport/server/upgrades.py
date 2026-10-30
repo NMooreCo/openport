@@ -12,7 +12,7 @@ from pathlib import Path
 from .. import config, tokenfactory
 from ..runtime.openport_llm import UsageMeter
 from ..upgrade import Upgrade, plan_upgrades, read_lockfiles
-from ..upgrade.run import BUMPABLE_SOURCES
+from ..upgrade.run import BUMPABLE_SOURCES, REQUIREMENTS
 from ..workspace import fetch_repo, split_project
 from . import pipeline
 from .pipeline import PIPELINE_LOCK, Run, _save
@@ -36,10 +36,10 @@ def _package(up: Upgrade) -> dict:
     t = up.target
     return {
         "name": up.dep.name, "version": up.dep.version, "ecosystem": up.dep.ecosystem, "source": up.dep.source, "status": up.status,
-        "target": t.version if t else None, "age_days": t.age_days if t else None,
+        "target": t.version if t else None, "age_days": t.age_days if t else None, "deprecated": bool(t and t.deprecated),
         "fixed": t.fixed if t else [], "still_open": t.still_open if t else up.advisory_ids,
         "advisories": [{"id": a.key, "summary": a.summary} for a in up.advisories],
-        "bumpable": up.dep.source in BUMPABLE_SOURCES,  # lockfile pins need their package manager
+        "bumpable": up.dep.source in BUMPABLE_SOURCES or bool(REQUIREMENTS.fullmatch(up.dep.source)),  # others need their package manager
     }
 
 
@@ -77,8 +77,11 @@ def _upgrade(run: Run, target: str, local: Path | None) -> None:
     if project and not (root / project).is_dir():
         run.emit("note", message=f"{repo} has no folder {project} on its default branch.")
         return
-    deps = read_lockfiles(root / project)
+    unread: list[str] = []
+    deps = read_lockfiles(root / project, unread=unread)
     run.emit("deps", count=len(deps), files=sorted({d.source for d in deps}))
+    for problem in unread:
+        run.emit("note", message=f"Couldn't read {problem}, so its dependencies aren't checked.")
     if not deps:
         run.emit("note", message="No lockfiles found (requirements*.txt, uv.lock, poetry.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock).")
         return
