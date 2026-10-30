@@ -126,7 +126,14 @@ def _author(api: _Api) -> tuple[str, str]:
 def _fork(api: _Api, org: str, upstream: str) -> tuple[str, str]:
     """The organization's fork of `upstream` (made if there isn't one yet), brought up to date: (full name, default branch)."""
     owner, name = upstream.split("/")
-    fork = api.call("POST", f"/repos/{upstream}/forks", json={"organization": org, "name": f"{owner}-{name}", "default_branch_only": True}).json()
+    # GitHub refuses a second fork under a name the organization already uses, so an earlier fork is looked up first
+    existing = api.call("GET", f"/repos/{org}/{owner}-{name}", ok=(200, 404))
+    if existing.status_code == 200:
+        fork = existing.json()
+        if (fork.get("parent") or {}).get("full_name", "").lower() != upstream.lower():
+            raise GitHubError(f"{org}/{owner}-{name} exists and isn't a fork of {upstream}")
+    else:
+        fork = api.call("POST", f"/repos/{upstream}/forks", json={"organization": org, "name": f"{owner}-{name}", "default_branch_only": True}).json()
     repo, branch = fork["full_name"], fork["default_branch"]
     deadline = time.monotonic() + FORK_WAIT
     while api.call("GET", f"/repos/{repo}/branches/{branch}", ok=(200, 404, 409)).status_code != 200:  # forks are made in the background

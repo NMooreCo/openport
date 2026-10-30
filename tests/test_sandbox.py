@@ -17,10 +17,11 @@ from openport.server.pipeline import Run
 class FakeGitHub:
     """GitHub's REST API, just the calls sandbox.open_pr makes, with what it was asked kept for the asserts."""
 
-    def __init__(self, existing_pr: bool = False, repo_exists: bool = False):
+    def __init__(self, existing_pr: bool = False, repo_exists: bool = False, fork_of: str | None = None):
         self.calls: list[tuple[str, str, dict]] = []
         self.existing_pr = existing_pr
         self.repo_exists = repo_exists
+        self.fork_of = fork_of  # the organization already holds sandbox/acme-app, a fork of this repo
         self.fork_polls = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -30,6 +31,11 @@ class FakeGitHub:
         assert request.headers["authorization"] == "Bearer t0ken"
         if path == "/user":
             return httpx.Response(200, json={"id": 7, "login": "owner"})
+        if path == "/repos/sandbox/acme-app" and request.method == "GET":
+            if self.fork_of is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json={"full_name": "sandbox/acme-app", "default_branch": "main", "fork": True,
+                                             "parent": {"full_name": self.fork_of}})
         if path.endswith("/forks"):
             return httpx.Response(202, json={"full_name": "sandbox/acme-app", "default_branch": "main"})
         if path == "/repos/sandbox/acme-app/branches/main":
@@ -206,3 +212,20 @@ def test_without_a_token_the_server_says_so(finished_port, monkeypatch):
     monkeypatch.setattr(server, "GITHUB_TOKEN", None)
     assert client.get("/api/site").json()["github_org"] is None
     assert client.post(f"/api/runs/{run.id}/github").status_code == 503
+
+
+def test_a_fork_the_organization_already_has_is_reused(tmp_path, monkeypatch):
+    # GitHub answers a second fork request under the same name with 403 "Name already exists", so it mustn't be made
+    api = FakeGitHub(fork_of="acme/app")
+    folder = ported(tmp_path)
+    opened = sandbox.open_pr("t0ken", "sandbox", folder, ["app/llm.py"], "Title", "Body", "openport/nemotron",
+                             upstream="acme/app", base_commit="abc123", transport=httpx.MockTransport(api), git=RecordingGit())
+    assert opened.repo == "sandbox/acme-app" and opened.new
+    assert not any(path.endswith("/forks") for _, path, _ in api.calls)
+
+
+def test_a_repo_of_the_forks_name_that_isnt_a_fork_of_it_is_refused(tmp_path):
+    api = FakeGitHub(fork_of="someone/else")
+    with pytest.raises(sandbox.GitHubError, match="isn't a fork of acme/app"):
+        sandbox.open_pr("t0ken", "sandbox", ported(tmp_path), ["app/llm.py"], "Title", "Body", "openport/nemotron",
+                        upstream="acme/app", base_commit="abc123", transport=httpx.MockTransport(api), git=RecordingGit())
