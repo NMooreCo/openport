@@ -97,7 +97,7 @@ def render(run: UpgradeRun, min_age_days: int = 7) -> str:
             lines += [f"The upgrade broke the tests, so {nemotron(kept.model)} changed the application code (never the tests):", "",
                       f"- {files}: {kept.rationale}{based_on}"]
         if undone:
-            lines.append(f"- Tried first and undone, because the tests still failed: " + "; ".join(
+            lines.append("- Tried first and undone, because the tests still failed: " + "; ".join(
                 f"{nemotron(fix.model)}'s change to {', '.join(sorted({f'`{e.file}`' for e in fix.edits}))} ({fix.rationale})" for fix in undone) + ".")
         rejected = [(edit, why) for fix in run.rounds for edit, why in fix.rejected]
         if rejected:

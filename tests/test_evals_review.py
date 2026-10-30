@@ -5,12 +5,10 @@ import sys
 import urllib.request
 from types import SimpleNamespace
 
-import pytest
-
 from openport import report
 from openport.capture.draft import client_attr_for
 from openport.evals.node import EvalProxy
-from openport.evals.runner import prepare_imports, run_site
+from openport.evals.runner import prepare_imports
 from openport.evals.spec import Spec, load_spec
 from openport.tune import export_plan, tune_site
 from openport.tune.variant import Variant

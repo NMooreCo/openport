@@ -75,6 +75,7 @@ class EvalProxy:
                 except Exception as error:  # noqa: BLE001 (the app sees an API error, as it would in production)
                     return self._reply(500, self._error(f"{type(error).__name__}: {error}", anthropic))
                 finally:
+                    OWN.reset(own)
                     CURRENT_CASE.reset(token)
                 self._reply(200, dataclasses.asdict(response) if anthropic else json.loads(response.model_dump_json()))
 

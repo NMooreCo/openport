@@ -15,7 +15,7 @@ from ..runtime.openport_llm import _PROVIDER_ONLY_OPTIONS
 from ..scan import _source_files
 from ..scan.findings import CALL_SUFFIXES, CallSiteFinding, is_test_path
 from ..scan.python_scanner import HTTP_METHODS, _constructor_sdk, _match_suffix, _module_name
-from .clients import ClientAction, decide_client_actions
+from .clients import decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
 from .http import BASE_URL_VARIABLE, BASE_URL_VARIABLES, CHAT_URL, KEY_VARIABLE, TOKEN_FACTORY_V1, url_edits, why_kept
 from .plan import SiteDecision
