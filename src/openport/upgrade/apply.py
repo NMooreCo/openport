@@ -1,8 +1,9 @@
 """Apply an upgrade to a copy of a repo: bump pinned versions, apply code edits, and diff the result.
 
 The original repo is never modified. Edits are exact search-and-replace: each must match once, stay
-inside the repo, and never touch tests, since the tests are what defines working. Files keep their
-line endings.
+inside the repo without passing through a link, and never touch tests or what decides whether they pass
+(test and CI configuration, the dependency files the bump owns), since the tests are what defines working.
+Files keep their line endings.
 """
 
 import difflib
@@ -10,17 +11,33 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+from .. import config
 from ..scan.findings import is_test_path
 
-SKIP_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "runs"}  # installs, caches, OpenPort's output
-# Copies never carry .git: a container runs the repo's code in them, and it could plant hooks there.
-# A PR is built from the original's .git instead (make_pr_folder).
-COPY_IGNORE = shutil.ignore_patterns(".git", *SKIP_DIRS)
+SKIP_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}  # installs and caches, wherever they are
+# OpenPort's own output when it runs inside the repo (the weekly workflow): skipped at the repo's top only, so a source
+# folder that happens to be called runs (Next.js's app/api/runs/) is copied like any other.
+OUTPUT_DIR = "runs"
+MARKER = ".openport-upgrade"  # in each folder an upgrade makes: a rerun replaces such a folder, and never one without it
 _PIN = re.compile(r"^(\s*)([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?(\s*==\s*)([^\s;#]+)(.*)$")
+
+# What decides whether the tests pass rather than what they test: a fix may not change it to get them passing.
+TEST_CONFIG_DIRS = {".github", ".circleci", "__snapshots__"}
+TEST_CONFIG_FILES = {"pytest.ini", "tox.ini", "setup.cfg", "conftest.py", "tests.py", "noxfile.py", ".coveragerc", ".gitlab-ci.yml"}
+TEST_CONFIG = re.compile(r"(?:jest|vitest|playwright|cypress)\.config\.[^/]+|(?:jest|vitest)\.setup\.[^/]+|vitest\.workspace\.[^/]+"
+                         r"|karma\.conf\.[^/]+|\.mocharc(?:\.[^/]+)?|setuptests\.[^/]+")
+# What gets installed: the bump changes these, and a fix that did could pin the vulnerable release back (or run code
+# at install, as .pnpmfile.cjs and Yarn's plugins do).
+DEPENDENCY_DIRS = {".yarn"}
+DEPENDENCY_FILES = {"package.json", "pyproject.toml", "uv.lock", "poetry.lock", "package-lock.json", "npm-shrinkwrap.json",
+                    "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lock", "bun.lockb", "pipfile", "pipfile.lock",
+                    ".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs", "bunfig.toml"}
+DEPENDENCY_FILE = re.compile(r"requirements[^/]*\.(?:txt|in)")
 
 
 @dataclass
@@ -34,7 +51,8 @@ def _remove_stubborn(function, target, error) -> None:
     """rmtree's fallback: make a read-only file (Git for Windows' objects) writable and retry, or remove a symlink
     a Linux container left on a Windows mount (uv's .venv/lib64), which Windows can't read but removes as a folder."""
     def writable_then_retry():
-        os.chmod(target, stat.S_IWRITE)
+        if not _link(Path(target)):  # chmod follows a link: its target could be any file on the machine
+            os.chmod(target, stat.S_IWRITE)
         function(target)
 
     for attempt in (writable_then_retry, lambda: os.rmdir(target), lambda: os.unlink(target)):
@@ -49,19 +67,77 @@ def remove_tree(path: Path) -> None:
     shutil.rmtree(path, onexc=_remove_stubborn)
 
 
+def _link(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+def _parts(name: str) -> tuple[str, ...] | None:
+    """A repo path's parts, or None if it isn't a plain relative path (absolute, with "..", a drive or a stream)."""
+    pure = PurePosixPath(name.replace("\\", "/"))
+    parts = tuple(part for part in pure.parts if part != ".")
+    if pure.is_absolute() or not parts or any(part == ".." or ":" in part for part in parts):
+        return None
+    return parts
+
+
+def through_link(base: Path, name: str) -> bool:
+    """Whether base/name is a link, or is reached through one (a path that isn't plain counts as one)."""
+    parts = _parts(name)
+    return parts is None or any(_link(Path(base).joinpath(*parts[:i])) for i in range(1, len(parts) + 1))
+
+
+def _ignore(top: Path, git: bool = False):
+    """copytree's filter: installs and caches wherever they are, OpenPort's output at the top, and .git unless `git`.
+    Copies a container works in never carry .git: the repo's code runs there, and could plant hooks in it."""
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        skipped = {name for name in names if name in SKIP_DIRS or name == MARKER or (not git and name.lower() == ".git")}
+        return skipped | ({OUTPUT_DIR} & set(names) if Path(directory) == Path(top) else set())
+
+    return ignore
+
+
+def _ours(folder: Path) -> bool:
+    """Whether OpenPort made `folder`: it's under the runs folder, or an earlier upgrade marked it."""
+    return (config.RUNS_DIR.resolve() in folder.resolve().parents or (folder / MARKER).is_file()
+            or (folder / ".git" / MARKER).is_file())
+
+
+def _clear(folder: Path) -> None:
+    """Make way for a new folder: only an empty one, or one OpenPort made, is ever removed."""
+    if _link(folder) or folder.exists() and not folder.is_dir():
+        raise FileExistsError(f"{folder} exists and isn't a folder OpenPort made: choose another --out")
+    if folder.exists():
+        if any(folder.iterdir()) and not _ours(folder):
+            raise FileExistsError(f"{folder} already exists, isn't empty, and wasn't made by OpenPort: choose another --out")
+        remove_tree(folder)
+
+
+def _mark(folder: Path) -> None:
+    where = folder / ".git" if (folder / ".git").is_dir() else folder  # never among the files a PR commits
+    (where / MARKER).write_text("Made by `openport upgrade`, which replaces this folder on its next run.\n", encoding="utf-8")
+
+
 def copy_repo(root: Path, out: Path) -> Path:
-    if out.exists():
-        remove_tree(out)
+    root, out = Path(root), Path(out)
+    source, target = root.resolve(), out.resolve()
+    if target == source or target in source.parents:  # removing it would remove the repo
+        raise ValueError(f"{out} holds the repo itself: the upgrade's copy goes somewhere else")
+    if source in target.parents and target.relative_to(source).parts[0] != OUTPUT_DIR:  # it would copy itself into itself
+        raise ValueError(f"{out} is inside the repo: put the upgrade outside it, or under its {OUTPUT_DIR}/ folder")
+    _clear(out)
     # Links stay links: followed here, one pointing out of the repo would copy that file into the folder the
     # repo's own tests run in, with the network. Inside the container a link can only reach the container.
-    shutil.copytree(root, out, symlinks=True, ignore=COPY_IGNORE)
+    shutil.copytree(root, out, symlinks=True, ignore=_ignore(root))
+    _mark(out)
     return out
 
 
 def _repo_files(root: Path):
     for path in sorted(Path(root).rglob("*")):
         relative = path.relative_to(root)
-        if path.is_file() and ".git" not in relative.parts and not SKIP_DIRS & set(relative.parts) and path.suffix not in (".pyc", ".pyo"):
+        if relative.parts[0] == OUTPUT_DIR or ".git" in relative.parts or SKIP_DIRS & set(relative.parts):
+            continue
+        if path.is_file() and path.suffix not in (".pyc", ".pyo"):
             yield relative
 
 
@@ -72,15 +148,61 @@ def changed_files(root: Path, folder: Path, created: Iterable[str] = ()) -> list
     return changed + [name for name in dict.fromkeys(created) if (folder / name).is_file() and not (root / name).exists()]
 
 
-def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Path:
-    """A checkout to open the PR from: the original repo, its .git included, with only `files` taken from the
-    upgraded copy. No container ever saw it, so nothing a repo's tests did can reach the commit or its hooks."""
-    if dest.exists():
+def copy_problem(source: Path, destination: Path, name: str) -> str | None:
+    """Why the file `name` (relative to both folders) can't be copied from `source` to `destination`, or None: only a
+    regular file reached through no link comes, and only to a place reached through none, never into .git."""
+    parts = _parts(name)
+    if parts is None or any(part.lower() == ".git" for part in parts):
+        return f"{name} isn't a file OpenPort copies"
+    src, dst = Path(source).joinpath(*parts), Path(destination).joinpath(*parts)
+    if through_link(source, name) or not src.is_file() or not src.resolve().is_relative_to(Path(source).resolve()):
+        return f"{name} isn't a regular file there (it's a link, say), so it wasn't copied"
+    if through_link(destination, name) or (dst.exists() and not dst.is_file()):
+        return f"{name} would be written through a link, so it wasn't copied"
+    return None
+
+
+def copy_into(source: Path, destination: Path, name: str) -> None:
+    """Copy the file `name` from `source` to `destination`, refusing what copy_problem refuses."""
+    problem = copy_problem(source, destination, name)
+    if problem:
+        raise ValueError(problem)
+    parts = _parts(name)
+    target = Path(destination).joinpath(*parts)
+    target.parent.mkdir(parents=True, exist_ok=True)  # a file a fix created may be in a new folder
+    shutil.copyfile(Path(source).joinpath(*parts), target)
+
+
+def _checkout(root: Path, dest: Path) -> bool:
+    """`dest` as the original's last commit, with a copy of its .git; False if there's none to check out (no .git, no
+    commit yet, or a .git file: a worktree's or a submodule's, whose metadata is shared with the original)."""
+    git = Path(root) / ".git"
+    if not git.is_dir() or _link(git):
+        return False
+    from ..github import _safe  # git without the repo's own hooks or fsmonitor
+
+    shutil.copytree(git, dest / ".git", symlinks=True)
+    try:
+        done = subprocess.run(_safe(["git", "reset", "--hard", "--quiet", "HEAD"]), cwd=dest, capture_output=True,
+                              timeout=600).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        done = False
+    if not done:
         remove_tree(dest)
-    shutil.copytree(root, dest, symlinks=True, ignore=shutil.ignore_patterns(*SKIP_DIRS))
+    return done
+
+
+def make_pr_folder(root: Path, folder: Path, files: list[str], dest: Path) -> Path:
+    """A checkout to open the PR from: the original repo's last commit, its .git included, with only `files` taken
+    from the upgraded copy. No container ever saw it, so nothing a repo's tests did can reach the commit or its hooks,
+    and nothing uncommitted in the original (work in progress, untracked files) rides along into the PR."""
+    root, dest = Path(root), Path(dest)
+    _clear(dest)
+    if not _checkout(root, dest):  # no commit to start from: the files as they are (a .git file stays behind)
+        shutil.copytree(root, dest, symlinks=True, ignore=_ignore(root, git=(root / ".git").is_dir()))
     for name in files:
-        (dest / name).parent.mkdir(parents=True, exist_ok=True)  # a file a fix created may be in a new folder
-        shutil.copy2(folder / name, dest / name)
+        copy_into(folder, dest, name)
+    _mark(dest)
     return dest
 
 
@@ -173,29 +295,78 @@ def apply_bumps(folder: Path, bumps: dict[str, str]) -> list[str]:
     return changed
 
 
+def hashed_pins(folder: Path) -> set[str]:
+    """The packages (normalized names) a requirements file in `folder` pins with --hash. Bumping only the version
+    would keep the old release's hashes, which pip then refuses."""
+    names = set()
+    for path in sorted(Path(folder).glob("requirements*.txt")):
+        if path.is_symlink():
+            continue
+        text = re.sub(r"\\\r?\n", " ", path.read_text(encoding="utf-8", errors="replace"))  # a line ending in \ goes on
+        for line in text.splitlines():
+            match = _PIN.match(line)
+            if match and "--hash" in match.group(6):
+                names.add(_normalized(match.group(2)))
+    return names
+
+
+def edit_target(folder: Path, name: str) -> tuple[str, str]:
+    """The file an edit names, as a plain path from `folder`, and why it can't be edited ("" if it can). The checks
+    are on that path, so neither "src/../tests/x.py" nor a link into the tests gets past them."""
+    parts = _parts(name)
+    if parts is None:
+        return name, "outside the repo"
+    # Compared as Windows opens them, where "package.json." and "tests ./x.py" are package.json and tests/x.py.
+    relative, lowered = "/".join(parts), [part.lower().rstrip(". ") for part in parts]
+    if through_link(folder, relative):
+        return relative, "it's a link, or inside one, so it could lead anywhere"
+    if not Path(folder).joinpath(*parts).resolve().is_relative_to(Path(folder).resolve()):
+        return relative, "outside the repo"
+    if is_test_path(relative) or is_test_path("/".join(lowered)):
+        return relative, "tests can't be changed to make them pass"
+    if ".git" in lowered:
+        return relative, "git's own files aren't the repo's code"
+    if TEST_CONFIG_DIRS & set(lowered) or lowered[-1] in TEST_CONFIG_FILES or TEST_CONFIG.fullmatch(lowered[-1]):
+        return relative, "test and CI configuration can't be changed to make the tests pass"
+    if DEPENDENCY_DIRS & set(lowered) or lowered[-1] in DEPENDENCY_FILES or DEPENDENCY_FILE.fullmatch(lowered[-1]):
+        return relative, "dependency files are the version bump's to change"
+    if SKIP_DIRS & set(parts):
+        return relative, "not the repo's own code (dependencies and build output)"
+    return relative, ""
+
+
 def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple[Edit, str]]]:
+    """Apply each edit that's allowed and matches. The applied ones come back naming their file as edit_target does."""
     applied: list[Edit] = []
     rejected: list[tuple[Edit, str]] = []
-    root = folder.resolve()
     for edit in edits:
-        path = (folder / edit.file).resolve()
-        if root not in path.parents:
-            rejected.append((edit, "outside the repo"))
-        elif is_test_path(Path(edit.file).as_posix()):
-            rejected.append((edit, "tests can't be changed to make them pass"))
-        elif SKIP_DIRS & set(Path(edit.file).parts):
-            rejected.append((edit, "not the repo's own code (dependencies and build output)"))
+        name, problem = edit_target(folder, edit.file)
+        parts = name.split("/")
+        path = Path(folder).joinpath(*parts)
+        if problem:
+            rejected.append((edit, problem))
         elif not edit.search:  # a new file the upgraded version needs
-            if path.exists() or (folder / edit.file).is_symlink():
+            blocker = next(("/".join(parts[:i]) for i in range(1, len(parts)) if Path(folder).joinpath(*parts[:i]).is_file()), None)
+            if path.exists():
                 rejected.append((edit, "it exists already: change it with a snippet to replace"))
+            elif blocker:
+                rejected.append((edit, f"{blocker} is a file, not a folder"))
             else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                _write(path, edit.replace)
-                applied.append(edit)
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    _write(path, edit.replace)
+                except (OSError, ValueError) as error:
+                    rejected.append((edit, f"it can't be created: {error}"))
+                    continue
+                applied.append(Edit(name, edit.search, edit.replace))
         elif not path.is_file():
             rejected.append((edit, "no such file"))
         else:
-            text = _read(path)
+            try:
+                text = _read(path)
+            except UnicodeDecodeError:
+                rejected.append((edit, "not a UTF-8 text file"))
+                continue
             newline = "\r\n" if "\r\n" in text else "\n"
             search, replace = (s.replace("\r\n", "\n").replace("\n", newline) for s in (edit.search, edit.replace))
             count = text.count(search) if search else 0
@@ -203,8 +374,12 @@ def apply_edits(folder: Path, edits: list[Edit]) -> tuple[list[Edit], list[tuple
             if new is None:
                 rejected.append((edit, f"the text to replace appears {count} times, not once"))
                 continue
-            _write(path, new)
-            applied.append(edit)
+            try:
+                _write(path, new)
+            except (OSError, ValueError) as error:
+                rejected.append((edit, f"it can't be written: {error}"))
+                continue
+            applied.append(Edit(name, edit.search, edit.replace))
     return applied, rejected
 
 

@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,7 +57,7 @@ class TestRun:
     __test__ = False  # not a pytest test class
 
 
-def docker_command(folder: Path, image: str, command: str) -> list[str]:
+def docker_command(folder: Path, image: str, command: str, name: str | None = None) -> list[str]:
     # The installs go before the container exits: made in Linux, they hold symlinks Windows can't delete
     # (uv's .venv/lib64, npm's node_modules/.bin), and on a Linux host they belong to root. On Linux, hand
     # what's left back to the folder's owner too (Docker Desktop maps ownership already).
@@ -68,16 +69,29 @@ def docker_command(folder: Path, image: str, command: str) -> list[str]:
     limits = ["--security-opt", "no-new-privileges", "--pids-limit", "2048", "--memory", "4g", "--cpus", "2"]
     # No npm update notice after the runner's summary, and no telemetry from the repo's build (Next.js sends it).
     quiet = ["-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "NPM_CONFIG_UPDATE_NOTIFIER=false", "-e", "NEXT_TELEMETRY_DISABLED=1"]
+    named = ["--name", name] if name else []  # so a run that times out can be stopped by name
     return [
-        "docker", "run", "--rm", *limits, *quiet,
+        "docker", "run", "--rm", *named, *limits, *quiet,
         "-v", f"{Path(folder).resolve()}:/repo", "-w", "/repo", image, "sh", "-c", command,
     ]
 
 
+def package_json(folder: Path) -> dict:
+    """A project's package.json: {} if it has none, it's a link (it could point anywhere on the machine) or it isn't a
+    JSON object. A byte-order mark is fine, as it is to npm."""
+    path = Path(folder) / "package.json"
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def pnpm_version(folder: Path) -> str | None:
     """The pnpm a repo uses: the one its package.json names, else one that writes its lockfile's format."""
-    package = Path(folder) / "package.json"
-    manager = json.loads(package.read_text(encoding="utf-8")).get("packageManager") if package.is_file() else None
+    manager = package_json(folder).get("packageManager")
     named = re.fullmatch(r"pnpm@(\d+\.\d+\.\d+)(?:\+\S*)?", str(manager or ""))
     if named:
         return named[1]
@@ -92,8 +106,7 @@ def pnpm_install(version: str) -> str:
 
 def _manager(folder: Path, name: str) -> str | None:
     """The version of `name` that package.json's packageManager names, if it does."""
-    package = Path(folder) / "package.json"
-    manager = json.loads(package.read_text(encoding="utf-8")).get("packageManager") if package.is_file() else None
+    manager = package_json(folder).get("packageManager")
     named = re.fullmatch(rf"{name}@(\d+\.\d+\.\d+)(?:\+\S*)?", str(manager or ""))
     return named[1] if named else None
 
@@ -113,7 +126,7 @@ def yarn_version(folder: Path) -> str | None:
     """The Yarn 2+ a repo uses: its package.json's packageManager, or the release .yarnrc.yml points at."""
     named = _manager(folder, "yarn")
     rc = Path(folder) / ".yarnrc.yml"
-    path = re.search(r"^yarnPath:\s*['\"]?\S*?yarn-(\d+\.\d+\.\d+)\.c?js", rc.read_text(encoding="utf-8"), re.M) if rc.is_file() else None
+    path = re.search(r"^yarnPath:\s*['\"]?\S*?yarn-(\d+\.\d+\.\d+)\.c?js", rc.read_text(encoding="utf-8", errors="replace"), re.M) if rc.is_file() else None
     return named or (path[1] if path else None)
 
 
@@ -138,8 +151,8 @@ def test_setups(folder: Path, ecosystems: set[str]) -> list[tuple[str, str, str]
     folder = Path(folder)
     setups = []
     if "npm" in ecosystems:
-        package = folder / "package.json"
-        scripts = (json.loads(package.read_text(encoding="utf-8")).get("scripts") or {}) if package.is_file() else {}
+        scripts = package_json(folder).get("scripts")
+        scripts = scripts if isinstance(scripts, dict) else {}
         manager = node_manager(folder)
         # Each install refuses a lockfile that's stale for package.json, as the repo's own CI would.
         if not scripts.get("test"):
@@ -193,11 +206,18 @@ def summarize(output: str) -> str:
 
 def run_in_container(folder: Path, image: str, command: str, *, run=subprocess.run, timeout: int = 900) -> TestRun:
     start = time.perf_counter()
+    name = f"openport-{uuid.uuid4().hex[:12]}"
     try:
-        process = run(docker_command(folder, image, command), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        process = run(docker_command(folder, image, command, name), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                      timeout=timeout)
         output, code = (process.stdout or "") + (process.stderr or ""), process.returncode
     except subprocess.TimeoutExpired:
         output, code = f"timed out after {timeout}s", -1
+        # Killing `docker run` leaves its container running, with the repo's code still writing to the scratch copy.
+        try:
+            run(["docker", "rm", "--force", name], capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            pass  # best effort: the run already failed, and says why
     lines = output.strip().splitlines()
     return TestRun(code == 0, code, summarize(output), "\n".join(lines[-80:]), round(time.perf_counter() - start, 1))
 

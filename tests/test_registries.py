@@ -89,16 +89,17 @@ def test_pypi_is_asked_under_the_normalized_name_and_npm_under_the_scoped_one(mo
 
 def test_npm_release_dates_skip_the_created_and_modified_stamps():
     dates = registry.parse_npm_releases({"time": {"created": "2015-01-01T00:00:00Z", "modified": "2026-01-01T00:00:00Z",
-                                                  "9.0.0": "2022-12-21T00:00:00.000Z", "9.0.1": "not a date"}})
+                                                  "9.0.0": "2022-12-21T00:00:00.000Z", "9.0.1": "not a date"},
+                                         "versions": {"9.0.0": {}, "9.0.1": {}}})
     assert list(dates) == ["9.0.0"]
 
 
-def test_pypi_release_dates_use_each_versions_earliest_file():
-    dates = registry.parse_pypi_releases({"releases": {
+def test_pypi_release_dates_use_each_versions_latest_file():
+    dates = registry.parse_pypi_releases({"releases": {  # a file added to a release later is as new as its upload
         "2.4.0": [{"upload_time_iso_8601": "2022-05-13T00:00:00Z"}, {"upload_time_iso_8601": "2022-05-12T00:00:00Z"}],
-        "2.5.0": [],  # a yanked or empty release has no date
+        "2.5.0": [],  # an empty release has no date
     }})
-    assert list(dates) == ["2.4.0"] and dates["2.4.0"].day == 12
+    assert list(dates) == ["2.4.0"] and dates["2.4.0"].day == 13
 
 
 def test_project_homes_come_from_the_registry_metadata():

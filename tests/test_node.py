@@ -385,7 +385,7 @@ def test_the_javascript_runtime_translates_like_the_python_one(tmp_path):
     import subprocess
 
     from openport.port.ts_rewrite import RUNTIME
-    from openport.runtime.openport_llm import anthropic_to_openai
+    from openport.runtime.openport_llm import AnthropicOnNemotron
 
     params = {
         "model": "m", "max_tokens": 256, "system": [{"type": "text", "text": "Be brief."}], "temperature": 0.2,
@@ -398,16 +398,27 @@ def test_the_javascript_runtime_translates_like_the_python_one(tmp_path):
                                          {"type": "image", "source": {"type": "url", "url": "https://example.com/box.png"}}]},
         ],
     }
+    # Options with no Token Factory equivalent are dropped by both; extra_body carries Token Factory's own (the call's wins);
+    # an empty system prompt sends no system message.
+    unknown = {"metadata": {"user_id": "u1"}, "top_k": 5, "service_tier": "auto", "betas": ["x"], "some_new_option": True}
+    variants = [params, {**params, **unknown, "extra_body": {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 40}},
+                {**params, "system": [], "thinking": {"type": "disabled"}}, {**params, "system": ""}]
     script = tmp_path / "translate.mjs"
     script.write_text(f"import {{ anthropicToOpenAI }} from {json.dumps(RUNTIME.as_uri())};\n"
-                      f"process.stdout.write(JSON.stringify(anthropicToOpenAI({json.dumps(params)})));\n")
+                      f"process.stdout.write(JSON.stringify({json.dumps(variants)}.map(anthropicToOpenAI)));\n")
     javascript = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
-    python = anthropic_to_openai(**params)
-    python.update(python.pop("extra_body"))  # Python passes the reasoning switch through the SDK's extra_body; on the wire it's top-level
-    for request in (javascript, python):  # the same JSON, spaced differently by json.dumps and JSON.stringify
+    fake = FakeTokenFactory(lambda request: completion(content="ok"))
+    for variant in variants:
+        AnthropicOnNemotron(client=fake).messages.create(**variant)
+    python = fake.requests
+    for request in python:  # Python passes Token Factory's options through the SDK's extra_body; on the wire they're top-level
+        request.update(request.pop("extra_body", {}))
+    for request in (*javascript, *python):  # the same JSON, spaced differently by json.dumps and JSON.stringify
         for call in (call for message in request["messages"] for call in message.get("tool_calls") or []):
             call["function"]["arguments"] = json.loads(call["function"]["arguments"])
     assert javascript == python
+    assert javascript[1]["chat_template_kwargs"] == {"enable_thinking": False} and "metadata" not in javascript[1]
+    assert javascript[2]["messages"][0]["role"] == "user" and javascript[3]["messages"][0]["role"] == "user"
 
 
 SUPPORTDESK_TS = Path(__file__).parents[1] / "examples" / "supportdesk-ts"

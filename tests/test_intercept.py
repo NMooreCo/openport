@@ -176,3 +176,32 @@ def test_capture_drafts_a_routed_eval_when_no_client_can_be_swapped(tmp_path):
     assert draft["intercept"] is True and "client_attr" not in draft
     ask = findings["ask"]  # the client is on an object's attribute
     assert ask.receiver_kind == "attribute" and runnable(ask) == (True, "") and draft_site(ask)["intercept"] is True
+
+
+def test_a_case_cant_reach_the_closed_providers_themselves():
+    """A call OpenPort can't route (the Responses API, a beta method) must fail, not be answered by GPT or Claude and
+    graded as Nemotron on the user's real key."""
+    import httpx
+    import pytest
+
+    sent = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: sent.append(str(request.url)) or httpx.Response(200, json={})))
+    with intercept.routed(object()):
+        with pytest.raises(intercept.ProviderBlocked, match="api.openai.com"):
+            client.post("https://api.openai.com/v1/responses", json={})
+        with pytest.raises(intercept.ProviderBlocked, match="api.anthropic.com"):
+            client.post("https://api.anthropic.com/v1/messages?beta=true", json={})
+        client.get("https://api.tokenfactory.nebius.com/v1/models")  # Token Factory itself is fine
+    client.post("https://api.openai.com/v1/responses", json={})  # outside a case nothing is refused
+    assert sent == ["https://api.tokenfactory.nebius.com/v1/models", "https://api.openai.com/v1/responses"]
+
+
+def test_evals_replace_real_provider_keys_with_placeholders(monkeypatch, tmp_path):
+    from openport.evals.runner import prepare_imports
+    from openport.evals.spec import Spec
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-real")
+    prepare_imports(Spec(target="app", source_root=tmp_path, call_sites=[]))
+    import os
+    assert os.environ["OPENAI_API_KEY"] == os.environ["ANTHROPIC_API_KEY"] == "openport-placeholder"

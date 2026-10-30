@@ -59,14 +59,39 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path, onexc=make_writable_and_retry)
 
 
+class OutputOverlapsSource(FileExistsError):
+    """The output folder is the repo, or one is inside the other. A FileExistsError, so the CLI reports it as it does
+    an output folder that isn't empty."""
+
+
 def _prepare_output(source: Path, output: Path) -> None:
+    # Checked before anything is removed or copied: a copy into the repo copies itself, and emptying a folder the
+    # repo is in deletes it.
+    here, there = (Path(os.path.normcase(path.resolve())) for path in (source, output))
+    if there == here:
+        raise OutputOverlapsSource(f"{output} is the repo itself: OpenPort writes the port to a copy, so pick another folder")
+    if here.is_relative_to(there):
+        raise OutputOverlapsSource(f"The repo being ported ({source}) is inside {output}, and writing the port there "
+                                   "would delete it: pick another folder")
     if output.exists():
         managed = config.RUNS_DIR.resolve() / "ports" in output.parents
         if not managed and any(output.iterdir()):
             raise FileExistsError(f"{output} already exists and isn't empty")
         _remove_tree(output)
     # Links are copied as links, never followed: one pointing out of the repo can't pull a file into the copy.
-    shutil.copytree(source, output, symlinks=True, ignore=COPY_IGNORE)
+    shutil.copytree(source, output, symlinks=True, ignore=_ignoring(output))
+
+
+def _ignoring(output: Path):
+    """COPY_IGNORE, and OpenPort's own folders when they're in the repo: `openport port .` writes the copy to
+    runs/ports/<name> inside it, and copying that (or runs/ at all, which holds clones) would copy the copy."""
+    skipped = {Path(os.path.normcase(path.resolve())) for path in (output, config.RUNS_DIR)}
+
+    def ignore(folder: str, names: list[str]) -> set[str]:
+        ours = {name for name in names if Path(os.path.normcase((Path(folder) / name).resolve())) in skipped}
+        return set(COPY_IGNORE(folder, names)) | ours
+
+    return ignore
 
 
 def _inside(root: Path, path: Path) -> bool:
@@ -162,4 +187,4 @@ def port_repo(
     return PortResult(source, output, outcomes, changed, added, _diff(source, output, paths))
 
 
-__all__ = ["PortResult", "SiteDecision", "SiteOutcome", "build_plan", "load_assignments", "port_repo"]
+__all__ = ["OutputOverlapsSource", "PortResult", "SiteDecision", "SiteOutcome", "build_plan", "load_assignments", "port_repo"]

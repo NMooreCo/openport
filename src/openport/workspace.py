@@ -15,6 +15,7 @@ import httpx
 from . import config
 
 CLONE_TIMEOUT = int(os.getenv("OPENPORT_CLONE_TIMEOUT", "300"))  # seconds a fetch may take
+API_TOKEN: str | None = None  # a GitHub token for the size check, when the host has one (its rate limit is far higher)
 # core.symlinks=false: a link in a fetched repo is checked out as a small file naming its target, so nothing that
 # reads the clone (the scan, the port's diff, an upgrade's copy) can be led to a file outside it.
 # core.longpaths: some repos have paths longer than Windows' 260 characters.
@@ -30,7 +31,13 @@ _TREE = re.compile(r"^(?:https?://)?github\.com/([A-Za-z0-9][\w.-]*)/([A-Za-z0-9
 
 
 def is_remote(target: str) -> bool:
-    return not Path(target).exists() and _GITHUB.match(target) is not None
+    """A GitHub repo rather than a local folder. `apps/api` where `apps/` is here is a mistyped local path, not the
+    repo github.com/apps/api: cloning a stranger's code for a typo, and maybe running it, would be the wrong guess."""
+    if Path(target).exists() or _GITHUB.match(target) is None:
+        return False
+    if target.startswith(("http://", "https://", "git@")):
+        return True
+    return not Path(target.split("/")[0]).exists()
 
 
 def split_project(target: str) -> tuple[str, str]:
@@ -42,8 +49,9 @@ def split_project(target: str) -> tuple[str, str]:
 
 def repo_size_mb(owner: str, name: str) -> float | None:
     """The repo's size as GitHub reports it (its whole history, so more than a shallow clone), or None if unknown."""
-    try:
-        response = httpx.get(f"https://api.github.com/repos/{owner}/{name}", timeout=10, headers={"Accept": "application/vnd.github+json"})
+    headers = {"Accept": "application/vnd.github+json", **({"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {})}
+    try:  # a renamed repo answers with a redirect to its new name
+        response = httpx.get(f"https://api.github.com/repos/{owner}/{name}", timeout=10, headers=headers, follow_redirects=True)
         return response.json()["size"] / 1024 if response.status_code == 200 else None
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return None
@@ -65,8 +73,12 @@ def fetch_repo(target: str, max_mb: float | None = None) -> tuple[Path, bool]:
     destination = (repos / commit[:12] if commit else repos) / f"{owner}__{name}"  # same folder name either way
     if destination.exists():
         return destination, False
-    if max_mb is not None and (size := repo_size_mb(owner, name)) is not None and size > max_mb:
-        raise ValueError(f"{owner}/{name} is {size:,.0f} MB on GitHub, over this server's {max_mb:,.0f} MB limit. Run OpenPort locally for it.")
+    if max_mb is not None:
+        size = repo_size_mb(owner, name)
+        if size is None:  # rate-limited, or no such repo: a limit that fails open isn't a limit
+            raise ValueError(f"Couldn't check the size of {owner}/{name} on GitHub, so this server won't fetch it. Run OpenPort locally for it.")
+        if size > max_mb:
+            raise ValueError(f"{owner}/{name} is {size:,.0f} MB on GitHub, over this server's {max_mb:,.0f} MB limit. Run OpenPort locally for it.")
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_name(destination.name + ".partial")  # a failed fetch never looks like a clone
     shutil.rmtree(partial, ignore_errors=True)
@@ -84,9 +96,12 @@ def fetch_repo(target: str, max_mb: float | None = None) -> tuple[Path, bool]:
         )]
     try:
         for step in steps:
-            subprocess.run(step, check=True, timeout=CLONE_TIMEOUT)
+            subprocess.run(step, check=True, timeout=CLONE_TIMEOUT, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})  # never ask for a login
     except subprocess.TimeoutExpired:
         shutil.rmtree(partial, ignore_errors=True)
         raise RuntimeError(f"Fetching {owner}/{name} took over {CLONE_TIMEOUT} seconds, so it was stopped.") from None
+    except subprocess.CalledProcessError:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise RuntimeError(f"Couldn't fetch {owner}/{name} from GitHub: check that it exists and is public.") from None
     partial.rename(destination)
     return destination, True

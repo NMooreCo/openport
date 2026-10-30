@@ -115,7 +115,7 @@ def nano_extract(model: str, results: list[dict]) -> dict | None:
 def _appears(number: float, text: str) -> bool:
     """Is this price written in the text? Accepts 2.5, 2.50, $2.5 and so on."""
     forms = {f"{number:g}", f"{number:.2f}", f"{number:.3f}".rstrip("0").rstrip(".")}
-    return any(re.search(rf"(?<![\d.]){re.escape(form)}(?![\d])", text) for form in forms)
+    return any(re.search(rf"(?<![\d.]){re.escape(form)}(?!\.?\d)", text) for form in forms)  # 15 isn't in $15.50
 
 
 def model_names(model: str) -> list[str]:

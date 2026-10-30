@@ -2,14 +2,18 @@
 Plain HTTP calls (requests, httpx, aiohttp) move to Token Factory's URL and key instead (see http.py)."""
 
 import ast
+import codecs
+import posixpath
 import re
+import tomllib
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from ..runtime.openport_llm import _PROVIDER_ONLY_OPTIONS
 from ..scan import _source_files
-from ..scan.findings import CallSiteFinding, is_test_path
+from ..scan.findings import CALL_SUFFIXES, CallSiteFinding, is_test_path
 from ..scan.python_scanner import HTTP_METHODS, _constructor_sdk, _match_suffix, _module_name
 from .clients import ClientAction, decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, line_starts, newline_style, quoted_like, was_comment
@@ -47,7 +51,10 @@ class _File:
         source = (root / path).read_bytes()
         tree = ast.parse(source)
         parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-        return cls(path, source, tree, line_starts(source), parents)
+        starts = line_starts(source)
+        if source.startswith(codecs.BOM_UTF8):  # ast counts line 1's columns from after a byte order mark
+            starts[0] = len(codecs.BOM_UTF8)
+        return cls(path, source, tree, starts, parents)
 
     def span(self, node: ast.AST) -> tuple[int, int]:
         return (
@@ -207,6 +214,10 @@ class _Repo:
             return []
         receiver = re.sub(r"(?:\.beta)+$", "", site.receiver)
         kind = site.receiver_kind
+        if receiver != site.receiver:  # `client.beta`: the scanner saw an attribute; the client is what it's read from
+            kinds = (["attribute"] if receiver.startswith(("self.", "cls.")) else ["factory"] if receiver.endswith(")")
+                     else ["local", "module_global", "imported", "other"])
+            return next((found for k in kinds if (found := self.link(replace(site, receiver=receiver, receiver_kind=k)))), [])
         options = re.fullmatch(r"([\w.]+?)\.with_options\(.*\)", receiver, re.S)
         if options:  # client.with_options(timeout=...): the SDK's copy of `client`, with other request options
             base = options[1]
@@ -553,6 +564,118 @@ def _lineage(f: _File, cls: ast.ClassDef | None) -> set[str]:
     return names
 
 
+def _shadowed(f: _File, node: ast.Name) -> bool:
+    """Whether a name is the function's own local there, not the module's."""
+    function = _scope(f, node)
+    if function is None:
+        return False
+    if any(isinstance(n, ast.Global) and node.id in n.names for n in ast.walk(function)):
+        return False
+    args = function.args
+    return node.id in {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a} or any(
+        isinstance(n, ast.Name) and n.id == node.id and isinstance(n.ctx, ast.Store) for n in ast.walk(function))
+
+
+def _importers(repo: _Repo, f: _File, name: str) -> list[tuple[_File, ast.AST]]:
+    """Where the app's other modules (not its tests) import a module-level name of `f`: each `from f import name`
+    (read or not), and each read of it, under that name or as `f.name` through the module."""
+    found = []
+    for other in repo._mentioning(name):
+        if other.path == f.path:
+            continue
+        names, modules = repo.imports(other)
+        direct = {local for local, (module, original) in names.items() if original == name and repo.module_path(module, other.path) == f.path}
+        aliases = {alias for alias, module in modules.items() if repo.module_path(module, other.path) == f.path}
+        aliases |= {local for local, (module, original) in names.items() if repo.module_path(f"{module}.{original}", other.path) == f.path}
+        for node in ast.walk(other.tree):
+            if (isinstance(node, ast.ImportFrom) and any(a.name == name and (a.asname or a.name) in direct for a in node.names)
+                    or isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in direct
+                    or isinstance(node, ast.Attribute) and node.attr == name and isinstance(node.value, ast.Name) and node.value.id in aliases):
+                found.append((other, node))
+    return found
+
+
+def _client_references(repo: _Repo, binding: _Binding) -> list[tuple[_File, ast.AST]]:
+    """The expressions in the app (not its tests) that are a client: its variable, `self.client` in its class, a
+    module-level client where other modules import it, and calls of a top-level factory that returns it."""
+    f = repo.file(binding.file)
+    found: list[tuple[_File, ast.AST]] = []
+    if binding.kind == "module" and binding.var:
+        found += [(f, n) for n in ast.walk(f.tree) if isinstance(n, ast.Name) and n.id == binding.var
+                  and isinstance(n.ctx, ast.Load) and not _shadowed(f, n)]
+        found += [(other, n) for other, n in _importers(repo, f, binding.var) if not isinstance(n, ast.ImportFrom)]
+    elif binding.kind == "local" and binding.var:
+        function = _scope(f, binding.node)
+        found += [(f, n) for n in ast.walk(function) if isinstance(n, ast.Name) and n.id == binding.var and isinstance(n.ctx, ast.Load)]
+    elif binding.kind == "attribute" and binding.var:
+        classes = [c for c in ast.walk(f.tree) if isinstance(c, ast.ClassDef) and binding.cls in _lineage(f, c)]
+        found += [(f, n) for c in classes for n in ast.walk(c) if isinstance(n, ast.Attribute) and n.attr == binding.var
+                  and isinstance(n.value, ast.Name) and n.value.id in ("self", "cls") and isinstance(n.ctx, ast.Load)]
+
+    def returns_client(function: ast.AST) -> bool:
+        if binding.kind == "local" and binding.function != function.name:
+            return False
+        return any(isinstance(r, ast.Return) and r.value is not None and (r.value is binding.node or binding.var is not None
+                   and isinstance(r.value, ast.Name) and r.value.id == binding.var) for r in ast.walk(function))
+
+    for factory in (n for n in f.tree.body if isinstance(n, _FUNCTIONS) and returns_client(n)):
+        found += [(other, call) for other, call, _ in repo._calls(f, factory)[0]]
+    return found
+
+
+def _attribute_chain(f: _File, node: ast.AST) -> tuple[list[str], ast.AST]:
+    """The attributes read off a client expression, through `.with_options(...)` (the SDK's copy of the client) and
+    `.beta`: ["audio", "transcriptions", "create"] for `client.audio.transcriptions.create`, and the outermost node."""
+    names: list[str] = []
+    current = node
+    while True:
+        parent = f.parents.get(id(current))
+        if isinstance(parent, ast.Attribute) and parent.value is current:
+            names.append(parent.attr)
+        elif isinstance(parent, ast.Call) and parent.func is current and names[-1:] == ["with_options"]:
+            names.pop()
+        else:
+            return [n for i, n in enumerate(names) if n != "beta" or any(m != "beta" for m in names[:i])], current
+        current = parent
+
+
+def _other_uses(repo: _Repo, binding: _Binding, linked: Callable[[str, int], bool]) -> list[str]:
+    """What the app does with a client besides the calls the port linked to it: `client.models.list()`,
+    `client.audio.transcriptions.create(...)`, `client.with_raw_response...`, or a call the port couldn't trace to it.
+    None of that moves to Token Factory, so each counts as a call that stays: the client is split, or kept.
+    `linked(file, line)` says whether the call on that line is one of the client's own."""
+    found: list[str] = []
+    pending, aliased = _client_references(repo, binding), False
+    while pending:
+        aliases: list[tuple[_File, ast.AST]] = []
+        for f, node in pending:
+            names, outer = _attribute_chain(f, node)
+            parent = f.parents.get(id(outer))
+            if not names:  # `fast = client.with_options(timeout=5)`: the same client, under another name
+                if not aliased and isinstance(parent, ast.Assign) and len(parent.targets) == 1 and isinstance(parent.targets[0], ast.Name):
+                    scope = _scope(f, parent) or f.tree
+                    aliases += [(f, n) for n in ast.walk(scope) if isinstance(n, ast.Name) and n.id == parent.targets[0].id
+                                and isinstance(n.ctx, ast.Load)]
+                continue
+            called = isinstance(parent, ast.Call) and parent.func is outer
+            if called and any(tuple(names) == suffix for suffix, _, _ in CALL_SUFFIXES) and linked(f.path, parent.lineno):
+                continue
+            use = f"`{ast.unparse(outer)}` ({f.path}:{outer.lineno})"
+            if use not in found:
+                found.append(use)
+        pending, aliased = aliases, True
+    return found
+
+
+def _read_only_at(repo: _Repo, f: _File, name: str, uses: list[ast.AST]) -> bool:
+    """Whether a module-level name is read nowhere but at `uses`: not elsewhere in its file (a tokenizer, a log line),
+    and not imported by another module of the app."""
+    used = {id(node) for node in uses}
+    if any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load) and id(n) not in used for n in ast.walk(f.tree)):
+        return False
+    return not _importers(repo, f, name)
+
+
 def _call_node(f: _File, site: CallSiteFinding) -> ast.Call | None:
     for node in ast.walk(f.tree):
         if isinstance(node, ast.Call) and node.lineno == site.line:
@@ -586,40 +709,133 @@ def _constructor_text(f: _File, binding: _Binding, helper: str, notes: list[str]
     return helper.encode() + b"(" + b", ".join(kept) + b")"
 
 
-def _vendor_dir(repo: _Repo, files: set[str]) -> str:
-    """Put the runtime in the top-level package all edited files share, or at the repo root."""
-    tops = set()
+def _vendor_dirs(repo: _Repo, files: set[str]) -> dict[str, str]:
+    """Where each edited file gets the runtime: in its top-level package, imported relatively; or, for a file in a
+    folder that isn't a package (a script's, like backend/main.py), beside it, imported by name, since the folder
+    of the script Python runs is on sys.path. At the repo root for a file there."""
+    found = {}
     for path in files:
         parts = path.split("/")
         top = "/".join(parts[:2]) if parts[0] == "src" and len(parts) > 2 else parts[0] if len(parts) > 1 else ""
-        tops.add(top if top and (repo.root / top / "__init__.py").exists() else "")
-    return tops.pop() if len(tops) == 1 else ""
+        found[path] = top if top and (repo.root / top / "__init__.py").exists() else posixpath.dirname(path)
+    return found
 
 
-def _import_line(path: str, vendor_dir: str, helpers: set[str]) -> bytes:
+OPENAI_REQUIREMENT = "openai>=1.0"  # what the runtime imports; an app that only used Anthropic's SDK may not have it
+
+
+def _requirement_names(lines: list[str]) -> set[str]:
+    """The packages requirement lines name, normalized (`Foo_Bar` -> `foo-bar`). Options (`-r base.txt`) don't count."""
+    names = set()
+    for line in lines:
+        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", line.split(" #", 1)[0]) if not line.lstrip().startswith(("#", "-")) else None
+        if match:
+            names.add(re.sub(r"[-_.]+", "-", match[1]).lower())
+    return names
+
+
+def _with_openai(name: str, raw: bytes) -> bytes | None | bool:
+    """A requirements.txt or pyproject.toml with `openai` added: True when it lists it already, None when it doesn't
+    list `anthropic` either (so it may not be how the app installs) or OpenPort can't see where it would go."""
+    text = raw.decode("utf-8", errors="replace")
+    nl = newline_style(raw)
+    if name == "requirements.txt":
+        names = _requirement_names(text.splitlines())
+        if "openai" in names:
+            return True
+        if "anthropic" not in names:
+            return None
+        return raw + (nl if raw and not raw.endswith(b"\n") else b"") + OPENAI_REQUIREMENT.encode() + nl
+    try:  # pyproject.toml: PEP 621's [project] dependencies only
+        dependencies = tomllib.loads(text).get("project", {}).get("dependencies")
+    except tomllib.TOMLDecodeError:
+        return None
+    names = _requirement_names(dependencies) if isinstance(dependencies, list) and all(isinstance(d, str) for d in dependencies) else set()
+    if "openai" in names:
+        return True
+    header = re.search(r"(?m)^\[project\][ \t]*(?:#[^\r\n]*)?\r?$", text)
+    if "anthropic" not in names or header is None:
+        return None
+    following = re.search(r"(?m)^\[", text[header.end():])
+    table = text[header.end(): header.end() + following.start() if following else len(text)]
+    array = re.search(r"(?m)^dependencies[ \t]*=[ \t]*\[", table)
+    if array is None:
+        return None
+    position = len(text[: header.end() + array.end()].encode())  # just inside the `[`: no trailing comma to mind
+    after = text[header.end() + array.end():]
+    if after.lstrip(" \t").startswith(("\n", "\r")):  # one per line: a line of its own, indented like the next
+        indent = re.match(r"[ \t]*\r?\n([ \t]*)", after)[1] or "    "
+        insert = nl + f'{indent}"{OPENAI_REQUIREMENT}",'.encode()
+    else:
+        insert = f'"{OPENAI_REQUIREMENT}", '.encode()
+    return raw[:position] + insert + raw[position:]
+
+
+def _openai_dependency(repo: _Repo, vendor_dirs: set[str]) -> tuple[dict[str, bytes], list[str]]:
+    """The runtime imports `openai`: add it to the dependencies of each project the runtime lands in (the nearest
+    folder up with a requirements.txt or pyproject.toml), where they list Anthropic's SDK and not OpenAI's. Returns
+    those files, changed, and the runtimes whose project OpenPort couldn't do that for."""
+    changed: dict[str, bytes] = {}
+    unlisted = []
+    for vendor_dir in sorted(vendor_dirs):
+        folder = vendor_dir
+        while folder and not any((repo.root / folder / name).is_file() for name in ("requirements.txt", "pyproject.toml")):
+            folder = posixpath.dirname(folder)
+        listed = False
+        for name in ("requirements.txt", "pyproject.toml"):
+            path = posixpath.join(folder, name)
+            if path in changed:
+                listed = True
+            elif (repo.root / path).is_file():
+                result = _with_openai(name, (repo.root / path).read_bytes())
+                if isinstance(result, bytes):
+                    changed[path] = result
+                listed = listed or result is not None
+        if not listed:
+            unlisted.append(f"{vendor_dir}/{RUNTIME_MODULE}.py".lstrip("/"))
+    return changed, unlisted
+
+
+def _import_line(repo: _Repo, path: str, vendor_dir: str, helpers: set[str]) -> bytes:
     names = ", ".join(sorted(helpers))
-    if not vendor_dir:
+    if not vendor_dir or not (repo.root / vendor_dir / "__init__.py").exists():
         return f"from {RUNTIME_MODULE} import {names}".encode()
     depth = len(PurePosixPath(path).parent.relative_to(vendor_dir).parts)
     return f"from {'.' * (depth + 1)}{RUNTIME_MODULE} import {names}".encode()
 
 
 def _module_split(binding: "_Binding", ported: list[CallSiteFinding]) -> bool:
-    """A module-level client, used by the calls that move only in its own file."""
+    """A module-level client, used by the calls that move only in its own file (`client.beta` counts: it's the client)."""
     return binding.top_level and binding.kind == "module" and all(
-        s.file == binding.file and s.receiver_kind == "module_global" for s in ported
+        s.file == binding.file and (s.receiver_kind == "module_global" or re.fullmatch(rf"{re.escape(binding.var)}(?:\.beta)+", s.receiver))
+        for s in ported
     )
 
 
-def _factory_split(binding: "_Binding", ported: list[CallSiteFinding]) -> bool:
+def _factory_split(f: "_File", binding: "_Binding", ported: list[CallSiteFinding]) -> bool | str:
     """A client built by a top-level factory that every call that moves gets by calling that factory by name
     (`get_client()` or `module.get_client()`). preflight's four agents share one `get_client()`: when one call has
-    to stay on its provider, the others still move, on a second factory beside it."""
+    to stay on its provider, the others still move, on a second factory beside it. Not when the client is built
+    from the factory's own parameters or locals, which the second factory wouldn't have: then why not."""
     name = binding.function
     if not name or "." in name or binding.kind not in ("module", "local", "return"):
         return False
     pattern = re.compile(rf"(?:[\w.]+\.)?{re.escape(name)}\(\)")
-    return all(s.receiver_kind == "factory" and pattern.fullmatch(s.receiver) for s in ported)
+    if not all(s.receiver_kind == "factory" and pattern.fullmatch(s.receiver) for s in ported):
+        return False
+    factory = next((n for n in f.tree.body if isinstance(n, _FUNCTIONS) and n.name == name), None)
+    if factory is None:
+        return False
+    args = factory.args
+    declared = {n for node in ast.walk(factory) if isinstance(node, ast.Global) for n in node.names}
+    own = {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a}
+    own |= {n.id for n in ast.walk(factory) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)} - declared
+    kept = [k.value for k in binding.node.keywords if k.arg is None or k.arg not in _PROVIDER_ONLY_OPTIONS]
+    read = sorted({n.id for value in kept for n in ast.walk(value) if isinstance(n, ast.Name) and n.id in own})
+    if read:
+        return (f"`{name}()` builds it from {', '.join(f'`{r}`' for r in read)}, which only `{name}()` has, so OpenPort "
+                "can't build a second one beside it")
+    return True
 
 
 def _second_factory(f: "_File", name: str, new_name: str, constructor: bytes) -> list[Edit]:
@@ -635,7 +851,7 @@ def _second_factory(f: "_File", name: str, new_name: str, constructor: bytes) ->
     edits = [Edit(end, end, block)]
     imported = any(isinstance(n, ast.Import) and any(a.name == "functools" and not a.asname for a in n.names) for n in f.tree.body)
     if not imported:
-        edits.append(_insert_import(f, b"import functools"))
+        edits.append(_insert_import(f, b"import functools", used_at=end))  # the decorator runs as the module loads
     return edits
 
 
@@ -651,16 +867,18 @@ def _import_beside(f: "_File", name: str, new_name: str) -> Edit | None:
     return None  # reached as `module.name()`, or defined in this file: nothing to import
 
 
-def _insert_import(f: _File, statement: bytes) -> Edit:
+def _insert_import(f: _File, statement: bytes, used_at: int | None = None) -> Edit:
+    """`statement` on a line of its own after the file's imports, or, given where what it imports is first used, after
+    the last import before that: a client built between two imports runs before the second one."""
     nl = newline_style(f.source)
-    body = f.tree.body
+    body = [n for n in f.tree.body if used_at is None or f.span(n)[1] <= used_at]
     imports = [n for n in body if isinstance(n, (ast.Import, ast.ImportFrom))]
     if imports:
         position = line_end(f.source, f.span(imports[-1])[1])
     elif body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant):
         position = line_end(f.source, f.span(body[0])[1])  # after the module docstring
     else:
-        position = 0
+        position = f.starts[0]  # after any byte order mark
     prefix = nl if position == len(f.source) and not f.source.endswith(b"\n") else b""
     return Edit(position, position, prefix + statement + nl)
 
@@ -724,11 +942,17 @@ def _set_number(f: _File, current: ast.AST, value: float, floor: bool) -> list[E
 
 
 def _set_number_kwarg(f: _File, call: ast.Call, names: tuple[str, ...], value: float, floor: bool) -> list[Edit] | None:
-    """Set a numeric argument (or raise it to `value`, if `floor`). None when it's set by an expression."""
+    """Set a numeric argument (or raise it to `value`, if `floor`). None when it's set by an expression, or isn't
+    written out and the call passes `**kwargs`, which could set it too: passed twice, it'd be a TypeError."""
     keyword = next((k for k in call.keywords if k.arg in names), None)
     if keyword is None:
-        return _insert_kwarg(f, call, f"{names[0]}={value!r}") or None
+        return None if _spread(f, call) else _insert_kwarg(f, call, f"{names[0]}={value!r}") or None
     return _set_number(f, keyword.value, value, floor)
+
+
+def _spread(f: _File, call: ast.Call) -> str | None:
+    """The `**kwargs` a call passes, as written, if it passes one."""
+    return next((f"**{f.text(k.value)}" for k in call.keywords if k.arg is None), None)
 
 
 def _dict_value(node: ast.Dict, key: str) -> ast.AST | None:
@@ -848,24 +1072,53 @@ def _resolve_string(repo: "_Repo", f: _File, node: ast.AST, function: ast.AST | 
     return None
 
 
-def _apply_addendum(repo: "_Repo", f: _File, call: ast.Call, site: CallSiteFinding, decision: SiteDecision,
-                    edits: dict, text_edits: dict, applied: set, arguments: dict[str, ast.AST] | None = None) -> bool:
-    """Write the tuned addendum into each system prompt the call uses. False if any couldn't be placed."""
-    addendum = decision.system_addendum
+def _prompt_literal(repo: "_Repo", f: _File, call: ast.Call, sdk: str,
+                    arguments: dict[str, ast.AST] | None = None) -> tuple[_File, ast.AST, bool] | None:
+    """The string literal a call's system prompt is written in (file, literal, is a template), when OpenPort can see it."""
     function = next((a for a in f.ancestors(call) if isinstance(a, _FUNCTIONS)), None)
     arguments = arguments if arguments is not None else {k.arg: k.value for k in call.keywords if k.arg}
-    expression = _system_expression(f, arguments, site.sdk, function, call.lineno)
-    resolved = _resolve_string(repo, f, expression, function, call.lineno) if expression is not None else None
+    expression = _system_expression(f, arguments, sdk, function, call.lineno)
+    return _resolve_string(repo, f, expression, function, call.lineno) if expression is not None else None
+
+
+def _kept_prompts(repo: "_Repo", sites: list[CallSiteFinding], plan: dict[str, SiteDecision], http_calls: dict) -> set:
+    """The prompt literals calls that stay use, as (file, "line:column"): an addendum tuned for a call that moves
+    isn't written into those."""
+    found = set()
+    for site in sites:
+        f = repo.file(site.file)
+        if f is None or not plan[site.id].keep:
+            continue
+        if site.sdk == "http":
+            http = http_calls.get(site.id)
+            payload = _payload(f, http) if http else None
+            resolved = _prompt_literal(repo, f, http.call, "http", _entries(payload)) if payload is not None else None
+        else:
+            call = _call_node(f, site)
+            resolved = _prompt_literal(repo, f, call, site.sdk) if call is not None else None
+        if resolved:
+            target, literal, _ = resolved
+            found.add((target.path, f"{literal.lineno}:{literal.col_offset}"))
+    return found
+
+
+def _apply_addendum(repo: "_Repo", f: _File, call: ast.Call, site: CallSiteFinding, decision: SiteDecision, edits: dict,
+                    text_edits: dict, applied: set, kept_prompts: set, arguments: dict[str, ast.AST] | None = None) -> str | None:
+    """Write the tuned addendum into each system prompt the call uses. What to do by hand if any couldn't be placed."""
+    addendum = decision.system_addendum
+    resolved = _prompt_literal(repo, f, call, site.sdk, arguments)
     if resolved:
         target, literal, template = resolved
+        if (target.path, f"{literal.lineno}:{literal.col_offset}") in kept_prompts:
+            return f"Tuned: a call that stays uses this system prompt too, so give this call its own, with \"{addendum}\" appended"
         key = (target.path, f"{literal.lineno}:{literal.col_offset}", addendum)
         if key in applied:
-            return True
+            return None
         edit = python_literal_insertion(target.source, *target.span(literal), addendum, template)
         if edit:
             edits[target.path].append(edit)
             applied.add(key)
-            return True
+            return None
     # Prompts loaded from files: find each prompt the app actually sent.
     placed = bool(decision.system_prompts)
     for prompt in decision.system_prompts:
@@ -877,7 +1130,7 @@ def _apply_addendum(repo: "_Repo", f: _File, call: ast.Call, site: CallSiteFindi
         if (path, offset, addendum) not in applied:
             text_edits.setdefault(path, (raw, []))[1].append(prompt_file_insertion(raw, offset, addendum))
             applied.add((path, offset, addendum))
-    return placed
+    return None if placed else f"Tuned: append to the system prompt by hand: \"{addendum}\""
 
 
 def _anthropic_error_names(f: _File) -> list[str]:
@@ -1017,20 +1270,10 @@ def _split_url(f: _File, url: ast.AST) -> list[Edit]:
     return [Edit(position, position, prefix + f'{name} = "{CHAT_URL}"'.encode() + nl), Edit(*f.span(url), name.encode())]
 
 
-def _port_http(repo: _Repo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], edits: dict, const_uses: dict,
-               text_edits: dict, applied: set) -> None:
-    """Point each ported plain HTTP call at Token Factory: its URL, its key and its model, where the code spells
-    them out. A call whose URL OpenPort can't see stays where it is."""
+def _http_calls(repo: _Repo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision]) -> dict[str, _HttpCall | None]:
+    """Each plain HTTP call, and which can move at all: one whose URL OpenPort can't see stays where it is."""
     calls = {site.id: _http_call(repo, f, site) if (f := repo.file(site.file)) else None for site in sites}
-
-    def key(f: _File, node: ast.AST) -> tuple[str, tuple[int, int]]:
-        return f.path, f.span(node)
-
-    def kept_uses() -> set:  # strings and variables calls that stay also use: those aren't edited
-        return {key(f, node) for s in sites if plan[s.id].keep and calls[s.id]
-                for f, node in [*calls[s.id].url_literals, *calls[s.id].url_variables, *calls[s.id].key_variables]}
-
-    for site in sites:  # first, which calls can move at all
+    for site in sites:
         decision, http = plan[site.id], calls[site.id]
         if decision.keep:
             continue
@@ -1041,7 +1284,20 @@ def _port_http(repo: _Repo, sites: list[CallSiteFinding], plan: dict[str, SiteDe
         reason = why_kept(texts, ast.unparse(http.url))
         if reason:
             decision.keep_because(reason)
-    shared = kept_uses()
+    return calls
+
+
+def _port_http(repo: _Repo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], calls: dict[str, _HttpCall | None],
+               edits: dict, const_uses: dict, text_edits: dict, applied: set, kept_prompts: set) -> None:
+    """Point each ported plain HTTP call at Token Factory: its URL, its key and its model, where the code spells
+    them out (`calls` from _http_calls)."""
+
+    def key(f: _File, node: ast.AST) -> tuple[str, tuple[int, int]]:
+        return f.path, f.span(node)
+
+    # Strings and variables calls that stay also use: those aren't edited.
+    shared = {key(f, node) for s in sites if plan[s.id].keep and calls[s.id]
+              for f, node in [*calls[s.id].url_literals, *calls[s.id].url_variables, *calls[s.id].key_variables]}
 
     for site in sites:
         f, decision, http = repo.file(site.file), plan[site.id], calls[site.id]
@@ -1113,8 +1369,9 @@ def _port_http(repo: _Repo, sites: list[CallSiteFinding], plan: dict[str, SiteDe
                 decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
             else:
                 edits[f.path] += changed
-        if decision.system_addendum and not _apply_addendum(repo, f, http.call, site, decision, edits, text_edits, applied, _entries(payload)):
-            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
+        if decision.system_addendum and (note := _apply_addendum(repo, f, http.call, site, decision, edits, text_edits, applied,
+                                                                  kept_prompts, _entries(payload))):
+            decision.notes.append(note)
 
 
 def port_python(
@@ -1154,18 +1411,32 @@ def port_python(
         if not plan[site_id].keep:
             plan[site_id].keep_because(f"couldn't find where its client (`{sites_by_id[site_id].receiver}`) is created")
         links[site_id] = found
+
+    def key(binding: _Binding) -> tuple:
+        return binding.file, binding.node.lineno, binding.node.col_offset
+
+    linked = {(site.file, site.line, key(b)) for site in sites for b in links[site.id]}
+    other_uses: dict[tuple, list[str]] = {}
+
+    def held(binding: _Binding) -> list[str]:  # what else the client does: it stays on the original provider for that
+        if key(binding) not in other_uses:
+            other_uses[key(binding)] = _other_uses(repo, binding, lambda path, line: (path, line, key(binding)) in linked)
+        return other_uses[key(binding)]
+
     actions = decide_client_actions(
         sites,
         plan,
         links,
-        key=lambda b: (b.file, b.node.lineno, b.node.col_offset),
+        key=key,
         # A client can be split (a second one on Token Factory beside it, for the calls that move) when it's built
         # at module level and used in its own file, or built by a top-level factory every moving call calls by name.
-        splittable=lambda b, ported: _module_split(b, ported) or _factory_split(b, ported),
+        splittable=lambda b, ported: _module_split(b, ported) or _factory_split(repo.file(b.file), b, ported),
+        other_uses=held,
     )
 
     edits: dict[str, list[Edit]] = defaultdict(list)
     helpers: dict[str, set[str]] = defaultdict(set)
+    first_use: dict[str, int] = {}  # where each file first uses a helper: its import goes above that
     replaced: dict[str, list[tuple[int, int]]] = defaultdict(list)
     split_names: dict[str, str] = {}  # site id -> new client variable, or new factory name
     factory_imports: set[tuple[str, str, str]] = set()  # (site file, factory name, new factory name)
@@ -1181,26 +1452,32 @@ def port_python(
             span = f.span(binding.node)
             edits[f.path].append(Edit(*span, text))
             replaced[f.path].append(span)
+            used_at = span[0]
         elif _module_split(binding, action.ported):  # a second client next to the original, for the ported calls only
             new_var = f"{binding.var}_nemotron"
             statement_end = line_end(f.source, f.span(binding.statement)[1])
             indent = indentation(f.source, f.span(binding.statement)[0])
             line = indent + f"{new_var} = ".encode() + text + newline_style(f.source)
             edits[f.path].append(Edit(statement_end, statement_end, line))
+            used_at = statement_end
             for site in action.ported:
                 split_names[site.id] = new_var
         else:  # a second factory next to the original, for the ported calls only
             new_name = f"{binding.function}_nemotron"
             edits[f.path] += _second_factory(f, binding.function, new_name, text)
+            used_at = line_end(f.source, f.span(next(n for n in f.tree.body if isinstance(n, _FUNCTIONS) and n.name == binding.function))[1])
             for site in action.ported:
                 split_names[site.id] = new_name
                 if site.file != binding.file:
                     factory_imports.add((site.file, binding.function, new_name))
+        first_use[f.path] = min(first_use.get(f.path, used_at), used_at)
 
     # Models, tuned settings and receivers at each ported call site.
     const_uses: dict[tuple[str, str], list[tuple[str | None, ast.Name]]] = defaultdict(list)
     text_edits: dict[str, tuple[bytes, list[Edit]]] = {}  # prompt files: path -> (original bytes, edits)
     applied: set = set()  # prompt insertions already made, so a shared prompt gets the addendum once
+    http_calls = _http_calls(repo, http_sites, plan)
+    kept_prompts = _kept_prompts(repo, [*sites, *http_sites], plan, http_calls)
     for site in sites:
         f = repo.file(site.file)
         decision = plan[site.id]
@@ -1227,26 +1504,34 @@ def port_python(
         elif not (isinstance(value, ast.Name) and value.id in constants):
             decision.notes.append(f"Model comes from `{f.text(value)}`: set it to {decision.model}")
 
+        spread = _spread(f, call)
+
+        def by_hand(*names: str) -> str:  # a setting the call doesn't write out, beside a `**kwargs` that could set it too
+            written = any(k.arg in names for k in call.keywords)
+            return f" (set by hand: the call passes `{spread}`, which may set it too)" if spread and not written else " (set by hand)"
+
         if decision.extra_body:
-            inserted = [] if any(k.arg == "extra_body" for k in call.keywords) else _insert_kwarg(f, call, f"extra_body={decision.extra_body!r}")
+            inserted = [] if any(k.arg == "extra_body" for k in call.keywords) or spread else \
+                _insert_kwarg(f, call, f"extra_body={decision.extra_body!r}")
             if inserted:
                 edits[f.path] += inserted
             else:
-                decision.notes.append(f"Pass extra_body={decision.extra_body!r} here by hand")
+                decision.notes.append(f"Pass extra_body={decision.extra_body!r} here{by_hand('extra_body')}")
         if decision.max_tokens:
             changed = _set_number_kwarg(f, call, ("max_tokens", "max_completion_tokens"), decision.max_tokens, floor=True)
             if changed is None:
-                decision.notes.append(f"Tuned: allow at least {decision.max_tokens} output tokens (set by hand)")
+                decision.notes.append(f"Tuned: allow at least {decision.max_tokens} output tokens"
+                                      f"{by_hand('max_tokens', 'max_completion_tokens')}")
             else:
                 edits[f.path] += changed
         if decision.temperature is not None:
             changed = _set_number_kwarg(f, call, ("temperature",), decision.temperature, floor=False)
             if changed is None:
-                decision.notes.append(f"Tuned: temperature {decision.temperature} (set by hand)")
+                decision.notes.append(f"Tuned: temperature {decision.temperature}{by_hand('temperature')}")
             else:
                 edits[f.path] += changed
-        if decision.system_addendum and not _apply_addendum(repo, f, call, site, decision, edits, text_edits, applied):
-            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
+        if decision.system_addendum and (note := _apply_addendum(repo, f, call, site, decision, edits, text_edits, applied, kept_prompts)):
+            decision.notes.append(note)
 
         if site.id in split_names:
             base = call.func
@@ -1266,15 +1551,16 @@ def port_python(
         edit = _import_beside(repo.file(path), factory, new_name)
         if edit is not None:
             edits[path].append(edit)
-    _port_http(repo, http_sites, plan, edits, const_uses, text_edits, applied)
+    _port_http(repo, http_sites, plan, http_calls, edits, const_uses, text_edits, applied, kept_prompts)
 
-    # Shared model constants: edit the constant once if every call using it moves to the same model,
-    # otherwise write the model at each ported call and leave the constant for the calls that stay.
+    # Shared model constants: edit the constant once if every call using it moves to the same model and nothing
+    # else reads it (another module, a tokenizer); otherwise write the model at each ported call, and leave the
+    # constant as it was for the rest.
     for (path, name), uses in const_uses.items():
         f = repo.file(path)
         targets = {model for model, _ in uses}
         constant = _module_constants(f)[name]
-        if len(targets) == 1 and None not in targets:
+        if len(targets) == 1 and None not in targets and _read_only_at(repo, f, name, [node for _, node in uses]):
             (target,) = targets
             edits[path].append(Edit(*f.span(constant), quoted_like(f.source[slice(*f.span(constant))], target)))
             comment = was_comment(f.source, f.span(constant)[1], constant.value, b"#")
@@ -1287,11 +1573,13 @@ def port_python(
 
     # Imports, and a warning wherever ported calls are wrapped in Anthropic exception handlers.
     changed_files = set(edits) | set(helpers)
-    vendor_dir = _vendor_dir(repo, set(helpers))
+    vendor_dirs = _vendor_dirs(repo, set(helpers))
     for path, used_helpers in helpers.items():
         f = repo.file(path)
-        edits[path].append(_insert_import(f, _import_line(path, vendor_dir, used_helpers)))
+        edits[path].append(_insert_import(f, _import_line(repo, path, vendor_dirs[path], used_helpers), first_use.get(path)))
         edits[path] += _cleanup_sdk_imports(f, replaced[path])
+    anthropic = any(helper.endswith("anthropic_client") for used in helpers.values() for helper in used)
+    dependencies, unlisted = _openai_dependency(repo, set(vendor_dirs.values())) if anthropic else ({}, [])
     for site in sites:
         f = repo.file(site.file)
         if f and site.sdk == "anthropic" and not plan[site.id].keep:
@@ -1300,11 +1588,16 @@ def port_python(
                 plan[site.id].notes.append(
                     f"{site.file} handles {', '.join(errors)}: ported calls raise openai errors instead"
                 )
+            if unlisted:
+                plan[site.id].notes.append(f"OpenPort's runtime ({', '.join(unlisted)}) imports the `openai` package: add it to the "
+                                           "app's dependencies (OpenPort adds it to a requirements.txt or pyproject.toml that "
+                                           "lists `anthropic`)")
 
     changed_files |= set(edits)
     # Calls sharing a string each edit it, and settings added after the same last argument each add its comma: keep one.
     output = {path: apply_edits(repo.file(path).source, list(dict.fromkeys(edits[path]))) for path in changed_files if edits[path]}
     output |= {path: apply_edits(raw, file_edits) for path, (raw, file_edits) in text_edits.items()}
-    if helpers:
+    output |= dependencies
+    for vendor_dir in sorted(set(vendor_dirs.values())):
         output[f"{vendor_dir}/{RUNTIME_MODULE}.py".lstrip("/")] = runtime_source
     return output

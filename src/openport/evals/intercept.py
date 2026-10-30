@@ -16,6 +16,7 @@ import threading
 import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
+from urllib.parse import urlsplit
 
 ROUTE: ContextVar[object | None] = ContextVar("openport_route", default=None)
 PASSTHROUGH: "weakref.WeakSet" = weakref.WeakSet()  # OpenPort's own clients: never routed
@@ -24,6 +25,22 @@ PASSTHROUGH: "weakref.WeakSet" = weakref.WeakSet()  # OpenPort's own clients: ne
 # thread, where this isn't set, so its requests to Token Factory go out as they are.
 HTTP_BASE: ContextVar[str | None] = ContextVar("openport_http_base", default=None)
 _http_installed = False
+# While a case runs, nothing may reach the closed providers themselves: a call OpenPort can't route (the Responses
+# API, a beta or streaming method, a client handed to the app's own thread) would otherwise be answered by GPT or
+# Claude and graded as Nemotron, on the user's real key. Such a call fails instead, and stays where it is.
+IN_CASE: ContextVar[bool] = ContextVar("openport_in_case", default=False)
+PROVIDER_HOSTS = ("api.openai.com", "api.anthropic.com")
+
+
+class ProviderBlocked(RuntimeError):
+    """An eval case tried to call a closed model's own API."""
+
+
+def _refuse_providers(url: str) -> None:
+    host = (urlsplit(url).hostname or "").lower()
+    if IN_CASE.get() and host in PROVIDER_HOSTS:
+        raise ProviderBlocked(f"A test case tried to reach {host}: OpenPort routes only the calls it can send to Token Factory, "
+                              f"so this one isn't tested on Nemotron")
 # (module, class, method, where the same call lives on the swapped client)
 TARGETS = [
     ("openai.resources.chat.completions", "Completions", "create", ("chat", "completions", "create")),
@@ -126,6 +143,8 @@ def install_http() -> None:
                     target = redirected(str(request.url))
                     if target is not None:
                         request.url = httpx.URL(target)
+                    else:
+                        _refuse_providers(str(request.url))
                     return _original(self, request, *args, **kwargs)
 
                 cls.send = send
@@ -140,6 +159,8 @@ def install_http() -> None:
                 target = redirected(request.url)
                 if target is not None:
                     request.url = target
+                else:
+                    _refuse_providers(request.url)
                 return original_send(self, request, **kwargs)
 
             requests.Session.send = session_send
@@ -151,7 +172,10 @@ def install_http() -> None:
             original_request = aiohttp.ClientSession._request
 
             def session_request(self, method, str_or_url, *args, **kwargs):
-                return original_request(self, method, redirected(str(str_or_url)) or str_or_url, *args, **kwargs)
+                target = redirected(str(str_or_url))
+                if target is None:
+                    _refuse_providers(str(str_or_url))
+                return original_request(self, method, target or str_or_url, *args, **kwargs)
 
             aiohttp.ClientSession._request = session_request
         except ImportError:
@@ -163,10 +187,11 @@ def install_http() -> None:
 def http_routed(base: str):
     """While inside, requests to LLM endpoints go to the eval proxy at `base` (…/case/<id>/v1)."""
     install_http()
-    token = HTTP_BASE.set(base)
+    token, guard = HTTP_BASE.set(base), IN_CASE.set(True)
     try:
         yield
     finally:
+        IN_CASE.reset(guard)
         HTTP_BASE.reset(token)
 
 
@@ -187,13 +212,15 @@ def routed(swapped: object, passthrough: object | None = None):
     """While inside, the SDKs' calls go to `swapped`; `passthrough` (the client `swapped` calls), and any client it
     wraps, goes to Token Factory."""
     install()
+    install_http()  # a call the SDK patch doesn't cover still goes out over HTTP, where the providers are refused
     for client in _wrapped(passthrough):
         try:
             PASSTHROUGH.add(client)
         except TypeError:  # not weakly referenceable: it can't be one of the SDK's clients either
             pass
-    token = ROUTE.set(swapped)
+    token, guard = ROUTE.set(swapped), IN_CASE.set(True)
     try:
         yield
     finally:
+        IN_CASE.reset(guard)
         ROUTE.reset(token)

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape as _plain  # repo text: app/[locale]/page.tsx isn't markup
 from rich.table import Table
 
 from . import config, tokenfactory
@@ -173,13 +174,13 @@ def scan(
     for f in sites:
         color = colors[f.portability]
         table.add_row(
-            f.id, f"{f.file}:{f.line}", f"{f.sdk} {f.api}", f.model or f.model_expr or "?", f.output,
+            _plain(f.id), _plain(f"{f.file}:{f.line}"), f"{f.sdk} {f.api}", _plain(f.model or f.model_expr or "?"), f.output,
             f"[{color}]{f.portability}[/{color}]",
         )
     console.print(table)
     for f in sites:
         if f.notes:
-            console.print(f"[bold]{f.id}[/bold]: " + "; ".join(f.notes))
+            console.print(f"[bold]{_plain(f.id)}[/bold]: " + _plain("; ".join(f.notes)))
 
     summary = report.summary(include_tests)
     ports = summary["by_portability"]
@@ -251,7 +252,7 @@ def capture(
         detail = grader["type"] + (f" ({len(grader['fields'])})" if grader["type"] == "fields" else "")
         color = "green" if site.cases else "yellow"
         table.add_row(
-            site.spec["id"], f"{site.finding.sdk} {site.finding.output}", detail,
+            _plain(site.spec["id"]), f"{site.finding.sdk} {site.finding.output}", detail,
             f"[{color}]{len(site.cases)}[/{color}]", site.source,
         )
     console.print(table)
@@ -628,8 +629,8 @@ def upgrade(
         fix = f"[green]{up.target.version}[/green] ({up.target.age_days}d old)" if up.target else "—"
         color = colors.get(up.status, "white")
         ids = up.advisory_ids
-        table.add_row(up.dep.name, up.dep.version, fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""),
-                      f"[{color}]{up.status}[/{color}]", ", ".join((up.dep.source, *up.dep.also)))
+        table.add_row(_plain(up.dep.name), _plain(up.dep.version), fix, ", ".join(ids[:4]) + (f" +{len(ids) - 4}" if len(ids) > 4 else ""),
+                      f"[{color}]{up.status}[/{color}]", _plain(", ".join((up.dep.source, *up.dep.also))))
     console.print(table)
 
     upgradable = sum(up.target is not None for up in plans)
@@ -696,8 +697,11 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
             setups = [("tests", test_image or setups[0][1], test_command or setups[0][2])]
         return run_suites(folder, [(suite, image, in_project(project, command)) for suite, image, command in setups])
 
-    run = upgrade_repo(root, out_dir, plans=plans, project=project, min_age_days=min_age, rounds=rounds, researcher=researcher,
-                       changelog=changelog, fixer=fixer, on_event=event, run_tests=tests)
+    try:
+        run = upgrade_repo(root, out_dir, plans=plans, project=project, min_age_days=min_age, rounds=rounds, researcher=researcher,
+                           changelog=changelog, fixer=fixer, on_event=event, run_tests=tests)
+    except (FileExistsError, ValueError) as error:  # e.g. an --out folder OpenPort didn't make, which it won't empty
+        _fail(str(error))
     if not run.upgraded:  # not an error: a weekly run with nothing safe to do yet just says why
         console.print("Nothing to upgrade here: " + "; ".join(f"{up.dep.name}: {why}" for up, why in run.skipped))
         return
@@ -709,7 +713,10 @@ def _apply_upgrades(root: Path, plans, rounds: int, test_image, test_command, ou
     verdict = "[green]Proven: the tests pass before and after the upgrade.[/green]" if run.proven else "[red]Not proven: see the test results.[/red]"
     console.print(f"\n{verdict}\nDiff: {diff_path}\nPR description: {body_path}")
     if run.proven:  # the PR comes from the original's .git plus the changed files, never from the tested copy
-        pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir, run.created), out_dir.with_name(out_dir.name + ".pr"))
+        try:
+            pr_folder = make_pr_folder(root, out_dir, changed_files(root, out_dir, run.created), out_dir.with_name(out_dir.name + ".pr"))
+        except (FileExistsError, ValueError) as error:
+            _fail(str(error))
         title, branch = upgrade_report.TITLE, UPGRADE_BRANCH
         if project:  # each project of a monorepo gets its own PR
             title, branch = f"{title} in {project}", f"{branch}-{project.replace('/', '-')}"
@@ -752,7 +759,10 @@ def _target_root(target: str) -> Path:
     from .workspace import fetch_repo, is_remote
 
     if is_remote(target):
-        root, fresh = fetch_repo(target)
+        try:
+            root, fresh = fetch_repo(target)
+        except (ValueError, RuntimeError) as error:
+            _fail(str(error))
         console.print(f"{'Cloned' if fresh else 'Using the earlier clone of'} {target} in {root}")
         return root
     root = Path(target)
@@ -815,12 +825,12 @@ def port(
         table.add_column(column)
     for site in result.sites:
         if site.status == "ported":
-            now = f"[green]{site.now}[/green]"
+            now = f"[green]{_plain(site.now)}[/green]"
             notes = "; ".join(site.notes)
         else:
             now = "[yellow]kept[/yellow]"
             notes = "; ".join([site.reason, *site.notes])
-        table.add_row(site.id, site.was or "?", now, notes)
+        table.add_row(_plain(site.id), _plain(site.was or "?"), now, _plain(notes))
     console.print(table)
 
     ported = sum(s.status == "ported" for s in result.sites)

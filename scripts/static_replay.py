@@ -18,7 +18,8 @@ from openport.server import pipeline, upgrades
 
 ROOT = Path(__file__).resolve().parents[1]
 # What a recording mustn't carry onto a public page: a home folder, or anything shaped like a key (as scripts/monday.py).
-PRIVATE = re.compile(r"C:\\\\Users|/home/|/Users/|sk-[A-Za-z0-9]{12,}|tvly-[A-Za-z0-9]{8,}|Bearer [A-Za-z0-9._-]{12,}|v1\.[A-Za-z0-9]{20,}")
+PRIVATE = re.compile(r"[Cc]:(?:\\\\|/)+[Uu]sers|/home/|/Users/|sk-[A-Za-z0-9]{12,}|tvly-[A-Za-z0-9]{8,}|Bearer [A-Za-z0-9._-]{12,}"
+                     r"|v1\.[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|nvapi-[A-Za-z0-9_-]{20,}")
 
 
 def replays(recorded: Path) -> list[tuple[dict, dict]]:
@@ -47,6 +48,9 @@ def replays(recorded: Path) -> list[tuple[dict, dict]]:
 
 def main(argv: list[str]) -> None:
     out = Path(argv[argv.index("--out") + 1]).resolve() if "--out" in argv else ROOT / "site"
+    # Vite empties the folder it builds into: only an empty one, or an earlier replay, may be it (not docs/, not the repo).
+    if out.is_dir() and any(out.iterdir()) and not ((out / "index.html").exists() and (out / "replay").is_dir()):
+        raise SystemExit(f"{out} isn't empty and isn't an earlier replay, and the build would empty it: pick another --out")
     if "--no-build" not in argv:
         npm = shutil.which("npm") or "npm"
         subprocess.run([npm, "run", "build:static", "--", "--outDir", str(out)], cwd=ROOT / "dashboard", check=True)

@@ -143,3 +143,15 @@ def test_upgrade_without_lockfiles_says_so(offline, tmp_path):
     result = runner.invoke(cli.app, ["upgrade", str(tmp_path)])
     assert result.exit_code == 1
     assert "No lockfiles found" in result.output
+
+
+def test_scan_prints_repo_text_literally_not_as_markup(offline, tmp_path):
+    app = tmp_path / "app" / "[locale]"
+    app.mkdir(parents=True)
+    (app / "route.py").write_text(
+        'from openai import OpenAI\n\nclient = OpenAI()\nMODELS = ["gpt-5"]\n\n\ndef answer(q):\n'
+        '    return client.chat.completions.create(model=MODELS[0], messages=[{"role": "user", "content": q}])\n',
+        encoding="utf-8")
+    result = runner.invoke(cli.app, ["scan", str(tmp_path)], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert "[locale]" in result.output and "MODELS[0]" in result.output

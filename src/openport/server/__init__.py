@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.datastructures import MutableHeaders
 
-from .. import config, report, sandbox
+from .. import config, report, sandbox, workspace
 from ..port import _diff
 from . import pipeline, upgrades
 from .pipeline import Run, load_runs, resolve_target, run_pipeline
@@ -29,7 +29,8 @@ IN_FLIGHT_USD = 1.0  # what a live run may still spend, counted against the dail
 REPLAY_SPEED, REPLAY_MAX_GAP = 20, 1.5  # a recorded run replays 20x faster, no pause over 1.5 s
 # With a token for a GitHub organization set aside for it, a finished port's pull request can be opened there
 # (src/openport/sandbox.py): in a fork, for a repo from GitHub, so the original's maintainers aren't notified.
-GITHUB_TOKEN = os.getenv("OPENPORT_GITHUB_TOKEN") or None
+GITHUB_TOKEN = os.environ.pop("OPENPORT_GITHUB_TOKEN", None) or None  # out of the environment the repos' code runs in
+workspace.API_TOKEN = GITHUB_TOKEN  # the repo-size check's higher rate limit
 SANDBOX_ORG = os.getenv("OPENPORT_SANDBOX_ORG") or None
 OPENING = threading.Lock()  # one pull request at a time
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -107,7 +108,7 @@ def github_org() -> str | None:
 def spent_today() -> float:
     """Live runs' Token Factory spend since midnight UTC, counting each unfinished run at IN_FLIGHT_USD."""
     midnight = time.time() // 86400 * 86400
-    today = [r for r in runs.values() if not r.recorded and r.created >= midnight]
+    today = [r for r in list(runs.values()) if not r.recorded and r.created >= midnight]  # a copy: other threads add runs
     return forgotten_spend.get(midnight, 0.0) + sum(r.cost_usd if r.status in ("done", "error") else IN_FLIGHT_USD for r in today)
 
 
@@ -135,7 +136,15 @@ def _forget_old_runs() -> None:
         del runs[run.id]
 
 
+LAUNCH_LOCK = threading.Lock()  # one decision at a time: a double-click mustn't start the same run twice
+
+
 def _launch(kind: str, target: str, label: str, local: Path | None, runner, live: bool = False, reuse_only: str | None = None) -> dict:
+    with LAUNCH_LOCK:
+        return _launch_locked(kind, target, label, local, runner, live, reuse_only)
+
+
+def _launch_locked(kind: str, target: str, label: str, local: Path | None, runner, live: bool, reuse_only: str | None) -> dict:
     same = [r for r in runs.values() if r.kind == kind and r.target == target]
     shown = [r for r in same if r.status in ("queued", "running")]  # already running: watch that one
     if not live:  # else a recent run of it, or the recorded one, instead of spending credits again

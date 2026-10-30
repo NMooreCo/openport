@@ -131,7 +131,9 @@ export class Dashboard extends DurableObject<Env> {
 	private async isJudge(request: Request): Promise<boolean> {
 		const given = request.headers.get("x-openport-judge");
 		if (!given || !this.env.JUDGE_PASSWORD) return false;
-		const address = request.headers.get("cf-connecting-ip") ?? "unknown";
+		const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+		// One IPv6 host commonly holds a whole /64, so guesses are counted per /64, not per address.
+		const address = ip.includes(":") ? ip.split(":").slice(0, 4).join(":") : ip;
 		const key = `judge-misses:${new Date().toISOString().slice(0, 13)}:${address}`;
 		const misses = (await this.ctx.storage.get<number>(key)) ?? 0;
 		if (misses >= MISSES_PER_HOUR) return false;

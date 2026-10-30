@@ -63,9 +63,10 @@ def _helper_cost(meter: UsageMeter) -> float | None:
             info = tokenfactory.model_info(model)
         except Exception:
             return None
-        if info is None:
+        cost = info.cost(usage.prompt_tokens, usage.completion_tokens) if info is not None else None
+        if cost is None:  # a model with no listed price: the total isn't known
             return None
-        total += info.cost(usage.prompt_tokens, usage.completion_tokens)
+        total += cost
     return total
 
 

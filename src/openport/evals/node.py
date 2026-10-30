@@ -19,7 +19,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 from openai import APIStatusError
 from openai.resources.chat.completions import Completions
@@ -52,7 +52,7 @@ class EvalProxy:
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):  # noqa: N802 (the http.server API)
-                match = _PATH.match(self.path)
+                match = _PATH.match(urlsplit(self.path).path)  # SDKs add queries, e.g. ?beta=true
                 if match is None:
                     return self._reply(404, {"error": {"message": f"OpenPort's eval proxy serves chat completions and messages, not {self.path}"}})
                 anthropic = match[2] == "messages"

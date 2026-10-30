@@ -32,8 +32,7 @@ def _norm(value: Any) -> Any:
 
 
 def _same(actual: Any, expected: Any) -> bool:
-    if actual == "":
-        actual = None
+    actual, expected = (None if value == "" else value for value in (actual, expected))  # an empty string is no value
     if isinstance(expected, (int, float)) and not isinstance(expected, bool):
         try:
             return abs(float(actual) - float(expected)) < 0.01
@@ -43,6 +42,10 @@ def _same(actual: Any, expected: Any) -> bool:
 
 
 def fields(output: dict, expected: dict, names: list[str]) -> Grade:
+    if not names:  # with nothing to compare, any reply would pass
+        return Grade(False, 0.0, ["the grader names no fields to check"])
+    if not isinstance(output, dict):
+        return Grade(False, 0.0, [f"expected an object with {', '.join(names)}; got {type(output).__name__}"])
     return _grade([(_same(output.get(name), expected.get(name)), f"{name}: got {output.get(name)!r}") for name in names])
 
 
@@ -84,7 +87,8 @@ def _first_sentence_after_greeting(text: str) -> str:
 
 
 def text_rules(output: str, expected: dict, config: dict, case_input: dict, judge: Judge | None) -> Grade:
-    text = (output or "").strip()
+    text = (str(output) if output is not None else "").strip()
+    expected = expected if isinstance(expected, dict) else {}  # a recorded reply is a reference, not rules
     checks = [(phrase.lower() in text.lower(), f"missing {phrase!r}") for phrase in expected.get("must_include", [])]
     if config.get("ends_with"):
         checks.append((text.endswith(config["ends_with"]), "wrong sign-off"))
@@ -107,6 +111,8 @@ def text_rules(output: str, expected: dict, config: dict, case_input: dict, judg
         except Exception as error:
             score, label = 0, f"judge failed: {type(error).__name__}"
         checks.append((score >= config["judge"].get("min_score", 4), label))
+    if not checks:  # e.g. a judge-only grader run without the judge: passing would mean passing anything
+        checks.append((False, "no judge to score this reply" if config.get("judge") else "no rules to check this reply"))
     return _grade(checks)
 
 
@@ -119,7 +125,10 @@ def rules(output: dict, expected: dict) -> Grade:
     for key, wanted in expected.items():
         name, _, op = key.rpartition(" ")
         actual = output.get(name)
-        ok = op in _OPS and actual is not None and _OPS[op](actual, wanted)
+        try:
+            ok = op in _OPS and actual is not None and _OPS[op](actual, wanted)
+        except TypeError:  # e.g. a string where a number was wanted
+            ok = False
         checks.append((ok, f"{name}: got {actual!r}, wanted {op} {wanted!r}"))
     return _grade(checks)
 

@@ -39,3 +39,19 @@ def test_a_recording_with_a_local_path_or_key_stops_the_build(tmp_path):
 def test_the_shipped_recordings_all_make_it():
     entries = [entry for entry, _ in static_replay.replays(ROOT / "examples" / "recorded")]
     assert {(e["kind"], e["preset"]) for e in entries} >= {("upgrade", "authkit"), ("upgrade", "authkit-node")}
+
+
+@pytest.mark.parametrize("leak", ["C:/Users/nick/app", "c:\\users\\nick", "ghp_" + "a" * 36, "github_pat_" + "b" * 40,
+                                  "nvapi-" + "c" * 40])
+def test_a_recording_with_a_path_or_token_never_reaches_the_page(tmp_path, leak):
+    (tmp_path / "port-x.json").write_text(json.dumps({"id": "x", "kind": "port", "target": "supportdesk", "status": "done",
+                                                      "created": 1, "events": [{"type": "note", "message": leak}]}))
+    with pytest.raises(SystemExit, match="local path or a key"):
+        static_replay.replays(tmp_path)
+
+
+def test_the_build_wont_empty_a_folder_that_isnt_a_replay(tmp_path):
+    (tmp_path / "notes.md").write_text("someone's docs")
+    with pytest.raises(SystemExit, match="isn't an earlier replay"):
+        static_replay.main(["--out", str(tmp_path), "--no-build"])
+    assert (tmp_path / "notes.md").read_text() == "someone's docs"

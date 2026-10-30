@@ -27,9 +27,12 @@ GIT_TIMEOUT = 300
 FORK_WAIT = 90  # seconds a new fork may take to be ready
 FALLBACK_AUTHOR = ("OpenPort", "openport@example.com")
 # What else the PR body would set off on GitHub: an @mention notifies that person, and a link to an issue or a PR
-# elsewhere puts a "mentioned this" on it. Links go through redirect.github.com instead, as Dependabot's do.
+# elsewhere puts a "mentioned this" on it, as does owner/repo#123. Links go through redirect.github.com instead, as
+# Dependabot's do, whichever way they're written (http, www.); a short reference gets a zero-width space after its #.
 MENTION = re.compile(r"(?<![\w/.`@-])@(?=[A-Za-z0-9])")
-CROSS_REFERENCE = re.compile(r"https://github\.com/(?=[\w.-]+/[\w.-]+/(?:issues|pull|discussions|commit)/)")
+CROSS_REFERENCE = re.compile(r"(?<![\w.-])(?:https?://)?(?:www\.)?github\.com/(?=[\w.-]+/[\w.-]+/(?:issues|pull|discussions|commit)/)",
+                             re.IGNORECASE)
+SHORT_REFERENCE = re.compile(r"(?<![\w/.-])([\w.-]+/[\w.-]+)#(?=\d)")
 
 
 class GitHubError(RuntimeError):
@@ -47,8 +50,9 @@ Git = Callable[[list[str], Path], None]
 
 
 def quiet(body: str) -> str:
-    """The PR body, minus what would ping people or other repos: @mentions and links to issues and PRs."""
-    return CROSS_REFERENCE.sub("https://redirect.github.com/", MENTION.sub("@​", body))
+    """The PR body, minus what would ping people or other repos: @mentions, and links and references to issues and PRs."""
+    body = CROSS_REFERENCE.sub("https://redirect.github.com/", MENTION.sub("@\u200b", body))
+    return SHORT_REFERENCE.sub("\\1#\u200b", body)
 
 
 class _Api:
@@ -105,6 +109,8 @@ def _copy(source: Path, destination: Path, files: list[str]) -> None:
     """Copy `files` (paths relative to `source`) into `destination`, refusing links and anything outside either."""
     source, destination = source.resolve(), destination.resolve()
     for name in files:
+        if any(part.lower() == ".git" for part in re.split(r"[\\/]", name)):  # its hooks and config would run on a commit
+            raise GitHubError(f"{name} is in .git, which a PR never changes")
         src, dst = source / name, destination / name
         if src.is_symlink() or not src.is_file() or not src.resolve().is_relative_to(source):
             raise GitHubError(f"{name} isn't a file in {source.name}")

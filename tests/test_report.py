@@ -122,3 +122,10 @@ def test_pr_description(tmp_path):
     [triage] = [r for r in report.build_rows(report.load_summary(tmp_path / "out"), tune, prices.get) if r.id == "triage.triage_ticket"]
     assert round(triage.cost_was, 4) == 0.16 and round(triage.cost_now, 4) == 0.048
     assert "Nemotron's reasoning not counted" in report.render("supportdesk", [triage], tune)
+
+
+def test_repo_text_in_the_pr_table_cant_break_out_of_its_cell():
+    from openport.report import _cell, _code_cell
+
+    assert _code_cell("x` <style>body{display:none}</style> `") == "`x' <style>body{display:none}</style> '`"
+    assert _cell("a|b\nc") == r"a\|b c"

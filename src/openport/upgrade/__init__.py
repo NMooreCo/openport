@@ -12,7 +12,7 @@ from datetime import datetime
 from .lockfiles import Dependency, read_lockfiles
 from .osv import Advisory, find_advisories
 from .registry import fetch_releases
-from .select import Target, choose_target, fix_floor, has_fix
+from .select import Target, choose_target, fix_floor, has_fix, parse_version
 
 
 @dataclass
@@ -20,7 +20,9 @@ class Upgrade:
     dep: Dependency
     advisories: list[Advisory]
     target: Target | None
-    status: str  # "upgrade" | "partial" (some advisories stay open) | "held: fix too new" | "held: no release dates" | "no fix available"
+    # "upgrade" | "partial" (some advisories stay open) | "held: fix too new" | "held: no release dates"
+    # | "held: installed version unreadable" | "no fix available"
+    status: str
 
     @property
     def advisory_ids(self) -> list[str]:
@@ -55,8 +57,10 @@ def plan_upgrades(
             plans.append(Upgrade(dep, advisories, None, "no fix available"))
         elif releases[dep] is None:
             plans.append(Upgrade(dep, advisories, None, "held: no release dates"))
+        elif parse_version(dep.version, dep.ecosystem) is None:  # no release can be shown to be newer than it
+            plans.append(Upgrade(dep, advisories, None, "held: installed version unreadable"))
         else:
-            target = choose_target(dep.version, advisories, releases[dep], min_age_days=min_age_days, now=now)
+            target = choose_target(dep.version, advisories, releases[dep], min_age_days=min_age_days, now=now, ecosystem=dep.ecosystem)
             status = "held: fix too new" if target is None else "partial" if target.still_open else "upgrade"
             plans.append(Upgrade(dep, advisories, target, status))
     return plans

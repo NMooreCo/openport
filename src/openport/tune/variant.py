@@ -99,6 +99,7 @@ class VariantClient:
 
     client: Any
     variant: Variant
+    held_out: frozenset[str] = frozenset()  # cases the engineer mustn't see: their prompts aren't recorded
     sample: dict | None = field(default=None)
     systems: list[str] = field(default_factory=list)
     cutoffs: dict[str, str] = field(default_factory=dict)  # case ID -> what was cut off
@@ -110,10 +111,11 @@ class VariantClient:
     def _send(self, method_name: str, request: dict):
         system = system_text(request)
         with self._lock:
-            if self.sample is None:
-                self.sample = request
-            if system and system not in self.systems:
-                self.systems.append(system)
+            if CURRENT_CASE.get() not in self.held_out:  # a templated prompt can carry a held-out case's input
+                if self.sample is None:
+                    self.sample = request
+                if system and system not in self.systems:
+                    self.systems.append(system)
         sent = apply_variant(self.variant, request)
         try:
             response = getattr(self.client.chat.completions, method_name)(**sent)

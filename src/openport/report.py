@@ -55,10 +55,26 @@ def latest_tune_report(target: str) -> Path | None:
     return reports[-1] if reports else None
 
 
+def _cell(text) -> str:
+    """Text from the scanned repo, safe in a Markdown table cell: a pipe would end the cell."""
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def _code_cell(text) -> str:
+    """A code span in a table cell. The repo writes these strings (a model name can be any expression), so a
+    backtick in one can't close the span and let what follows render as Markdown or HTML."""
+    text = _cell(text).replace("`", "'")
+    return f"`{text}`"
+
+
 def _tuning_for(site: dict, results: list[dict]) -> dict | None:
-    """The tuning result for a ported call site: same file, same function."""
-    function = site["id"].split(".")[-1].split("-")[0]
-    return next((r for r in results if r["file"] == site["file"] and r["function"].split(".")[-1] == function), None)
+    """The tuning result for a ported call site: same file, same function. Two classes' `run` methods in one file
+    are told apart by the whole name when the call's ID carries it."""
+    site_id = site["id"].split("-")[0]
+    same_file = [r for r in results if r["file"] == site["file"]]
+    exact = next((r for r in same_file if site_id == r["function"] or site_id.endswith("." + r["function"])), None)
+    function = site_id.split(".")[-1]
+    return exact or next((r for r in same_file if r["function"].split(".")[-1] == function), None)
 
 
 def build_rows(sites: list[dict], tune_report: dict | None, price_of: Callable[[str], Price | None]) -> list[Row]:
@@ -132,11 +148,12 @@ def render(target: str, rows: list[Row], tune_report: dict | None) -> str:
             "test cases, including cases held out from tuning."
         )
     lines += ["", "| Call | Was | Now | Plain swap | After tuning | Held-out | Est. cost per 1k calls |", "|---|---|---|---|---|---|---|"]
+    code = _code_cell
     for r in ported:
         cost = f"{_usd(r.cost_was)} → {_usd(r.cost_now)}" if r.cost_was is not None or r.cost_now is not None else "-"
         cases = f" ({r.cases} cases)" if r.cases else ""
         lines.append(
-            f"| `{r.id}` ([{r.file}:{r.line}]({r.file}#L{r.line})) | `{r.was}` | `{r.now}` | {_pct(r.plain)} | "
+            f"| {code(r.id)} ([{_cell(r.file)}:{r.line}]({r.file}#L{r.line})) | {code(r.was)} | {code(r.now)} | {_pct(r.plain)} | "
             f"{_pct(r.after)}{cases} | {_pct(r.held_out)} | {cost} |"
         )
     costs = [r for r in ported if r.cost_was is not None and r.cost_now is not None]

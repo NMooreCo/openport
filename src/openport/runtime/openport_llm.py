@@ -60,13 +60,35 @@ def token_factory_async_client(**options: Any) -> AsyncOpenAI:
 
 
 def anthropic_client(**options: Any) -> "AnthropicOnNemotron":
-    """Stands in for `anthropic.Anthropic(...)`: same `messages.create` interface, served by Token Factory."""
-    return AnthropicOnNemotron(client=token_factory_client(**options))
+    """Stands in for `anthropic.Anthropic(...)`: same `messages.create` interface, served by Token Factory.
+    Like `Anthropic()`, it's built without a key (NEBIUS_API_KEY unset): its first call needs one, not the import."""
+    return AnthropicOnNemotron(client=_Deferred(lambda: token_factory_client(**options)))
 
 
 def async_anthropic_client(**options: Any) -> "AsyncAnthropicOnNemotron":
     """Stands in for `anthropic.AsyncAnthropic(...)`."""
-    return AsyncAnthropicOnNemotron(client=token_factory_async_client(**options))
+    return AsyncAnthropicOnNemotron(client=_Deferred(lambda: token_factory_async_client(**options)))
+
+
+class _Deferred:
+    """An `openai` client built when it's first used: `OpenAI()` isn't built without a key, and `Anthropic()` is."""
+
+    def __init__(self, build: Callable[[], Any]):
+        self._build = build
+        self._client = None
+
+    def _built(self) -> Any:
+        if self._client is None:
+            self._client = self._build()
+        return self._client
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):  # not set yet (a copy being made): never the client's own
+            raise AttributeError(name)
+        return getattr(self._built(), name)
+
+    def with_options(self, **options: Any) -> "_Deferred":
+        return _Deferred(lambda: self._built().with_options(**options))
 
 
 class UnsupportedFeature(Exception):
@@ -403,11 +425,14 @@ def openai_to_anthropic(response: Any, *, model: str, include_thinking: bool) ->
         content.append(TextBlock(text=""))
 
     usage = getattr(response, "usage", None)
+    stop_reason = _STOP_REASONS.get(choice.finish_reason, "end_turn")
+    if message.tool_calls and choice.finish_reason != "length":  # some servers say "stop" with tool calls in the reply
+        stop_reason = "tool_use"
     return AnthropicMessage(
         id=response.id,
         model=model,
         content=content,
-        stop_reason=_STOP_REASONS.get(choice.finish_reason, "end_turn"),
+        stop_reason=stop_reason,
         usage=AnthropicUsage(
             input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             output_tokens=getattr(usage, "completion_tokens", 0) or 0,
@@ -445,6 +470,16 @@ class AnthropicOnNemotron:
         if self._model is None:
             return model
         return self._model(model) if callable(self._model) else self._model
+
+    @property
+    def beta(self) -> "AnthropicOnNemotron":
+        """`client.beta.messages.create(...)`: the same calls (the `betas` they name have no Token Factory equivalent)."""
+        return self
+
+    def with_options(self, **options: Any) -> "AnthropicOnNemotron":
+        """A copy with other request options (timeout, max_retries...), as `Anthropic.with_options` gives. Its key and
+        base URL stay Token Factory's."""
+        return type(self)(self._model, self._client.with_options(**_client_options(options)), self._meter, self._extra_body)
 
 
 class AsyncAnthropicOnNemotron(AnthropicOnNemotron):

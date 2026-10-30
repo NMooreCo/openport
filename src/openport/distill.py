@@ -170,7 +170,9 @@ def distill_site(
             return None, f"made {len(local.calls)} model calls"
         request, response = local.calls[0]
         answer = response.choices[0].message.content or ""
-        return {"messages": [*request["messages"], {"role": "assistant", "content": answer}]}, ""
+        # OpenAI's newer "developer" role is a system prompt to the fine-tuning API, which knows only the classic roles
+        sent = [{**m, "role": "system"} if isinstance(m, dict) and m.get("role") == "developer" else m for m in request["messages"]]
+        return {"messages": [*sent, {"role": "assistant", "content": answer}]}, ""
 
     try:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:

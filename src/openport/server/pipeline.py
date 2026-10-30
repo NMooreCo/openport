@@ -60,8 +60,12 @@ class Run:
 
     @property
     def cost_usd(self) -> float:
-        """What the run spent on Token Factory, from its own events."""
-        return sum((e.get("evals_usd") or 0) + (e.get("helper_usd") or 0) for e in self.events if e["type"] in ("cost", "captured"))
+        """What the run spent on Token Factory, from its own events. A run that failed before its total (the engineer
+        or Tavily erred mid-tune) still counts what its attempts cost, so failures can't get past the day's budget."""
+        spent = sum((e.get("evals_usd") or 0) + (e.get("helper_usd") or 0) for e in self.events if e["type"] in ("cost", "captured"))
+        if not any(e["type"] == "cost" for e in self.events):
+            spent += sum(e.get("cost_usd") or 0 for e in self.events if e["type"] == "attempt")
+        return spent
 
     @property
     def github(self) -> str | None:

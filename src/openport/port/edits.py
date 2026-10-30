@@ -61,9 +61,10 @@ def quoted_like(original: bytes, value: str) -> bytes:
 
 
 def was_comment(source: bytes, value_end: int, original: str, marker: bytes) -> Edit | None:
-    """A trailing `# was "gpt-4o"` (or `// was ...`) on the edited line, unless the line already has one."""
+    """A trailing `# was "gpt-4o"` (or `// was ...`) on the edited line, unless the line already has one, or may end
+    inside a string: one it continues with a backslash, or a triple-quoted string or template literal it opens."""
     end = before_newline(source, value_end)
     rest = source[value_end:end]
-    if marker in rest or rest.rstrip().endswith(b"\\"):
+    if marker in rest or rest.rstrip().endswith(b"\\") or any(quote in rest for quote in (b'"""', b"'''", b"`")):
         return None
     return Edit(end, end, b"  " + marker + b' was "' + original.encode() + b'"')

@@ -54,8 +54,12 @@ class ScanReport:
 
 
 def _source_files(root: Path):
+    from .. import config
+
+    ours = os.path.normcase(str(config.RUNS_DIR.resolve()))  # OpenPort's own output (ports, clones) when run in the repo
     for directory, subdirs, files in os.walk(root):
-        subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith(".")]
+        subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith(".")
+                      and os.path.normcase(str((Path(directory) / d).resolve())) != ours]
         for name in files:
             if name.endswith(".py") or (name.endswith(TS_SUFFIXES) and not name.endswith(".d.ts") and ".min." not in name):
                 yield Path(directory) / name
@@ -93,7 +97,7 @@ def scan_repo(root: Path) -> ScanReport:
             if path.suffix == ".py":
                 with warnings.catch_warnings():  # the repo's own code: its invalid escapes aren't OpenPort's to report
                     warnings.simplefilter("ignore", SyntaxWarning)
-                    findings += scan_python(data.decode("utf-8", errors="replace"), relative, in_tests)
+                    findings += scan_python(data.decode("utf-8-sig", errors="replace"), relative, in_tests)  # -sig: a BOM isn't code
             else:
                 findings += scan_typescript(data, relative, in_tests)
         except (SyntaxError, ValueError) as error:

@@ -70,6 +70,7 @@ class SiteTuning:
     chosen: Attempt | None
     system_prompts: list[str] = field(default_factory=list)  # every distinct system prompt the app sent
     research: list[Guidance] = field(default_factory=list)  # NVIDIA guidance looked up for this call
+    error: str | None = None  # why tuning stopped early, if something other than the model failed
 
     @property
     def baseline(self) -> Attempt | None:
@@ -88,7 +89,7 @@ def split_cases(cases: list[dict]) -> tuple[list[dict], list[dict]]:
     """A stable tune/holdout split: the same case always lands on the same side."""
     if len(cases) < 4:
         return cases, []
-    ranked = sorted(cases, key=lambda c: hashlib.sha1(c["id"].encode()).hexdigest())
+    ranked = sorted(cases, key=lambda c: hashlib.sha1(str(c["id"]).encode()).hexdigest())
     held = {c["id"] for c in ranked[: max(1, round(len(cases) * HOLDOUT_FRACTION))]}
     return [c for c in cases if c["id"] not in held], [c for c in cases if c["id"] in held]
 
@@ -138,7 +139,7 @@ def tune_site(
         model = models[tier]
         variant = best.variant if best else Variant()
         for round_number in range(rounds):
-            wrapped = VariantClient((clients or {}).get(tier, client), variant)
+            wrapped = VariantClient((clients or {}).get(tier, client), variant, held_out=frozenset(held_ids))
             result = run_site(spec, site, tier, model, concurrency=concurrency, judge=judge, client=wrapped, cases=cases)
             system_prompts.extend(s for s in wrapped.systems if s not in system_prompts)
             tuned = [r for r in result.cases if r.case_id not in held_ids]
@@ -162,14 +163,17 @@ def tune_site(
             attempts.append(attempt)
             if on_attempt:
                 on_attempt(site, attempt)
-            if best is None or attempt.pass_rate > best.pass_rate:
+            if best is None or attempt.tune_pass > best.tune_pass:  # chosen on what the engineer may see, not the held-out cases
                 best = attempt
             if attempt.meets(target):
                 return finish(attempt)
             failures = [(by_id[r.case_id], r) for r in tuned if not r.passed]
             if round_number == rounds - 1 or not failures:
                 break  # out of rounds, or only held-out cases fail (the engineer can't see those): move up a tier
-            guidance = researcher(site, model, failures) if researcher else None
+            try:
+                guidance = researcher(site, model, failures) if researcher else None
+            except Exception:  # Tavily out of credit or down: tune without the guidance rather than stop
+                guidance = None
             if guidance is not None and guidance not in research:
                 research.append(guidance)
                 if on_research:
@@ -179,20 +183,34 @@ def tune_site(
                 extra["systems"] = list(system_prompts)  # the addendum goes into each prompt the call sends
             if round_number:  # what this tier has tried, and how each scored
                 extra["history"] = [(a.variant.describe(), a.tune_pass) for a in attempts if a.tier == tier]
-            variant = engineer(site, model, variant, wrapped.sample, _with_cutoffs(failures, wrapped.cutoffs), **extra)
+            try:
+                variant = engineer(site, model, variant, wrapped.sample, _with_cutoffs(failures, wrapped.cutoffs), **extra)
+            except Exception:  # the engineer's call failed (rate limit, outage): try the next tier as it stands
+                break
     return finish(None)
 
 
 def _findings(spec: Spec) -> dict[tuple[str, str], CallSiteFinding]:
-    """The scanner's finding for each eval call site, by (file, function)."""
+    """The scanner's finding for each eval call site, by (file, function). A function with several calls is
+    represented by the one that sends images, if any: that decides which models can run it."""
     from ..scan import scan_repo
 
-    return {(f.file, f.function): f for f in scan_repo(spec.source_root).portable()}
+    found: dict[tuple[str, str], CallSiteFinding] = {}
+    for f in scan_repo(spec.source_root).portable():
+        if (f.file, f.function) not in found or "vision" in f.features:
+            found[(f.file, f.function)] = f
+    return found
 
 
-def _finding_ids(spec: Spec) -> dict[tuple[str, str], str]:
-    """Map eval call sites to the scanner's call-site IDs (which `openport port` plans use)."""
-    return {key: f.id for key, f in _findings(spec).items()}
+def _finding_ids(spec: Spec) -> dict[tuple[str, str], list[str]]:
+    """Map eval call sites to the scanner's call-site IDs (which `openport port` plans use). One function can hold
+    several calls; its eval tests them together, so each gets the plan entry."""
+    from ..scan import scan_repo
+
+    ids: dict[tuple[str, str], list[str]] = {}
+    for f in scan_repo(spec.source_root).portable():
+        ids.setdefault((f.file, f.function), []).append(f.id)
+    return ids
 
 
 def tiers_for(site: CallSite, findings: dict[tuple[str, str], CallSiteFinding], tiers: tuple[str, ...],
@@ -218,9 +236,10 @@ def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
     ids = _finding_ids(spec)
     plan = {}
     for result in results:
-        site_id = ids.get((result.file, result.function), result.site_id)
+        site_ids = ids.get((result.file, result.function), [result.site_id])
         if result.chosen is None:
-            plan[site_id] = {"model": "keep", "reason": _why_kept(result.best, target)}
+            reason = f"couldn't be tested: {result.error}" if result.error else _why_kept(result.best, target)
+            plan.update({site_id: {"model": "keep", "reason": reason} for site_id in site_ids})
             continue
         chosen = result.chosen
         entry = {
@@ -234,7 +253,7 @@ def export_plan(spec: Spec, results: list[SiteTuning], target: float) -> dict:
             entry["extra_body"] = {"chat_template_kwargs": {"enable_thinking": chosen.variant.reasoning}}
         if chosen.variant.system_addendum:
             entry["system_prompts"] = result.system_prompts  # lets the port find where each prompt is written
-        plan[site_id] = entry
+        plan.update({site_id: dict(entry) for site_id in site_ids})
     return {"target": target, "call_sites": plan}
 
 
@@ -280,14 +299,17 @@ def tune_spec(
     findings = _findings(spec)
     ladders = {site.id: tiers_for(site, findings, tiers, models) for site in sites}
 
-    results = [
-        tune_site(
-            spec, site, models, client=client, engineer=engineer, judge=judge, target=target, rounds=rounds,
-            tiers=ladders[site.id], concurrency=concurrency, limit=limit, on_attempt=on_attempt,
-            researcher=researcher, on_research=on_research, clients=clients,
-        )
-        for site in sites
-    ]
+    results = []
+    for site in sites:
+        try:
+            results.append(tune_site(
+                spec, site, models, client=client, engineer=engineer, judge=judge, target=target, rounds=rounds,
+                tiers=ladders[site.id], concurrency=concurrency, limit=limit, on_attempt=on_attempt,
+                researcher=researcher, on_research=on_research, clients=clients,
+            ))
+        except Exception as error:  # e.g. its module won't import: it stays, and the other calls' results are kept
+            results.append(SiteTuning(site.id, site.title, site.file, site.function, [], None,
+                                      error=f"{type(error).__name__}: {error}"[:300]))
     helper_cost = sum(
         (tokenfactory.model_info(model).cost(u.prompt_tokens, u.completion_tokens) or 0) if tokenfactory.model_info(model) else 0
         for model, u in helper_meter.by_model.items()

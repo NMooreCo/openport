@@ -260,3 +260,15 @@ def test_write_capture_roundtrips_through_load_spec(tmp_path):
     triage = next(s for s in spec.call_sites if s.id == "triage.triage_ticket")
     assert len(triage.cases()) == TRIAGE_CASES
     assert spec.source_root.exists()
+
+
+def test_recorded_free_text_replies_load_as_references(tmp_path):
+    from openport.capture.logs import infer_fields, load_log_cases
+
+    log = tmp_path / "replies.jsonl"
+    log.write_text('{"input": {"ticket": "Where is it?"}, "output": "It ships Tuesday."}\n'
+                   '{"input": {"ticket": "Refund?"}, "output": ["a", "list"]}\n', encoding="utf-8")
+    cases = load_log_cases(log, "replies")
+    assert cases[0]["expected"] == {"reference": "It ships Tuesday."}
+    assert cases[1]["expected"] == ["a", "list"]  # not an object: no fields to infer from it
+    assert infer_fields(cases[1:]) == []

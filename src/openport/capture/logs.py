@@ -22,6 +22,8 @@ def load_log_cases(path: Path, site_id: str) -> list[dict]:
         if not isinstance(row, dict) or "input" not in row:
             raise ValueError(f"{path.name}:{i} needs an 'input' field")
         expected = row["expected"] if "expected" in row else row.get("output", {})
+        if isinstance(expected, str):  # a recorded free-text reply: kept as the reference, graded by the judge
+            expected = {"reference": expected}
         case_id = str(row.get("id") or f"{site_id}-{i:02d}")
         cases.append({"id": case_id, "input": row["input"], "expected": expected})
     return cases

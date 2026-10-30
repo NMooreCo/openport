@@ -64,3 +64,48 @@ def test_markdown_and_judge():
     text = "Hi there,\n\nThanks!\n\n— The Fernhill Support Team"
     assert graders.text_rules(text, {}, config, {}, lambda rubric, case_input, output: 5).passed
     assert "judge scored 3/5" in graders.text_rules(text, {}, config, {}, lambda *args: 3).failures
+
+
+def test_a_field_grader_with_no_fields_fails_rather_than_passing_anything():
+    grade = graders.grade({"type": "fields", "fields": []}, {"nonsense": True}, {"label": "billing"}, {})
+    assert not grade.passed and grade.failures == ["the grader names no fields to check"]
+
+
+def test_a_field_grader_given_a_list_or_text_fails_cleanly():
+    assert not graders.fields(["billing"], {"label": "billing"}, ["label"]).passed
+    assert not graders.fields("billing", {"label": "billing"}, ["label"]).passed
+
+
+def test_an_expected_empty_string_matches_an_empty_or_missing_value():
+    assert graders.fields({"order_id": ""}, {"order_id": ""}, ["order_id"]).passed
+    assert graders.fields({}, {"order_id": ""}, ["order_id"]).passed
+    assert not graders.fields({"order_id": "FH-1"}, {"order_id": ""}, ["order_id"]).passed
+
+
+def test_a_judge_only_grader_without_the_judge_fails_rather_than_passing_anything():
+    config = {"type": "text_rules", "judge": {"min_score": 4, "rubric": "helpful"}}
+    grade = graders.grade(config, "", {}, {}, judge=None)
+    assert not grade.passed and grade.failures == ["no judge to score this reply"]
+    assert graders.grade(config, "A fine reply.", {}, {}, judge=lambda *args: 5).passed
+
+
+def test_rules_still_grade_without_the_judge():
+    assert graders.text_rules("Hi.\n\n— The Fernhill Support Team", {}, REPLY_RULES, {}, None).passed
+
+
+def test_a_recorded_text_reply_is_a_reference_not_rules():
+    grade = graders.text_rules("Thanks, it's on its way.", "Thanks, it's on its way.", {"max_words": 50}, {}, None)
+    assert grade.passed
+
+
+def test_a_rule_comparing_mismatched_types_fails_instead_of_crashing():
+    grade = graders.rules({"critical": "two"}, {"critical >=": 1, "title_length <=": 72})
+    assert not grade.passed and "critical: got 'two', wanted >= 1" in grade.failures
+
+
+def test_a_judge_that_errors_is_a_labelled_failure():
+    def broken(*args):
+        raise TimeoutError
+
+    grade = graders.text_rules("Hello", {}, {"judge": {"rubric": "r"}}, {}, broken)
+    assert grade.failures == ["judge failed: TimeoutError"]

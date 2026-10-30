@@ -74,9 +74,12 @@ def parse_package_lock(text: str) -> list[Dependency]:
     packages = data.get("packages")
     if isinstance(packages, dict):  # lockfile v2/v3
         for path, info in packages.items():
-            if not path or not isinstance(info, dict):
-                continue  # the root project has an empty-string key
-            name = path.rsplit("node_modules/", 1)[-1]
+            # The root project has an empty-string key; a workspace's own folder (packages/ui) isn't from the registry,
+            # nor is its link in node_modules.
+            if "node_modules/" not in path or not isinstance(info, dict) or info.get("link"):
+                continue
+            # An alias (node_modules/string-width-cjs) names the package it really is.
+            name = str(info.get("name") or path.rsplit("node_modules/", 1)[-1])
             version = info.get("version")
             if name and version:
                 deps.append(Dependency(name, str(version), "npm", "package-lock.json"))
@@ -85,11 +88,19 @@ def parse_package_lock(text: str) -> list[Dependency]:
     def walk(tree: dict | None) -> None:  # lockfile v1
         for name, info in (tree or {}).items():
             if isinstance(info, dict) and info.get("version"):
-                deps.append(Dependency(name, str(info["version"]), "npm", "package-lock.json"))
+                version = str(info["version"])
+                if version.startswith("npm:"):  # an alias: "string-width-cjs": {"version": "npm:string-width@4.2.3"}
+                    name, version = _split_spec(version.removeprefix("npm:"))
+                if name and version:
+                    deps.append(Dependency(name, version, "npm", "package-lock.json"))
                 walk(info.get("dependencies"))
 
     walk(data.get("dependencies"))
     return deps
+
+
+# pnpm's lockfile v5 keys: /name/1.2.3 or /@scope/name/1.2.3, then any peers after "_" (/react-dom/18.2.0_react@18.2.0).
+_PNPM_V5_KEY = re.compile(r"((?:@[^/]+/)?[^/@()]+)/(\d[^/_()]*)(?:_.*)?")
 
 
 def parse_pnpm_lock(text: str) -> list[Dependency]:
@@ -97,11 +108,14 @@ def parse_pnpm_lock(text: str) -> list[Dependency]:
     deps: list[Dependency] = []
     for key in data.get("packages") or {}:
         spec = key[1:] if key.startswith("/") else key
+        old = _PNPM_V5_KEY.fullmatch(spec)
         spec = spec.split("(", 1)[0]  # drop the peer-deps suffix: name@1.2.3(react@18)
         at = spec.rfind("@")
-        if at > 0:  # name@version, including @scope/name@version
+        if old:  # older pnpm: /name/1.2.3, whose peers' "@" would otherwise be taken for the version's
+            name, version = old[1], old[2]
+        elif at > 0:  # name@version, including @scope/name@version
             name, version = spec[:at], spec[at + 1 :]
-        elif "/" in spec:  # older pnpm: /name/1.2.3
+        elif "/" in spec:
             name, _, version = spec.rpartition("/")
         else:
             continue
@@ -132,6 +146,8 @@ def parse_yarn_lock(text: str) -> list[Dependency]:
     for line in text.splitlines():
         if line and not line.startswith((" ", "#")) and line.rstrip().endswith(":"):
             first = line.rstrip()[:-1].split(",")[0].strip().strip('"')
+            if "@npm:" in first:  # an alias: string-width-cjs@npm:string-width@^4.2.0 is string-width
+                first = first.split("@npm:", 1)[1]
             name = _split_spec(first)[0] or None
         elif name and (match := re.match(r'^\s+version:?\s+"?([^"\s]+)"?', line)):
             deps.append(Dependency(name, match[1], "npm", "yarn.lock"))
@@ -178,7 +194,7 @@ def node_lockfile_order(root: Path) -> list[str]:
     (packageManager), else npm's, pnpm's, Yarn's, bun's."""
     package = Path(root) / "package.json"
     try:
-        named = str(json.loads(package.read_text(encoding="utf-8")).get("packageManager") or "") if package.is_file() else ""
+        named = str(json.loads(package.read_text(encoding="utf-8-sig")).get("packageManager") or "") if package.is_file() else ""
     except (ValueError, AttributeError):
         named = ""
     first = NODE_LOCKFILES.get(named.split("@")[0])
@@ -194,7 +210,7 @@ def read_lockfiles(root: Path) -> list[Dependency]:
     found: list[Dependency] = []
     for path in _lockfiles(root):
         relative = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace").removeprefix("﻿")
         try:
             if path.name.startswith("requirements"):
                 deps = parse_requirements(text)

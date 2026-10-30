@@ -44,7 +44,7 @@ NOT_APP_DIRS = {"test", "tests", "__tests__", "spec", "e2e", "evals", "benchmark
 # Features that need a person to look, rather than a mechanical rewrite.
 NEEDS_REVIEW = {
     "vision", "audio", "web_search", "prefill", "ends_on_assistant", "dynamic_kwargs", "legacy_sdk", "embeddings",
-    "anthropic_streaming", "raw_http", "anthropic_http",
+    "anthropic_streaming", "anthropic_parse", "raw_http", "anthropic_http",
 }
 
 NOTES = {
@@ -57,6 +57,7 @@ NOTES = {
     "thinking": "Extended thinking / reasoning effort: mapped to Nemotron's reasoning switch",
     "streaming": "Streams its response",
     "anthropic_streaming": "Streams an Anthropic response: not supported by the runtime yet",
+    "anthropic_parse": "Anthropic's messages.parse (structured output): not supported by OpenPort's runtime yet",
     "vision": "Sends images: needs a Nemotron that reads images, or stays on the original",
     "audio": "Sends or returns audio: Nemotron on Token Factory works in text, so it stays on the original",
     "web_search": "Searches the web as it answers: Nemotron on Token Factory can't, so it stays on the original",
@@ -116,6 +117,8 @@ def features_for_api(sdk: str, api: str) -> list[str]:
         features.append("responses_api")
     if api.endswith("parse"):
         features.append("structured_output")
+        if sdk == "anthropic":  # the stand-ins for Anthropic's SDK have messages.create only
+            features.append("anthropic_parse")
     if api.endswith("stream"):
         features.append("anthropic_streaming" if sdk == "anthropic" else "streaming")
     if api == "embeddings":
@@ -156,5 +159,6 @@ def is_test_path(path: str) -> bool:
         any(part in NOT_APP_DIRS for part in parts[:-1])
         or name.startswith("test_")
         or name == "conftest.py"
-        or any(name.endswith(suffix) for suffix in ("_test.py", ".test.ts", ".test.tsx", ".test.js", ".spec.ts", ".spec.js"))
+        or name.endswith("_test.py")
+        or re.search(r"\.(?:test|spec)\.[cm]?[jt]sx?$", name) is not None  # button.test.tsx, api.spec.mjs, util.test.cjs
     )

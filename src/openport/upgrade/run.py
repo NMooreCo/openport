@@ -13,19 +13,21 @@ in its container can reach the diff or the PR.
 """
 
 import shlex
-import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
+import yaml
+
 from . import Upgrade, plan_upgrades, read_lockfiles
-from .apply import Edit, _read, _write, apply_bumps, apply_edits, copy_repo, diff, remove_tree
-from .bump import LOCKFILES, added_versions, bump_steps, too_new
+from .apply import (Edit, _normalized, _read, _write, apply_bumps, apply_edits, copy_into, copy_problem, copy_repo, diff, edit_target,
+                    hashed_pins, remove_tree, through_link)
+from .bump import LOCKFILES, added_versions, bump_steps, crowded, too_new
 from .fix import project_paths, source_files
 from .lockfiles import Dependency
-from .registry import fetch_releases
+from .registry import fetch_release_dates
 from .testrun import TestRun, run_in_container
 
 # Pinned requirements are edited in place; the lockfiles are rewritten by their own package managers (bump.py).
@@ -70,25 +72,40 @@ class UpgradeRun:
 
 
 def _snapshot(home: Path, edits: list[Edit]) -> dict[str, bytes | None]:
-    """What each file an edit names holds before the edits (None: it doesn't exist yet), inside `home` only."""
-    root, saved = home.resolve(), {}
+    """What each file an edit may change holds before the edits (None: it doesn't exist yet), by the path apply_edits
+    gives the applied ones, so "src/./app.py" and "src/app.py" are one file. A path it would refuse isn't read."""
+    saved = {}
     for edit in edits:
-        path = (home / edit.file).resolve()
-        if root in path.parents and not (home / edit.file).is_symlink():
-            saved[edit.file] = path.read_bytes() if path.is_file() else None
+        name, problem = edit_target(home, edit.file)
+        if not problem:
+            path = home.joinpath(*name.split("/"))
+            saved[name] = path.read_bytes() if path.is_file() else None
     return saved
 
 
 def _restore(home: Path, saved: dict[str, bytes | None], applied: list[Edit]) -> None:
     """Undo the applied edits: each file back as it was, and a file one of them created gone again."""
     for name in dict.fromkeys(e.file for e in applied):
-        if name not in saved:
+        if name not in saved or through_link(home, name):
             continue
-        path = home / name
+        path = home.joinpath(*name.split("/"))
         if saved[name] is None:
             path.unlink(missing_ok=True)
         else:
             path.write_bytes(saved[name])
+
+
+def _bump_order(upgrades: list[Upgrade]) -> list[str]:
+    """The lockfiles to bump: a package's own lockfile (its source) before the others that lock the same version, so a
+    package whose own lockfile can't move is left out of the rest; otherwise in LOCKFILES' order."""
+    left = [name for name in LOCKFILES if any(name in (p.dep.source, *p.dep.also) for p in upgrades)]
+    first = {(p.dep.source, other) for p in upgrades for other in p.dep.also}
+    order = []
+    while left:  # read_lockfiles can't make a cycle; left[0] settles a hand-made one
+        ready = next((name for name in left if not any((other, name) in first for other in left if other != name)), left[0])
+        order.append(ready)
+        left.remove(ready)
+    return order
 
 
 def in_project(project: str, command: str) -> str:
@@ -111,11 +128,14 @@ def upgrade_repo(
     fixer=None,
     on_event: Callable[[str, object], None] | None = None,
     run_container: Callable[[Path, str, str], TestRun] = run_in_container,  # runs a package manager to bump a lockfile
-    release_dates: Callable[[Dependency], dict[str, datetime]] = fetch_releases,  # checks what a bump adds
+    release_dates: Callable[[Dependency], dict[str, datetime]] = fetch_release_dates,  # checks what a bump adds
 ) -> UpgradeRun:
     emit = on_event or (lambda kind, data: None)
     project = PurePosixPath(project).as_posix().strip("/") if project else ""
+    if project and through_link(Path(root), project):  # the upgrade would be written wherever the link points
+        raise ValueError(f"{project} is a link in the repo (or inside one), so OpenPort won't upgrade through it")
     plans = plans if plans is not None else plan_upgrades(read_lockfiles(Path(root) / project), min_age_days=min_age_days)
+    hashed = hashed_pins(Path(root) / project)
     upgraded, skipped = [], []
     for p in plans:
         if not p.target:
@@ -127,6 +147,9 @@ def upgrade_repo(
             skipped.append((p, f"{p.dep.source} can't be updated by OpenPort yet: update it with its package manager"))
         elif any(u.dep.source == p.dep.source and u.dep.name.lower() == p.dep.name.lower() for u in upgraded):
             skipped.append((p, f"{p.dep.name} {p.dep.version} is also locked here; this upgrade moves the other one only"))
+        elif "requirements.txt" in (p.dep.source, *p.dep.also) and _normalized(p.dep.name) in hashed:
+            skipped.append((p, "requirements.txt pins it with --hash, and OpenPort can't make the new release's hashes: "
+                               "regenerate them (pip-compile --generate-hashes) to upgrade it"))
         else:
             upgraded.append(p)
     name = Path(root).resolve().name
@@ -166,40 +189,69 @@ def upgrade_repo(
 
 def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds, researcher, changelog, fixer, emit, run_container,
              release_dates) -> UpgradeRun:
-    home = Path(out) / project  # the project's folder in the upgrade: its lockfiles, and the code its tests run
+    out = Path(out)
+    home = out / project  # the project's folder in the upgrade: its lockfiles, and the code its tests run
 
     def repo_path(name: str) -> str:
         return PurePosixPath(project, name).as_posix() if project else name
 
     run.before = tested()
     emit("before", run.before)
-    # Every root lockfile that locks the version moves, not just the one the project's package manager uses
-    # (package-lock.json and bun.lock, say), so neither is left vulnerable.
-    pinned = {p.dep.name: p.target.version for p in run.upgraded if "requirements.txt" in (p.dep.source, *p.dep.also)}
-    run.changed = [repo_path(name) for name in apply_bumps(home, pinned)]
-    locked: dict[str, dict[str, str]] = {}
-    for p in run.upgraded:
-        for source in (p.dep.source, *p.dep.also):
-            if source in LOCKFILES:
-                locked.setdefault(source, {})[p.dep.name] = p.target.version
     cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)  # the supply-chain guard, for everything a bump resolves
-    for lockfile in [name for name in LOCKFILES if locked.get(name)]:
-        step, = bump_steps(home, {lockfile: locked[lockfile]}, cutoff)  # built from the files as the steps before left them
+
+    def bump(step) -> tuple[list[str], str | None]:
+        """Run a lockfile's step in a scratch copy: the files it changed, once they're safe to bring back, or why not."""
+        # The upgrade's own files are never read or written through a link: one could point anywhere on the machine.
+        linked = next((name for name in (step.lockfile, *step.files, *step.writes) if through_link(out, repo_path(name))), None)
+        if linked:
+            return [], f"{repo_path(linked)} is a link, so OpenPort won't read or write through it"
         work = scratch_copy()
-        for name, text in step.writes.items():  # e.g. overrides; a failed bump leaves no half-made change behind
-            _write(work / project / name, text)
+        try:
+            for name, text in step.writes.items():  # e.g. overrides; a failed bump leaves no half-made change behind
+                _write(work / project / name, text)
+        except (OSError, ValueError) as error:
+            return [], str(error)
         result = run_container(work, step.image, in_project(project, step.command))
-        problem = None if result.ok else result.summary.removeprefix("error: ") or "the package manager failed"
-        if problem is None:
+        if not result.ok:
+            return [], result.summary.removeprefix("error: ") or "the package manager failed"
+        # The repo's code ran in that container (a pnpmfile, a yarnPath, a Poetry plugin): only regular files inside the
+        # copy come back, so a file it swapped for a link to one of this machine's can't reach the diff or the PR.
+        touched = [name for name in (step.lockfile, *step.files) if (work / project / name).exists() or through_link(work, repo_path(name))]
+        refused = next(filter(None, (copy_problem(work, out, repo_path(name)) for name in touched)), None)
+        if refused:
+            return [], refused
+        try:
             before, after = (_read(f / step.lockfile) if (f / step.lockfile).is_file() else "" for f in (home, work / project))
             young = too_new(added_versions(step.lockfile, before, after), cutoff, release_dates)
-            if young:
-                more = f" and {len(young) - 3} more" if len(young) > 3 else ""
-                problem = f"it would add releases under {min_age_days} days old: {', '.join(young[:3])}{more}"
+        except (ValueError, TypeError, AttributeError, yaml.YAMLError) as error:  # what the package manager wrote doesn't parse
+            return [], f"the new {step.lockfile} couldn't be read ({type(error).__name__}: {error})"[:300]
+        if young:
+            more = f" and {len(young) - 3} more" if len(young) > 3 else ""
+            return [], f"it would add releases under {min_age_days} days old: {', '.join(young[:3])}{more}"
+        for name in touched:  # only the files the package manager is there to change come back
+            copy_into(work, out, repo_path(name))
+        return touched, None
+
+    # Every root lockfile that locks the version moves, not just the one the project's package manager uses
+    # (package-lock.json and bun.lock, say), so neither is left vulnerable. Each package's own lockfile goes first.
+    for lockfile in _bump_order(run.upgraded):
+        locked = {p.dep.name: p.target.version for p in run.upgraded if lockfile in (p.dep.source, *p.dep.also)}
+        # An override names a package, not one copy of it: with other versions locked too, it would force them all to
+        # the new one, across majors as well. Those are left to a person (update what pulls the old one in).
+        for name, versions in crowded(home, lockfile, locked).items():
+            target = locked.pop(name)
+            own = [p for p in run.upgraded if p.dep.source == lockfile and p.dep.name == name]
+            run.upgraded = [p for p in run.upgraded if p not in own]
+            run.skipped += [(p, f"{lockfile} also locks {name} {', '.join(v for v in versions if v != p.dep.version)}, and an "
+                                f"override would force every copy to {target}: update what depends on {name} {p.dep.version} instead")
+                            for p in own]
+            if not own:
+                run.notes.append(f"`{repo_path(lockfile)}` also locks {name} at {', '.join(versions)}, so it wasn't overridden there")
+        if not locked:
+            continue
+        step, = bump_steps(home, {lockfile: locked}, cutoff)  # built from the files as the steps before left them
+        touched, problem = bump(step)
         if problem is None:
-            touched = [name for name in (step.lockfile, *step.files) if (work / project / name).is_file()]
-            for name in touched:  # only the files the package manager is there to change come back
-                shutil.copy2(work / project / name, home / name)
             run.changed += [repo_path(name) for name in touched]
             continue
         failed = [p for p in run.upgraded if p.dep.source == step.lockfile]
@@ -208,6 +260,9 @@ def _upgrade(root, out, project, scratch_copy, run, tested, min_age_days, rounds
         others = [name for name in step.packages if name not in {p.dep.name for p in failed}]
         if others:  # the project's own lockfile moved them; this other one still locks the old versions
             run.notes.append(f"`{repo_path(step.lockfile)}` also locks {', '.join(others)} and couldn't be updated: {problem}")
+    # The pins last, for the packages still being upgraded: one whose own lockfile couldn't move keeps its old pin too.
+    pinned = {p.dep.name: p.target.version for p in run.upgraded if "requirements.txt" in (p.dep.source, *p.dep.also)}
+    run.changed = [repo_path(name) for name in apply_bumps(home, pinned)] + run.changed
     emit("bumped", run.upgraded)
     if not run.upgraded:
         return run

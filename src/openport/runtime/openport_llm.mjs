@@ -8,10 +8,6 @@
 
 export const TOKEN_FACTORY_BASE_URL = "https://api.tokenfactory.nebius.com/v1/";
 const STOP_REASONS = { stop: "end_turn", length: "max_tokens", tool_calls: "tool_use", content_filter: "refusal" };
-// Anthropic options with no Token Factory equivalent are dropped; any other key is a Token Factory option
-// the port added (like chat_template_kwargs, Nemotron's reasoning switch) and goes along as it is.
-const ANTHROPIC_ONLY = new Set(["metadata", "service_tier", "top_k", "container", "mcp_servers", "betas"]);
-const TRANSLATED = new Set(["model", "max_tokens", "messages", "system", "tools", "tool_choice", "stop_sequences", "thinking", "temperature", "top_p", "stream"]);
 
 export class UnsupportedFeature extends Error {}
 
@@ -73,10 +69,12 @@ function convertToolChoice(choice) {
   throw new UnsupportedFeature(`tool_choice type ${JSON.stringify(choice.type)}`);
 }
 
-/** Anthropic `messages.create` arguments, as a chat completions request body. */
+/** Anthropic `messages.create` arguments, as a chat completions request body. As in the Python runtime, options with
+ * no Token Factory equivalent (metadata, service_tier, betas...) are dropped, and `extra_body` carries Token Factory's
+ * own (chat_template_kwargs, Nemotron's reasoning switch, which the port writes there) onto the request as they are. */
 export function anthropicToOpenAI(params) {
   const messages = [];
-  if (params.system) messages.push({ role: "system", content: textOf(params.system) });
+  if (params.system?.length) messages.push({ role: "system", content: textOf(params.system) });
   for (const message of params.messages) messages.push(...convertMessage(message));
   const request = { model: params.model, max_tokens: params.max_tokens, messages };
   if (params.tools?.length) request.tools = params.tools.map(convertTool);
@@ -88,9 +86,7 @@ export function anthropicToOpenAI(params) {
   if (params.temperature != null) request.temperature = params.temperature;
   if (params.top_p != null) request.top_p = params.top_p;
   if (params.thinking) request.chat_template_kwargs = { enable_thinking: ["enabled", "adaptive"].includes(params.thinking.type) };
-  for (const [key, value] of Object.entries(params)) {
-    if (!TRANSLATED.has(key) && !ANTHROPIC_ONLY.has(key)) request[key] = value;
-  }
+  Object.assign(request, params.extra_body);  // later wins: the call's own extra_body over the translated thinking switch
   return request;
 }
 
@@ -112,20 +108,40 @@ export function openAIToAnthropic(response, model, includeThinking) {
     content.push({ type: "tool_use", id: call.id, name: call.function.name, input });
   }
   if (!content.some((b) => b.type === "text" || b.type === "tool_use")) content.push({ type: "text", text: "" });
+  // Some servers say "stop" with tool calls in the reply.
+  const toolUse = message.tool_calls?.length && choice.finish_reason !== "length";
   return {
     id: response.id, type: "message", role: "assistant", model, content,
-    stop_reason: STOP_REASONS[choice.finish_reason] ?? "end_turn", stop_sequence: null,
+    stop_reason: toolUse ? "tool_use" : STOP_REASONS[choice.finish_reason] ?? "end_turn", stop_sequence: null,
     usage: { input_tokens: response.usage?.prompt_tokens ?? 0, output_tokens: response.usage?.completion_tokens ?? 0 },
   };
 }
 
 /** Stands in for `new Anthropic(...)`: the same `messages.create`, served by Token Factory. */
 export class AnthropicOnNemotron {
+  // Declared, so TypeScript that uses a client knows them: OpenPort writes this file into TypeScript apps, unchecked.
+  baseURL;
+  apiKey;
+  timeout;
+  messages;
+
   constructor(options = {}) {
     this.baseURL = options.baseURL ?? process.env.NEBIUS_BASE_URL ?? TOKEN_FACTORY_BASE_URL;
     this.apiKey = options.apiKey ?? process.env.NEBIUS_API_KEY ?? "";
     this.timeout = options.timeout;
-    this.messages = { create: (params) => this.#create(params) };
+    // Through Object.assign, which TypeScript doesn't infer a type from: `messages` stays `any`, so code written
+    // against Anthropic's own types type-checks against these as it did.
+    Object.assign(this, { messages: { create: (params) => this.#create(params) } });
+  }
+
+  /** `client.beta.messages.create(...)`: the same calls (the `betas` they name have no Token Factory equivalent). */
+  get beta() {
+    return this;
+  }
+
+  /** A copy with another timeout, as `Anthropic.withOptions` gives. Its key and base URL stay Token Factory's. */
+  withOptions(options = {}) {
+    return new AnthropicOnNemotron({ baseURL: this.baseURL, apiKey: this.apiKey, timeout: options.timeout ?? this.timeout });
   }
 
   async #create(params) {

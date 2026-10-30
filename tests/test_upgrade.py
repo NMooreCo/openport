@@ -315,7 +315,7 @@ def test_parse_pypi_releases():
     data = {
         "releases": {
             "2.31.0": [{"upload_time_iso_8601": "2024-05-29T12:00:00.000000Z"}],
-            "2.32.0": [],  # no files (fully yanked): skipped
+            "2.32.0": [],  # no files (all deleted): nothing to install, skipped
         }
     }
     out = parse_pypi_releases(data)
@@ -323,7 +323,8 @@ def test_parse_pypi_releases():
 
 
 def test_parse_npm_releases():
-    data = {"time": {"created": "2020-01-01T00:00:00Z", "modified": "2024-01-01T00:00:00Z", "1.6.0": "2023-10-01T00:00:00.000Z"}}
+    data = {"time": {"created": "2020-01-01T00:00:00Z", "modified": "2024-01-01T00:00:00Z", "1.6.0": "2023-10-01T00:00:00.000Z"},
+            "versions": {"1.6.0": {}}}
     out = parse_npm_releases(data)
     assert set(out) == {"1.6.0"} and out["1.6.0"].year == 2023
 

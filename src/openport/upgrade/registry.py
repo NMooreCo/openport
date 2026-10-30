@@ -21,20 +21,29 @@ def _parse_dt(value) -> datetime | None:
 
 
 def parse_pypi_releases(data: dict) -> dict[str, datetime]:
-    """Each version mapped to its earliest file upload time."""
+    """Each version mapped to the latest upload time of its files: a file added to an old release later (a stolen
+    token can do that) is as new as its upload. A release whose files are all yanked is left out, as is one with a
+    file whose time isn't given: neither can be shown to be old enough."""
     releases: dict[str, datetime] = {}
     for version, files in (data.get("releases") or {}).items():
-        stamps = [f.get("upload_time_iso_8601") or f.get("upload_time") for f in files if isinstance(f, dict)]
-        parsed = [dt for dt in (_parse_dt(s) for s in stamps if s) if dt]
-        if parsed:
-            releases[version] = min(parsed)
+        files = [f for f in files or [] if isinstance(f, dict)]
+        if not files or all(f.get("yanked") for f in files):
+            continue
+        parsed = [_parse_dt(f.get("upload_time_iso_8601") or f.get("upload_time")) for f in files]
+        if all(parsed):
+            releases[version] = max(parsed)
     return releases
 
 
-def parse_npm_releases(data: dict) -> dict[str, datetime]:
+def parse_npm_releases(data: dict, deprecated: bool = False) -> dict[str, datetime]:
+    """Each version's publish time. npm's `time` keeps versions since unpublished, which can't be installed: only the
+    ones still in `versions` count, and a deprecated one only with `deprecated` (a lockfile may hold one; a fix
+    shouldn't move to one)."""
+    versions = data.get("versions") or {}
     releases: dict[str, datetime] = {}
     for version, stamp in (data.get("time") or {}).items():
-        if version in ("created", "modified"):
+        info = versions.get(version)
+        if not isinstance(info, dict) or (info.get("deprecated") and not deprecated):
             continue
         dt = _parse_dt(stamp)
         if dt:
@@ -66,8 +75,16 @@ def _registry(dep: Dependency) -> dict:
 
 
 def fetch_releases(dep: Dependency) -> dict[str, datetime]:
+    """The releases a fix can move to, with their dates."""
     data = _registry(dep)
     return parse_pypi_releases(data) if dep.ecosystem == "PyPI" else parse_npm_releases(data)
+
+
+def fetch_release_dates(dep: Dependency) -> dict[str, datetime]:
+    """The dates of every release a lockfile can hold, deprecated npm versions included: what a bump's resolution is
+    checked against (bump.too_new)."""
+    data = _registry(dep)
+    return parse_pypi_releases(data) if dep.ecosystem == "PyPI" else parse_npm_releases(data, deprecated=True)
 
 
 def fetch_homes(dep: Dependency) -> list[str]:

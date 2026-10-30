@@ -69,7 +69,7 @@ def test_a_pinned_repo_is_fetched_at_exactly_that_commit(tmp_path, monkeypatch):
     commit = "7a00fa2928acea9fcddce9661417e2bd6e6c1403"
     calls = []
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
-    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check, timeout: calls.append(args))
+    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check, timeout, **kwargs: calls.append(args))
     root, fresh = workspace.fetch_repo(f"jsliapark/preflight@{commit}")
     assert fresh and root == tmp_path / "repos" / commit[:12] / "jsliapark__preflight" and root.is_dir()
     assert [args[3:] for args in calls] == [
@@ -93,15 +93,16 @@ def test_a_clone_that_fails_halfway_is_never_reused(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
 
-    def failing_clone(args, check, timeout):
+    def failing_clone(args, check, timeout, **kwargs):
+        assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"  # a missing repo mustn't make git ask for a login
         Path(args[-1]).mkdir(parents=True)  # what git leaves: the folder, without all the files
         raise subprocess.CalledProcessError(128, args)
 
     monkeypatch.setattr(workspace.subprocess, "run", failing_clone)
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(RuntimeError, match="Couldn't fetch acme/huge from GitHub"):
         workspace.fetch_repo("acme/huge")
     assert not (tmp_path / "repos" / "acme__huge").exists()
-    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check, timeout: Path(args[-1]).mkdir(parents=True))
+    monkeypatch.setattr(workspace.subprocess, "run", lambda args, check, timeout, **kwargs: Path(args[-1]).mkdir(parents=True))
     root, fresh = workspace.fetch_repo("acme/huge")  # the next try clones afresh
     assert fresh and root.is_dir() and not root.with_name("acme__huge.partial").exists()
 
@@ -113,7 +114,7 @@ def test_a_clone_that_hangs_is_stopped_and_cleaned_up(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
 
-    def stalled(args, check, timeout):
+    def stalled(args, check, timeout, **kwargs):
         Path(args[-1]).mkdir(parents=True)
         raise subprocess.TimeoutExpired(args, timeout)
 

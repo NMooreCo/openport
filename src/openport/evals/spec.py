@@ -58,6 +58,8 @@ class CallSite:
     def cases(self, limit: int | None = None) -> list[dict]:
         lines = self.dataset.read_text(encoding="utf-8").splitlines()
         cases = [json.loads(line) for line in lines if line.strip()]
+        for number, case in enumerate(cases, start=1):  # every case needs an ID, as text: results are keyed by it
+            case["id"] = str(case.get("id") or f"{self.id}-{number:02d}")
         return cases[:limit] if limit else cases
 
 

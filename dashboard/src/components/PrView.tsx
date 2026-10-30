@@ -3,8 +3,15 @@ import { marked } from "marked";
 import { useMemo, useState } from "react";
 
 export function PrView({ body }: { body: string }) {
-  // The description includes text from the scanned repo and from the model: sanitize before rendering.
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(body, { async: false })), [body]);
+  // The description includes text from the scanned repo and from the model: sanitize before rendering, and keep
+  // out what could restyle the page or fake a form on it (DOMPurify allows both by default).
+  const html = useMemo(
+    () => DOMPurify.sanitize(marked.parse(body, { async: false }), {
+      FORBID_TAGS: ["style", "form", "input", "button", "select", "textarea"],
+      FORBID_ATTR: ["style"],
+    }),
+    [body],
+  );
   const [copied, setCopied] = useState(false);
   return (
     <div className="panel rounded-2xl">

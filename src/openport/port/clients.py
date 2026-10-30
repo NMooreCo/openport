@@ -20,10 +20,13 @@ def decide_client_actions(
     links: dict[str, list],
     key: callable,
     splittable: callable,
+    other_uses: callable = lambda binding: [],
 ) -> dict[Hashable, ClientAction]:
     """Replace a client when every call it serves is ported. Split it (add a second, Token Factory
-    client) when it also serves a call that stays put and `splittable(binding, ported_sites)` allows it.
-    Otherwise the ported calls stay put too, and the plan says why.
+    client) when it also serves a call that stays put and `splittable(binding, ported_sites)` allows it:
+    True, or else False or why not. Otherwise the ported calls stay put too, and the plan says why.
+    `other_uses(binding)` names what else the app does with a client (`client.models.list()`, a call the
+    scanner doesn't know): those stay on the original provider too, so they count as calls that stay.
 
     Updates `plan` in place for calls that can't be ported.
     """
@@ -41,17 +44,19 @@ def decide_client_actions(
         actions, changed = {}, False
         for binding_key, (binding, using) in users.items():
             ported = [s for s in using if not plan[s.id].keep]
-            kept = [s for s in using if plan[s.id].keep]
             if not ported:
                 continue
+            others = other_uses(binding)
+            kept = [s.id for s in using if plan[s.id].keep] + others[:3] + ([f"{len(others) - 3} more"] if len(others) > 3 else [])
+            split = splittable(binding, ported) if kept else False
             if not kept:
                 actions[binding_key] = ClientAction(binding, "replace", ported)
-            elif splittable(binding, ported):
+            elif split is True:
                 actions[binding_key] = ClientAction(binding, "split", ported)
             else:
-                names = ", ".join(s.id for s in kept)
+                reason = f"shares its client with {', '.join(kept)}, which stays on the original provider"
                 for site in ported:
-                    plan[site.id].keep_because(f"shares its client with {names}, which stays on the original provider")
+                    plan[site.id].keep_because(f"{reason}; {split}" if isinstance(split, str) else reason)
                 changed = True
         if not changed:
             return actions

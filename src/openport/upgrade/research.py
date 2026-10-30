@@ -15,6 +15,9 @@ from .registry import fetch_homes
 UPGRADE_DOMAINS = ["github.com", "pypi.org", "readthedocs.io", "osv.dev", "npmjs.com", "nvd.nist.gov"]
 ADVISORY_PAGES = ["osv.dev/vulnerability/", "nvd.nist.gov/vuln/detail/", "github.com/advisories/"]
 HOSTS = {"github.com", "gitlab.com", "bitbucket.org", "pypi.org", "npmjs.com", "readthedocs.io"}  # too broad to be a home
+# Pages anyone can write, even in the package's own repo: an issue, a pull request or a discussion says what someone
+# claims, not what changed, and a planted one could steer the fix.
+OPEN_PAGES = re.compile(r"/(?:issues|pulls?|discussions|merge_requests|pull-requests)(?:/|$)")
 EXCERPT_CHARS = 900
 MAX_SOURCES = 5
 
@@ -28,6 +31,8 @@ def _bare(url: str) -> str:
 def official(url: str, name: str, homes: list[str]) -> bool:
     """Whether `url` is the package's own page (its repo, docs or registry page) or an advisory database's."""
     bare, slug = _bare(url), re.sub(r"[-_.]+", "-", name.lower())
+    if OPEN_PAGES.search(bare) and not any(bare.startswith(p) for p in ADVISORY_PAGES):
+        return False
     prefixes = [h for h in map(_bare, homes) if h not in HOSTS]
     prefixes += [f"{slug}.readthedocs.io", f"pypi.org/project/{slug}", f"npmjs.com/package/{name.lower()}"]
     return any(bare == p or bare.startswith(p + "/") for p in prefixes) or any(bare.startswith(p) for p in ADVISORY_PAGES)

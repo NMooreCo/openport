@@ -6,6 +6,7 @@ afterwards from logs or generated cases.
 """
 
 import ast
+import re
 from pathlib import Path
 
 from ..scan.findings import CallSiteFinding
@@ -34,10 +35,13 @@ def humanize_title(finding: CallSiteFinding) -> str:
 def client_attr_for(finding: CallSiteFinding) -> str | None:
     """How the eval runner reaches the call's client, or None when it can't be swapped at import time."""
     receiver = finding.receiver or "client"
+    name = receiver.removesuffix("()")
+    if not re.fullmatch(r"[A-Za-z_]\w*", name):  # openai.OpenAI(), make("x")(): not an attribute the runner can set
+        return None
     if finding.receiver_kind in ("module_global", "imported"):
         return receiver
     if finding.receiver_kind == "factory":
-        return receiver if receiver.endswith("()") else receiver + "()"
+        return name + "()"
     return None  # self.client, a local, or an expression: nothing to set on the module
 
 

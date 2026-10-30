@@ -108,6 +108,7 @@ def test_addendum_lands_in_prompt_files(tmp_path):
     prompt = "You review diffs for security problems.\nReport each finding as JSON with file, line and message.\n"
     root = write(tmp_path / "repo", {
         "prompts/security.md": prompt,
+        "requirements.txt": "anthropic\n",  # where the port adds the `openai` package its runtime imports
         "review.py": '''import json
 from pathlib import Path
 

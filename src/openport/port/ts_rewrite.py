@@ -13,11 +13,13 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from tree_sitter import Node
 
 from ..runtime.openport_llm import TOKEN_FACTORY_BASE_URL
-from ..scan.findings import CALL_SUFFIXES, CallSiteFinding
+from ..scan import _source_files
+from ..scan.findings import CALL_SUFFIXES, CallSiteFinding, is_test_path
 from ..scan.ts_scanner import FETCHES, _parser, _text, _unquote, _walk
 from .clients import decide_client_actions
 from .edits import Edit, apply_edits, before_newline, indentation, line_end, newline_style, quoted_like, was_comment
@@ -107,6 +109,27 @@ class _TsRepo:
             return None
         candidates = [base] + [base + ext for ext in EXTENSIONS] + [f"{base}/index{ext}" for ext in EXTENSIONS]
         return next((c for c in candidates if (self.root / c).is_file()), None)
+
+    def imports_from(self, path: str, name: str) -> bool:
+        """Whether another module of the app (not its tests) imports `name` from the module at `path`, or all of it
+        (`import * as config`)."""
+        for found in _source_files(self.root):
+            other = found.relative_to(self.root).as_posix()
+            if other == path or not other.endswith(EXTENSIONS) or is_test_path(other):
+                continue
+            try:
+                if name.encode() not in found.read_bytes():
+                    continue
+            except OSError:
+                continue
+            for node in _walk(self.file(other).root):
+                source = node.child_by_field_name("source") if node.type in ("import_statement", "export_statement") else None
+                if source is None or self.resolve(other, _unquote(_text(source))) != path:
+                    continue
+                if any(n.type == "namespace_import" or n.type in ("import_specifier", "export_specifier")
+                       and _text(n.child_by_field_name("name")) == name for n in _walk(node)):
+                    return True
+        return False
 
     def imported(self, f: _TsFile, name: str) -> tuple[_TsFile, str] | None:
         """Where an imported name comes from, when it's another module of the app: (file, exported name)."""
@@ -251,6 +274,80 @@ def _ts_parameter_client(f: _TsFile | None, site: CallSiteFinding) -> str | None
     declared = (function.child_by_field_name("parameters") or function.child_by_field_name("parameter")) if function else None
     names = {_text(n) for n in _walk(declared) if n.type in _NAMES} if declared is not None else set()
     return receiver if receiver in names else None
+
+
+def _same(a: Node | None, b: Node | None) -> bool:
+    return a is not None and b is not None and (a.start_byte, a.end_byte, a.type) == (b.start_byte, b.end_byte, b.type)
+
+
+def _shadowed(node: Node, name: str, scope: Node, own: Node) -> bool:
+    """Whether `name` at `node` is a function's own parameter or variable, between it and `scope` (where the client
+    built by `own` is declared), not that client."""
+    function = node.parent
+    while function is not None and not _same(function, scope):
+        if function.type in _FUNCTION_NODES:
+            declared = function.child_by_field_name("parameters") or function.child_by_field_name("parameter")
+            if declared is not None and name in {_text(n) for n in _walk(declared) if n.type in _NAMES}:
+                return True
+            if any(n.type == "variable_declarator" and _text(n.child_by_field_name("name")) == name
+                   and not _same(n.child_by_field_name("value"), own) for n in _walk(function)):
+                return True
+        function = function.parent
+    return False
+
+
+def _ts_other_uses(f: _TsFile, binding: _TsBinding, linked: Callable[[int], bool]) -> list[str]:
+    """What else the file that builds a client does with it besides the calls the port linked to it:
+    `openai.models.list()`, `client.beta.files...`, a call the port couldn't trace to it. As in the Python port, each
+    counts as a call that stays. (An exported client's importers aren't followed.) `linked(line)` says whether the
+    call on that line is one of the client's own."""
+    if binding.var.startswith("this."):
+        scope = binding.new_expr.parent
+        while scope is not None and scope.type not in ("class_declaration", "class"):
+            scope = scope.parent
+        refs = [n for n in _walk(scope) if n.type == "member_expression" and re.sub(r"\s", "", _text(n)) == binding.var] if scope else []
+    else:
+        scope = None if binding.top_level else binding.new_expr.parent
+        while scope is not None and scope.type not in _FUNCTION_NODES:
+            scope = scope.parent
+        refs = [n for n in _walk(scope or f.root) if n.type == "identifier" and _text(n) == binding.var
+                and not _shadowed(n, binding.var, scope or f.root, binding.new_expr)]
+    suffixes = {suffix for suffix, _, _ in CALL_SUFFIXES}
+    found: list[str] = []
+    for ref in refs:
+        names, outer = [], ref
+        while (parent := outer.parent) is not None:
+            if parent.type == "member_expression" and _same(parent.child_by_field_name("object"), outer):
+                names.append(_text(parent.child_by_field_name("property")))
+            elif parent.type == "call_expression" and _same(parent.child_by_field_name("function"), outer) and names[-1:] == ["withOptions"]:
+                names.pop()  # the SDK's copy of the same client
+            elif parent.type != "non_null_expression":
+                break
+            outer = parent
+        while names[:1] == ["beta"]:
+            names.pop(0)
+        if not names:
+            continue
+        parent = outer.parent
+        called = parent is not None and parent.type == "call_expression" and _same(parent.child_by_field_name("function"), outer)
+        if called and tuple(names) in suffixes and linked(parent.start_point[0] + 1):
+            continue
+        written = re.sub(r"\s+", "", _text(outer))
+        use = f"`{written}` ({f.path}:{outer.start_point[0] + 1})"
+        if use not in found:
+            found.append(use)
+    return found
+
+
+def _ts_read_only_at(repo: "_TsRepo", f: _TsFile, name: str, uses: list[Node]) -> bool:
+    """Whether a top-level constant is read nowhere but at `uses`: not elsewhere in its file (an `export { MODEL }`
+    counts), and imported by no other module of the app."""
+    used = {(n.start_byte, n.end_byte) for n in uses}
+    for node in _walk(f.root):
+        if node.type in ("identifier", "shorthand_property_identifier") and _text(node) == name and (node.start_byte, node.end_byte) not in used:
+            if not (node.parent is not None and node.parent.type == "variable_declarator" and _same(node.parent.child_by_field_name("name"), node)):
+                return False
+    return not repo.imports_from(f.path, name)
 
 
 def _call_node(f: _TsFile, site: CallSiteFinding) -> Node | None:
@@ -399,13 +496,17 @@ def _ts_value(value) -> str:
     return json.dumps(value)
 
 
-def _set_extra_body(f: _TsFile, call: Node, extra_body: dict) -> list[Edit] | None:
+def _set_extra_body(f: _TsFile, call: Node, extra_body: dict, sdk: str = "openai") -> list[Edit] | None:
     """Write Token Factory-only request options (Nemotron's reasoning switch) into the call. The OpenAI Node SDK
-    sends unknown properties as they are; its types don't know them, hence the @ts-expect-error."""
+    sends unknown properties as they are; its types don't know them, hence the @ts-expect-error. OpenPort's stand-in
+    for Anthropic's SDK takes them in `extra_body`, as the Python one does, and its types aren't checked: there, an
+    @ts-expect-error would have no error to expect, which is an error itself."""
     args = call.child_by_field_name("arguments")
     obj = args.named_children[0] if args is not None and args.named_children else None
-    if obj is None or obj.type != "object" or any(_object_value(obj, key) is not None for key in extra_body):
+    if obj is None or obj.type != "object" or any(_object_value(obj, key) is not None for key in [*extra_body, "extra_body"]):
         return None
+    if sdk == "anthropic":
+        return _add_property(f, obj, f"extra_body: {_ts_value(extra_body)}")
     edits: list[Edit] = []
     for key, value in extra_body.items():
         added = _add_property(f, obj, f"{key}: {_ts_value(value)}", "@ts-expect-error Token Factory option (Nemotron's reasoning switch), not in the SDK's types")
@@ -457,12 +558,13 @@ def _runtime(paths: list[str]) -> tuple[str, bytes]:
 
 def _import_edit(f: _TsFile, runtime_path: str) -> Edit:
     """`import { AnthropicOnNemotron } from "./openport_llm";` after the file's last import. The path has an
-    extension where ES modules need one, and where the file's own relative imports use `.js`."""
+    extension where ES modules need one, and the one the file's own relative imports use: `.ts`, `.js` or none."""
     relative = posixpath.relpath(runtime_path, posixpath.dirname(f.path) or ".")
     relative = relative if relative.startswith(".") else "./" + relative
     if relative.endswith(".ts"):
-        own = [_unquote(_text(node.child_by_field_name("source"))) for node in _imports(f)]
-        relative = relative[: -len(".ts")] + (".js" if any(s.startswith(".") and s.endswith(".js") for s in own) else "")
+        own = [s for node in _imports(f) if (s := _unquote(_text(node.child_by_field_name("source")))).startswith(".")]
+        extension = next((e for e in (".ts", ".js") if any(s.endswith(e) for s in own)), "")
+        relative = relative[: -len(".ts")] + extension
     position = line_end(f.source, _imports(f)[-1].end_byte)
     return Edit(position, position, f'import {{ {ANTHROPIC_STANDIN} }} from "{relative}";'.encode() + newline_style(f.source))
 
@@ -635,16 +737,10 @@ def _split_ts_url(f: _TsFile, url: Node) -> list[Edit]:
     return [Edit(position, position, prefix + f'const {new} = "{CHAT_URL}";'.encode() + nl), Edit(url.start_byte, url.end_byte, new.encode())]
 
 
-def _port_ts_http(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], edits: dict, const_uses: dict,
-                  text_edits: dict, applied: set) -> None:
-    """Point each ported plain HTTP call at Token Factory: its URL, its key and its model, where the code spells
-    them out. A call whose URL OpenPort can't see stays where it is."""
+def _ts_http_calls(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision]) -> dict[str, _TsHttpCall | None]:
+    """Each plain HTTP call, and which can move at all: one whose URL OpenPort can't see stays where it is."""
     calls = {site.id: _ts_http_call(repo, f, site) if (f := repo.file(site.file)) else None for site in sites}
-
-    def key(f: _TsFile, node: Node) -> tuple[str, int, int]:
-        return f.path, node.start_byte, node.end_byte
-
-    for site in sites:  # first, which calls can move at all
+    for site in sites:
         decision, http = plan[site.id], calls[site.id]
         if decision.keep:
             continue
@@ -654,6 +750,37 @@ def _port_ts_http(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, S
         reason = why_kept([_text(node) for _, node in http.url_literals], _text(http.url))
         if reason:
             decision.keep_because(reason)
+    return calls
+
+
+def _ts_kept_prompts(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], http_calls: dict) -> set:
+    """The prompt literals calls that stay use, as (file, offset): an addendum tuned for a call that moves isn't
+    written into those."""
+    found = set()
+    for site in sites:
+        f = repo.file(site.file)
+        if f is None or not plan[site.id].keep:
+            continue
+        if site.sdk == "http":
+            http = http_calls.get(site.id)
+            body_file, body = http.body if http and http.body else (f, None)
+            resolved = _system_literal(repo, body_file, body, "openai", _object_properties(body)) if body is not None else None
+        else:
+            call = _call_node(f, site)
+            resolved = _system_literal(repo, f, call, site.sdk) if call is not None else None
+        if resolved:
+            found.add((resolved[0].path, resolved[1].start_byte))
+    return found
+
+
+def _port_ts_http(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, SiteDecision], calls: dict[str, _TsHttpCall | None],
+                  edits: dict, const_uses: dict, text_edits: dict, applied: set, kept_prompts: set) -> None:
+    """Point each ported plain HTTP call at Token Factory: its URL, its key and its model, where the code spells
+    them out (`calls` from _ts_http_calls)."""
+
+    def key(f: _TsFile, node: Node) -> tuple[str, int, int]:
+        return f.path, node.start_byte, node.end_byte
+
     shared = {key(f, node) for s in sites if plan[s.id].keep and calls[s.id]  # what calls that stay use too: left alone
               for f, node in [*calls[s.id].url_literals, *calls[s.id].url_variables, *calls[s.id].key_variables]}
 
@@ -727,9 +854,9 @@ def _port_ts_http(repo: _TsRepo, sites: list[CallSiteFinding], plan: dict[str, S
                 decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
             else:
                 edits[body_file.path] += changed
-        if decision.system_addendum and not _apply_ts_addendum(repo, body_file, body, "openai", decision, edits, text_edits, applied,
-                                                               _object_properties(body)):
-            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
+        if decision.system_addendum and (note := _apply_ts_addendum(repo, body_file, body, "openai", decision, edits, text_edits, applied,
+                                                                     kept_prompts, _object_properties(body))):
+            decision.notes.append(note)
 
 
 def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, SiteDecision]) -> dict[str, bytes]:
@@ -762,12 +889,25 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         elif chosen:
             plan[site.id].keep_because(f"its client takes its provider from whoever builds it ({chosen}): point that at "
                                        f"{TOKEN_FACTORY_V1} with {KEY_VARIABLE} instead")
+
+    def key(binding: _TsBinding) -> tuple:
+        return binding.file, binding.new_expr.start_byte
+
+    linked = {(site.file, site.line, key(b)) for site in sites for b in links[site.id]}
+    other_uses: dict[tuple, list[str]] = {}
+
+    def held(binding: _TsBinding) -> list[str]:  # what else the client does: it stays on the original provider for that
+        if key(binding) not in other_uses:
+            other_uses[key(binding)] = _ts_other_uses(repo.file(binding.file), binding, lambda line: (binding.file, line, key(binding)) in linked)
+        return other_uses[key(binding)]
+
     actions = decide_client_actions(
         sites,
         plan,
         links,
-        key=lambda b: (b.file, b.new_expr.start_byte),
+        key=key,
         splittable=lambda b, ported: b.top_level and all(s.file == b.file for s in ported),
+        other_uses=held,
     )
 
     edits: dict[str, list[Edit]] = defaultdict(list)
@@ -795,7 +935,9 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
             keyword = _text(binding.statement).split()[0]  # const / let / var
             nl = newline_style(f.source)
             indent = indentation(f.source, binding.statement.start_byte)
-            line = indent + f"{keyword} {new_var} = new {ANTHROPIC_STANDIN if anthropic else 'OpenAI'}".encode() + arguments + b";" + nl
+            # The constructor as the file names it: `oai.OpenAI` under `import * as oai`, or an alias.
+            ctor = ANTHROPIC_STANDIN if anthropic else _text(binding.new_expr.child_by_field_name("constructor"))
+            line = indent + f"{keyword} {new_var} = new {ctor}".encode() + arguments + b";" + nl
             position = line_end(f.source, binding.statement.end_byte)
             edits[f.path].append(Edit(position, position, line))
             for site in action.ported:
@@ -804,6 +946,8 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
     const_uses: dict[tuple[str, str], list[tuple[str | None, Node]]] = defaultdict(list)
     text_edits: dict[str, tuple[bytes, list[Edit]]] = {}
     applied: set = set()
+    http_calls = _ts_http_calls(repo, http_sites, plan)
+    kept_prompts = _ts_kept_prompts(repo, [*sites, *http_sites], plan, http_calls)
     for site in sites:
         f = repo.file(site.file)
         decision = plan[site.id]
@@ -828,7 +972,7 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
         elif not (value.type == "identifier" and _text(value) in constants):
             decision.notes.append(f"Model comes from `{_text(value)}`: set it to {decision.model}")
         if decision.extra_body:
-            changed = _set_extra_body(f, call, decision.extra_body)
+            changed = _set_extra_body(f, call, decision.extra_body, site.sdk)
             if changed is None:
                 decision.notes.append(f"Pass {decision.extra_body!r} in the request body by hand")
             else:
@@ -844,20 +988,22 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
                 decision.notes.append(f"Tuned: {label.format(number)} (set by hand)")
             else:
                 edits[f.path] += changed
-        if decision.system_addendum and not _apply_ts_addendum(repo, f, call, site.sdk, decision, edits, text_edits, applied):
-            decision.notes.append(f"Tuned: append to the system prompt by hand: \"{decision.system_addendum}\"")
+        if decision.system_addendum and (note := _apply_ts_addendum(repo, f, call, site.sdk, decision, edits, text_edits, applied,
+                                                                     kept_prompts)):
+            decision.notes.append(note)
         if site.id in split_names:
             base = call.child_by_field_name("function")
             while base.type == "member_expression":
                 base = base.child_by_field_name("object")
             edits[f.path].append(Edit(base.start_byte, base.end_byte, split_names[site.id].encode()))
-    _port_ts_http(repo, http_sites, plan, edits, const_uses, text_edits, applied)
+    _port_ts_http(repo, http_sites, plan, http_calls, edits, const_uses, text_edits, applied, kept_prompts)
 
+    # Shared model constants, as in the Python port: edited once only when nothing but calls moving to that model reads them.
     for (path, name), uses in const_uses.items():
         f = repo.file(path)
         constant = _top_level_strings(f)[name]
         targets = {model for model, _ in uses}
-        if len(targets) == 1 and None not in targets:
+        if len(targets) == 1 and None not in targets and _ts_read_only_at(repo, f, name, [node for _, node in uses]):
             (target,) = targets
             edits[path].append(Edit(constant.start_byte, constant.end_byte, quoted_like(constant.text, target)))
             comment = was_comment(f.source, constant.end_byte, _unquote(_text(constant)), b"//")
@@ -881,20 +1027,22 @@ def port_typescript(root: Path, sites: list[CallSiteFinding], plan: dict[str, Si
 
 
 def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, sdk: str, decision: SiteDecision, edits: dict, text_edits: dict,
-                       applied: set, properties: dict[str, Node] | None = None) -> bool:
-    """Write the tuned addendum into the call's system prompt. False if it couldn't be placed."""
+                       applied: set, kept_prompts: set, properties: dict[str, Node] | None = None) -> str | None:
+    """Write the tuned addendum into the call's system prompt. What to do by hand if it couldn't be placed."""
     addendum = decision.system_addendum
     resolved = _system_literal(repo, f, call, sdk, properties)
     if resolved:
         target, literal = resolved
+        if (target.path, literal.start_byte) in kept_prompts:
+            return f"Tuned: a call that stays uses this system prompt too, so give this call its own, with \"{addendum}\" appended"
         key = (target.path, literal.start_byte, addendum)
         if key in applied:
-            return True
+            return None
         edit = ts_literal_insertion(target.source, literal.start_byte, literal.end_byte, addendum)
         if edit:
             edits[target.path].append(edit)
             applied.add(key)
-            return True
+            return None
     placed = bool(decision.system_prompts)
     for prompt in decision.system_prompts:
         hit = find_prompt_file(repo.root, prompt)
@@ -905,4 +1053,4 @@ def _apply_ts_addendum(repo: _TsRepo, f: _TsFile, call: Node, sdk: str, decision
         if (path, offset, addendum) not in applied:
             text_edits.setdefault(path, (raw, []))[1].append(prompt_file_insertion(raw, offset, addendum))
             applied.add((path, offset, addendum))
-    return placed
+    return None if placed else f"Tuned: append to the system prompt by hand: \"{addendum}\""

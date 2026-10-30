@@ -285,3 +285,99 @@ def test_parse_variant_tolerates_chatter():
     variant = parse_variant(text, fallback=Variant())
     assert (variant.reasoning, variant.system_addendum, variant.max_tokens) == (False, "JSON only.", None)
     assert parse_variant("no json here", fallback=Variant(rationale="kept")).rationale == "kept"
+
+
+TEMPLATED_APP = '''import json
+
+from openai import OpenAI
+
+client = OpenAI(api_key="test")
+
+
+def review(diff):
+    messages = [{"role": "system", "content": f"Review this change to {diff.split()[0]}."}, {"role": "user", "content": diff}]
+    return json.loads(client.chat.completions.create(model="gpt-5", messages=messages).choices[0].message.content)
+'''
+
+
+def _templated_spec(tmp_path, monkeypatch, module: str):
+    (tmp_path / f"{module}.py").write_text(TEMPLATED_APP)
+    (tmp_path / "review.jsonl").write_text("".join(
+        json.dumps({"id": f"c{i}", "input": {"diff": f"file{i}.py +x = {i}"}, "expected": {"verdict": "ok"}}) + "\n" for i in range(8)))
+    (tmp_path / "openport.evals.yaml").write_text(
+        f"target: {module}\nsource_root: .\ncall_sites:\n"
+        f"  - {{id: review, title: Diff review, file: {module}.py, module: {module}, function: review, client_attr: client,\n"
+        "     sdk: openai, original_model: gpt-5, dataset: review.jsonl, grader: {type: fields, fields: [verdict]}}\n")
+    monkeypatch.setattr("sys.path", list(__import__("sys").path))
+    return load_spec(tmp_path)
+
+
+def test_held_out_cases_never_reach_the_engineer_through_a_templated_prompt(tmp_path, monkeypatch):
+    spec = _templated_spec(tmp_path, monkeypatch, "templated_review")
+    site = spec.call_sites[0]
+    _, held = split_cases(site.cases())
+    secrets = {case["input"]["diff"].split()[0] for case in held}
+    seen = []
+
+    def engineer(site, model, variant, sample, failures, **extra):
+        seen.append(json.dumps({"sample": sample, **extra}))
+        return Variant(system_addendum="Answer with the JSON object only.")
+
+    fake = FakeTokenFactory(lambda request: completion(content=json.dumps({"verdict": "flagged"})))
+    tune_site(spec, site, MODELS, client=fake, engineer=engineer, tiers=("nano",), rounds=2)
+    assert seen and not any(secret in text for secret in secrets for text in seen)
+    __import__("sys").modules.pop("templated_review", None)
+
+
+def test_the_variant_carried_up_a_tier_is_chosen_on_tuning_cases_not_held_out_ones(tmp_path, monkeypatch):
+    spec = _templated_spec(tmp_path, monkeypatch, "carried_review")
+    site = spec.call_sites[0]
+    tune, held = split_cases(site.cases())
+    held_diffs = {case["input"]["diff"] for case in held}
+    lucky = tune[0]["input"]["diff"]
+    starts = []
+
+    def script(request):
+        diff, system = request["messages"][-1]["content"], request["messages"][0]["content"]
+        if request["model"] == MODELS["super"]:
+            starts.append("Be careful." in system)
+            return completion(content=json.dumps({"verdict": "flagged"}))
+        # nano, as written: right on the held-out cases only. With the engineer's fix: right on one tuning case.
+        right = diff == lucky if "Be careful." in system else diff in held_diffs
+        return completion(content=json.dumps({"verdict": "ok" if right else "flagged"}))
+
+    tune_site(spec, site, MODELS, client=FakeTokenFactory(script), engineer=lambda *a, **k: Variant(system_addendum="Be careful."),
+              tiers=("nano", "super"), rounds=2)
+    assert starts and starts[0]  # Super starts from the fix that did better on the cases the engineer could see
+    __import__("sys").modules.pop("carried_review", None)
+
+
+TWO_CALLS_APP = '''from openai import OpenAI
+
+client = OpenAI(api_key="test")
+
+
+def draft(ticket):
+    outline = client.chat.completions.create(model="gpt-5", messages=[{"role": "user", "content": ticket}])
+    reply = client.chat.completions.create(model="gpt-5", messages=[{"role": "user", "content": outline.choices[0].message.content}])
+    return {"reply": reply.choices[0].message.content}
+'''
+
+
+def test_a_function_with_two_calls_gets_a_plan_entry_for_each(tmp_path, monkeypatch):
+    (tmp_path / "writer.py").write_text(TWO_CALLS_APP)
+    (tmp_path / "draft.jsonl").write_text("".join(
+        json.dumps({"id": f"c{i}", "input": {"ticket": f"t{i}"}, "expected": {"reply": "ok"}}) + "\n" for i in range(4)))
+    (tmp_path / "openport.evals.yaml").write_text(
+        "target: writer\nsource_root: .\ncall_sites:\n"
+        "  - {id: draft, title: Draft, file: writer.py, module: writer, function: draft, client_attr: client,\n"
+        "     sdk: openai, original_model: gpt-5, dataset: draft.jsonl, grader: {type: fields, fields: [reply]}}\n")
+    monkeypatch.setattr("sys.path", list(__import__("sys").path))
+    spec = load_spec(tmp_path)
+    fake = FakeTokenFactory(lambda request: completion(content="ok"))
+    result = tune_site(spec, spec.call_sites[0], MODELS, client=fake, engineer=lambda *a, **k: Variant(), tiers=("nano",), rounds=1)
+    plan = export_plan(spec, [result], 0.9)["call_sites"]
+    ids = [f.id for f in scan_repo(tmp_path).portable()]
+    assert len(ids) == 2 and set(plan) == set(ids)  # both calls moved together, as their eval tested them
+    assert {entry["model"] for entry in plan.values()} == {"nvidia/nano-test"}
+    __import__("sys").modules.pop("writer", None)

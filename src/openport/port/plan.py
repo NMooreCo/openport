@@ -7,7 +7,10 @@ from pathlib import Path
 from ..scan.findings import NEEDS_REVIEW, NOTES, CallSiteFinding
 
 # Features that keep a call on its original provider unless the plan says otherwise.
-BLOCKERS = {"vision", "audio", "web_search", "legacy_sdk", "embeddings", "anthropic_streaming"}
+BLOCKERS = {"vision", "audio", "web_search", "legacy_sdk", "embeddings", "anthropic_streaming", "anthropic_parse"}
+# The ones no plan can override: the ported code couldn't run (the runtime doesn't stream Anthropic replies, parse
+# them, or embed, and a pre-1.0 SDK call has no client to swap).
+UNPORTABLE = {"legacy_sdk", "embeddings", "anthropic_streaming", "anthropic_parse"}
 # Plain HTTP calls the port moves only when they're OpenAI-style chat requests: why the others stay.
 HTTP_KEPT = {
     "messages": NOTES["anthropic_http"],
@@ -76,6 +79,8 @@ def build_plan(
             decision.keep_because(HTTP_KEPT[finding.api])
         elif choice == "keep":
             decision.keep_because((assigned or {}).get("reason") or "kept by the plan")
+        elif choice and UNPORTABLE & blockers:
+            decision.keep_because("; ".join(NOTES[b] for b in sorted(UNPORTABLE & blockers)))
         elif choice:
             decision.model = models.get(choice, choice)
         elif blockers:

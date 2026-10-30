@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -76,14 +77,34 @@ def _settle(result: Any) -> Any:
     return asyncio.run(result) if inspect.iscoroutine(result) else result
 
 
+_IMPORTED_FROM: set[Path] = set()  # every folder evals have imported code from, in this process
+_ENVIRONMENT = tuple({os.path.normcase(os.path.abspath(prefix)) + os.sep for prefix in (sys.prefix, sys.base_prefix)})
+
+
 def prepare_imports(spec: Spec) -> None:
-    # Apps like SupportDesk build their SDK clients at import time, which fails without a key.
-    # OpenPort swaps those clients out before any call, so placeholders are enough.
-    os.environ.setdefault("OPENAI_API_KEY", "openport-placeholder")
-    os.environ.setdefault("ANTHROPIC_API_KEY", "openport-placeholder")
-    for path in [*spec.extra_paths, spec.source_root]:
-        if str(path) not in sys.path:
-            sys.path.insert(0, str(path))
+    # Apps like SupportDesk build their SDK clients at import time, which fails without a key. OpenPort swaps those
+    # clients out before any call, so placeholders are enough, and they replace any real key: a call that escapes the
+    # swap can't then reach GPT or Claude on the user's account and be graded as Nemotron.
+    os.environ["OPENAI_API_KEY"] = "openport-placeholder"
+    os.environ["ANTHROPIC_API_KEY"] = "openport-placeholder"
+    # One process can evaluate several repos (the dashboard does). Each has its own `app` or `core`: modules imported
+    # from another repo's folder are dropped, and this repo's folders go first on the path, so its own are imported.
+    roots = [Path(path).resolve() for path in [*spec.extra_paths, spec.source_root]]
+    _IMPORTED_FROM.difference_update({root for root in _IMPORTED_FROM if not root.exists()})  # e.g. a deleted clone
+    others = tuple(os.path.normcase(str(root)) + os.sep for root in _IMPORTED_FROM if root not in roots)
+    if others:
+        for name, module in list(sys.modules.items()):
+            file = getattr(module, "__file__", None)
+            if not file or name.startswith("openport"):
+                continue
+            file = os.path.normcase(os.path.abspath(file))
+            if file.startswith(others) and not file.startswith(_ENVIRONMENT):  # never the installed packages
+                del sys.modules[name]
+    for path in roots[::-1]:
+        while str(path) in sys.path:
+            sys.path.remove(str(path))
+    sys.path[:0] = [str(path) for path in reversed(roots)]  # the source root first, as before
+    _IMPORTED_FROM.update(roots)
 
 
 def swapped_client(site: CallSite, model: str | None, meter: UsageMeter, client: OpenAI, extra_body: dict | None = None):

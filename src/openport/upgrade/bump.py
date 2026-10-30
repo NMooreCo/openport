@@ -159,10 +159,31 @@ def _canonical(name: str) -> str:
 
 
 def _dump_like(data: dict, text: str) -> str:
-    """JSON with the original file's indentation and line endings."""
+    """JSON with the original file's indentation, line endings and byte-order mark."""
     indent = re.search(r"\n([ \t]+)\"", text)
     newline = "\r\n" if "\r\n" in text else "\n"
-    return (json.dumps(data, indent=indent[1] if indent else 2, ensure_ascii=False) + "\n").replace("\n", newline)
+    bom = "﻿" if text.startswith("﻿") else ""
+    return bom + (json.dumps(data, indent=indent[1] if indent else 2, ensure_ascii=False) + "\n").replace("\n", newline)
+
+
+def _own(folder: Path, name: str) -> str:
+    """A project file's text, never read through a link: one could point anywhere on the machine."""
+    path = Path(folder) / name
+    if path.is_symlink() or path.is_junction():
+        raise ValueError(f"{name} is a link, so OpenPort won't read or write through it")
+    return _read(path)
+
+
+def _package(folder: Path) -> tuple[str, dict]:
+    """package.json's text (as is, for _dump_like) and contents. A byte-order mark is fine, as it is to npm."""
+    text = _own(folder, "package.json")
+    try:
+        package = json.loads(text.removeprefix("﻿"))
+    except ValueError as error:
+        raise ValueError(f"package.json isn't valid JSON ({error})") from None
+    if not isinstance(package, dict):
+        raise ValueError("package.json isn't a JSON object")
+    return text, package
 
 
 def _failing(lockfile: str, image: str, message: str, bumps: dict[str, str]) -> BumpStep:
@@ -198,7 +219,7 @@ def poetry_groups(pyproject: dict) -> dict[str, str]:
 def poetry_step(folder: Path, bumps: dict[str, str], cutoff: datetime) -> BumpStep:
     """Each package lands at exactly its new version; pyproject.toml changes only where its constraint can't hold it."""
     path = Path(folder) / "pyproject.toml"
-    groups = poetry_groups(tomllib.loads(_read(path))) if path.is_file() else {}
+    groups = poetry_groups(tomllib.loads(_own(folder, "pyproject.toml").removeprefix("﻿"))) if path.exists() else {}
     command = (f"{POETRY_INSTALL} && export POETRY_SOLVER_MIN_RELEASE_AGE={_age(cutoff, 86400)}"
                f" && python -c {shlex.quote(_POETRY_BUMP)} {shlex.quote(json.dumps(bumps))} {shlex.quote(json.dumps(groups))}")
     return BumpStep("poetry.lock", PYTHON_IMAGE, command, list(bumps), ("pyproject.toml",))
@@ -215,8 +236,7 @@ def _direct(package: dict) -> dict[str, str]:
 
 def npm_step(folder: Path, bumps: dict[str, str], cutoff: datetime) -> BumpStep:
     """Direct dependencies are installed at the new version; a transitive one gets an `overrides` entry in package.json."""
-    text = _read(Path(folder) / "package.json")
-    package = json.loads(text)
+    text, package = _package(folder)
     direct = _direct(package)
     installs = [f"{name}@{version}" for name, version in bumps.items() if name in direct]
     overrides = {name: version for name, version in bumps.items() if name not in direct}
@@ -252,17 +272,16 @@ def pnpm_step(folder: Path, bumps: dict[str, str], cutoff: datetime) -> BumpStep
     package.json `packageManager`, else one that writes its lockfile's format). pnpm 10.16 and later hold back
     new releases themselves; for older ones the release-date check after the step is the guard."""
     folder = Path(folder)
+    text, package = _package(folder)
     version = pnpm_version(folder)
     if version is None:
         return _failing("pnpm-lock.yaml", NODE_IMAGE, "error: can't tell which pnpm wrote pnpm-lock.yaml", bumps)
-    text = _read(folder / "package.json")
-    package = json.loads(text)
     direct = _direct(package)
     overrides = {name: target for name, target in bumps.items() if name not in direct}
     workspace = folder / "pnpm-workspace.yaml"
     writes = {}
     if overrides and int(version.split(".")[0]) >= 11:  # pnpm 11 keeps its settings in pnpm-workspace.yaml
-        updated = _yaml_overrides(_read(workspace), overrides) if workspace.is_file() else None
+        updated = _yaml_overrides(_own(folder, "pnpm-workspace.yaml"), overrides) if workspace.exists() else None
         if updated is None:
             return _failing("pnpm-lock.yaml", NODE_IMAGE, f"error: add an override for {', '.join(overrides)} to pnpm-workspace.yaml by hand", bumps)
         writes["pnpm-workspace.yaml"] = updated
@@ -304,8 +323,7 @@ def _node(script: str, data: dict) -> str:
 
 def _transitive(folder: Path, bumps: dict[str, str], field_name: str) -> tuple[dict, dict[str, str], dict[str, str]]:
     """(package.json, its direct dependencies' groups, the writes that pin the transitive bumps in `field_name`)."""
-    text = _read(Path(folder) / "package.json")
-    package = json.loads(text)
+    text, package = _package(folder)
     direct = _direct(package)
     pins = {name: target for name, target in bumps.items() if name not in direct}
     writes = {}
@@ -381,13 +399,41 @@ STEPS = {"uv.lock": uv_step, "poetry.lock": poetry_step, "package-lock.json": np
 
 def bump_steps(folder: Path, bumps: dict[str, dict[str, str]], cutoff: datetime) -> list[BumpStep]:
     """The steps for {lockfile: {package: version}}, resolving nothing released after `cutoff` (UTC).
-    Nothing in `folder` changes: edits a step needs first are in its `writes`."""
-    return [STEPS[lockfile](folder, bumps[lockfile], cutoff) for lockfile in LOCKFILES if bumps.get(lockfile)]
+    Nothing in `folder` changes: edits a step needs first are in its `writes`. A project file that can't be read
+    (a link, JSON or TOML that doesn't parse) makes a step that fails with the reason, so its packages are skipped."""
+    steps = []
+    for lockfile in LOCKFILES:
+        if bumps.get(lockfile):
+            try:
+                steps.append(STEPS[lockfile](folder, bumps[lockfile], cutoff))
+            except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError) as error:
+                image = PYTHON_IMAGE if lockfile in ("uv.lock", "poetry.lock") else NODE_IMAGE
+                steps.append(_failing(lockfile, image, f"error: {error}"[:300], bumps[lockfile]))
+    return steps
+
+
+def crowded(folder: Path, lockfile: str, bumps: dict[str, str]) -> dict[str, list[str]]:
+    """The transitive packages in `bumps` that the lockfile also locks at other versions: {name: the versions besides
+    the new one}. Their bump would be an override (Yarn's resolutions), which names a package rather than one copy of
+    it, so it would force every copy to the new version. Direct dependencies are added at their version instead."""
+    if lockfile not in ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock"):
+        return {}
+    try:
+        direct = _direct(_package(folder)[1])
+        deps = PARSERS[lockfile](_own(folder, lockfile).removeprefix("﻿"))
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):  # the bump itself reports what's wrong
+        return {}
+    locked: dict[str, set[str]] = {}
+    for dep in deps:
+        locked.setdefault(dep.name, set()).add(dep.version)
+    others = {name: sorted(locked.get(name, set()) - {target}) for name, target in bumps.items() if name not in direct}
+    return {name: versions for name, versions in others.items() if len(versions) > 1}
 
 
 def added_versions(lockfile: str, before: str, after: str) -> list[Dependency]:
     """The package versions in the new lockfile that the old one didn't have."""
     parse = PARSERS[lockfile]
+    before, after = before.removeprefix("﻿"), after.removeprefix("﻿")
     old = {(dep.name.lower(), dep.version) for dep in (parse(before) if before.strip() else [])}
     return list(dict.fromkeys(dep for dep in (parse(after) if after.strip() else []) if (dep.name.lower(), dep.version) not in old))
 
