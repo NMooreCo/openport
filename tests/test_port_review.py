@@ -786,9 +786,20 @@ def test_the_runtime_import_has_the_extension_the_projects_resolution_needs(tmp_
 DEEP = " + ".join(['"a"'] * 3000)
 
 
-def test_a_file_too_deep_to_parse_doesnt_stop_the_port(tmp_path):
+def test_a_file_too_deep_to_parse_doesnt_stop_the_port(tmp_path, monkeypatch):
     """A generated module with a 3,000-term expression mentions the model constant: Python can't parse it, so
-    OpenPort can't tell what it reads, and leaves the constant to it rather than crashing."""
+    OpenPort can't tell what it reads, and leaves the constant to it rather than crashing. (How deep is too deep
+    depends on the platform's C stack: Linux's parses this one, Windows' doesn't. The parse is made to fail on both.)"""
+    from openport.port import python_rewrite
+
+    parse = python_rewrite._File.parse.__func__
+
+    def too_deep(cls, root, path):
+        if path.endswith("big.py"):
+            raise RecursionError("maximum recursion depth exceeded during ast construction")
+        return parse(cls, root, path)
+
+    monkeypatch.setattr(python_rewrite._File, "parse", classmethod(too_deep))
     repo = write(tmp_path / "repo", {
         "app/__init__.py": "",
         "app/llm.py": 'from openai import OpenAI\n\nMODEL = "gpt-4o"\nclient = OpenAI()\n\n\ndef ask(q):\n'

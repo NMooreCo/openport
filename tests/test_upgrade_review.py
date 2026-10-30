@@ -802,7 +802,12 @@ def test_a_folder_linked_out_of_the_repo_is_never_read_or_copied(tmp_path):
     assert list(source_files(root, "")) == ["src/main.py"]
     assert "src/linked/secret.py" not in project_paths(root)
     copy = copy_repo(root, tmp_path / "copy")
-    assert not (copy / "src" / "linked" / "secret.py").exists() and (copy / "src" / "main.py").is_file()
+    # A symlink stays a link (in the container it points at nothing); a junction isn't copied: either way, no file
+    # from outside the repo is in the copy.
+    linked = copy / "src" / "linked"
+    assert linked.is_symlink() or not linked.exists()
+    assert [p.relative_to(copy).as_posix() for p in copy.rglob("*.py") if not any(q.is_symlink() for q in p.parents)] == ["src/main.py"]
+    assert list(source_files(copy, "")) == ["src/main.py"]  # what the fixer reads in the copy: nothing through the link
 
 
 def test_a_fix_cant_make_the_tests_pass_by_turning_them_off(tmp_path):
